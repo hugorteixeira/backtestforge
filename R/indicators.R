@@ -15,6 +15,7 @@
 #'   - `"data"`: returns an `xts` with columns `X` (upper) and `Y` (lower), lagged by one bar.
 #'   - `"fulldata"`: returns OHLC columns plus `X` and `Y`.
 #'
+#' @export
 #' @return Depending on `type`: draws a chart (invisible return), or returns an
 #'   `xts` object with channel values.
 #' @examples
