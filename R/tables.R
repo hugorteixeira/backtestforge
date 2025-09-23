@@ -106,7 +106,7 @@
 #' @return Invisibly returns a wide data.frame of statistics used for display.
 #' @keywords internal
 #' @export
-.table_stats <- function(objects, colored_lines = list(1:3,4:7,8:10,11:13,14:16,17:26), lines_colors = c("gray", "gray", "red","green", "blue","gray"), col = 8, align_to_shortest = TRUE, sharpe_scale = 365, verbose = TRUE) {
+bt_stats <- function(objects, colored_lines = list(1:3,4:7,8:10,11:13,14:16,17:26), lines_colors = c("gray", "gray", "red","green", "blue","gray"), col = 8, align_to_shortest = TRUE, sharpe_scale = 365, verbose = TRUE) {
   if (!is.list(objects)) objects <- as.list(objects)
 
   # Find trades xts inside the object
