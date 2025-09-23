@@ -1,6 +1,52 @@
+#' Run an ElDoc (Donchian) backtest with quantstrat
+#'
+#' Configures a simple Donchian breakout system using `quantstrat` where entries
+#' occur on price crossing the upper/lower channel and exits occur on the
+#' opposite channel signal. Position sizing can be percentage-of-equity (Donchian)
+#' or DI-specific sizing, detected by the symbol prefix.
+#'
+#' Data is fetched from `rSenhorMercadoAPI::sm_get_data()` if the symbol is not
+#' found in the global environment; otherwise the preloaded object is used.
+#'
+#' The function builds the strategy, runs the backtest, prints key summaries, and
+#' returns a list of results.
+#'
+#' @param ticker Character symbol or name of an object in the global environment
+#'   with OHLC data. If not found, data is fetched via `sm_get_data()`.
+#' @param up Integer Donchian window for the upper channel (default 40).
+#' @param down Integer Donchian window for the lower channel (default 40).
+#' @param ps_risk_value Numeric risk percentage (e.g., 2 for 2%) used by the
+#'   position sizing function.
+#' @param ps Character label for position sizing mode (informational).
+#' @param fee Either `"normal"` (use instrument fees/slippage if available) or
+#'   `"nofee"` to disable fees.
+#' @param start_date Character or Date, start date when fetching data.
+#' @param end_date Date, end date when fetching data (default `Sys.Date()`).
+#' @param long Logical, enable long entries.
+#' @param short Logical, enable short entries.
+#' @param invert_signals Logical, invert entry/exit mapping (debug/testing).
+#' @param geometric Logical, use geometric returns when reporting performance.
+#' @param verbose Logical, print detailed summaries to the console.
+#' @param only_returns Logical; if `TRUE`, returns only the portfolio returns `xts`.
+#' @param hide_details Logical; if `TRUE`, simplifies internal object names.
+#' @param plot Logical; if `TRUE`, plots the portfolio using `rTradingPlots::tplot`.
+#'
+#' @return If `only_returns = TRUE`, returns an `xts` with discrete and log
+#'   returns. Otherwise, returns a named list with elements:
+#'   - `rets`: portfolio returns `xts`
+#'   - `stats`: `tradeStats` output with additional metadata
+#'   - `trades`: transactions `xts`
+#'   - `rets_acct`: account-level returns `xts`
+#'   - `mktdata`: market data with indicator columns
+#'
+#' @details
+#' If the symbol starts with `"DI1"`, DI-specific position sizing is used,
+#' otherwise a Donchian risk-based sizing is applied. Instrument metadata
+#' (multiplier, tick size, maturity) is propagated when available.
+#' @export
 run_bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", fee = "normal", start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, geometric = TRUE, verbose = FALSE, only_returns = FALSE, hide_details = TRUE, plot = FALSE) {
 
-  # Remove todos os objetos dos ambientes
+  # Remove all objects from blotter/strategy environments
   if(exists('.blotter')) rm(list = ls(envir = .blotter), envir = .blotter)
   if(exists('.strategy')) rm(list = ls(envir = .strategy), envir = .strategy)
 
@@ -314,13 +360,13 @@ run_bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pc
     list(ptrets, stats, txns, acrets, mktdata),
     elements_names
   )
-  #rm(list = ticker, envir = .GlobalEnv)  # limpa o dado grande
+  #rm(list = ticker, envir = .GlobalEnv)  # clean up large data object
   #rm(mktdata, envir = .GlobalEnv)
   #  assign("results",results, envir = .GlobalEnv)
   # assign("results",results, envir = .GlobalEnv)
   if(plot) tplot(portfolio.st,original_ticker)
 
-  #tplot(results[[1]],benchs="DOLAR")
+  #tplot(results[[1]],benchs="USD")
 
   return(results)
 }

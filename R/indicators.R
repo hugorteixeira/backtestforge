@@ -1,3 +1,24 @@
+#' Donchian channels helper and chart (ElDoc)
+#'
+#' Computes upper/lower Donchian channel lines using rolling max/min and can
+#' either plot them on top of the input OHLC series or return them as data.
+#'
+#' @param ticker An `xts` OHLC object.
+#' @param name_to_use Optional character label for the chart title; defaults to
+#'   the symbol name derived from `ticker`.
+#' @param x Integer window for the rolling maximum (upper channel).
+#' @param y Integer window for the rolling minimum (lower channel).
+#' @param hi.col Column name to use as High (default "High").
+#' @param lo.col Column name to use as Low (default "Low").
+#' @param type One of `"chart"` (default), `"data"`, or `"fulldata"`.
+#'   - `"chart"`: draws a chart and returns invisibly.
+#'   - `"data"`: returns an `xts` with columns `X` (upper) and `Y` (lower), lagged by one bar.
+#'   - `"fulldata"`: returns OHLC columns plus `X` and `Y`.
+#'
+#' @return Depending on `type`: draws a chart (invisible return), or returns an
+#'   `xts` object with channel values.
+#' @examples
+#' # eldoc(my_xts_ohlc, x = 20, y = 20, type = "data")
 eldoc <- function(ticker, name_to_use = NULL, x = 25, y = 25,  hi.col = "High", lo.col = "Low", type = "chart") {
   sm <- chart_theme()
   sm$col$line.col <- "blue"

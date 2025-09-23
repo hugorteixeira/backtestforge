@@ -1,4 +1,21 @@
+#' Print a timestamped debug message
+#'
+#' Prints the provided values prefixed by the current time (HH:MM:SS),
+#' useful for lightweight debugging during backtests.
+#'
+#' @param ... Values to print. Passed to `cat()`.
+#' @return Invisibly returns `NULL`. Called for its side effects (console output).
+#' @keywords internal
 .dbg <- function(...) cat(format(Sys.time(), "%T"), "-", ..., "\n")
+#' Ensure OHLC columns exist, falling back to Close
+#'
+#' Ensures an object has Open, High, Low, Close columns. If only a Close
+#' column exists, replicates it into missing OHLC columns and reorders the
+#' first columns to `Open, High, Low, Close`.
+#'
+#' @param object An `xts` or data.frame-like object with price columns.
+#' @return The same object class with guaranteed OHLC columns present.
+#' @keywords internal
 .use_close_only <- function(object) {
 
   data_columns <- tolower(colnames(object))
@@ -36,6 +53,15 @@
 
   return(object)
 }
+#' Convert an xts index to POSIXct at midnight
+#'
+#' Converts the index of an `xts` object to `POSIXct` with time set to
+#' midnight (00:00:00) in the provided timezone.
+#'
+#' @param xts_object An object of class `xts`.
+#' @param tz A timezone string. Defaults to `"America/Sao_Paulo"`.
+#' @return A `POSIXct` vector aligned to midnight in the chosen timezone.
+#' @keywords internal
 .convert_posixct <- function(xts_object, tz = NULL) {
   if(is.null(tz)){
     tz = "America/Sao_Paulo"
@@ -48,11 +74,28 @@
     stop("This is not an xts object.")
   }
 }
+#' Annualize volatility from returns
+#'
+#' Computes annualized volatility from a vector of (daily) returns by
+#' multiplying the sample standard deviation by `sqrt(252)`.
+#'
+#' @param r Numeric vector of returns.
+#' @return A single numeric value: annualized volatility.
+#' @keywords internal
 .annualize_vol <- function(r) {
 
   sd(r, na.rm = TRUE) * sqrt(252)
 
 }
+#' Create a business day calendar (bizdays)
+#'
+#' Convenience wrapper to create a `bizdays` calendar using the provided
+#' calendar name (defaults to the ANBIMA/B3 calendar) and Saturday/Sunday as
+#' non-business days.
+#'
+#' @param name Character scalar, calendar name to load from `bizdays::holidays`.
+#' @return Invisibly returns the created bizdays calendar object.
+#' @keywords internal
 .generate_calendar <- function(name = "Brazil/ANBIMA"){
   cal_b3 <- create.calendar(
     name      = name,
@@ -61,4 +104,3 @@
   )
   return(invisible(cal_b3))
 }
-

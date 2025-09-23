@@ -1,3 +1,15 @@
+#' Build a monthly returns table (percent)
+#'
+#' Aggregates a returns `xts` into a calendar-style monthly table with
+#' year rows and month columns, plus a `Total` column. Values are formatted
+#' as percentages for display.
+#'
+#' @param object_name An `xts` vector or 1-column `xts` of periodic returns.
+#' @param return_data Logical; if `TRUE` returns the data.frame, otherwise prints.
+#' @param geometric Logical; whether to compute geometric returns in totals.
+#' @return If `return_data = TRUE`, a data.frame with year rows and monthly
+#'   percent strings. Otherwise, printed output.
+#' @keywords internal
 .table_monthly_returns <- function(object_name, return_data = TRUE, geometric = TRUE) {
   return_man_mensal <- apply.monthly(object_name, colSums)
   colnames(return_man_mensal) <- "Year"
@@ -24,6 +36,16 @@
     return(return_man_mensal_tabela)
   }
 }
+#' Build a monthly profit table from blotter portfolio
+#'
+#' Sums daily Net.Trading.PL into monthly totals and returns a year-by-month
+#' table with a `Total` column. Useful with `blotter` portfolio objects.
+#'
+#' @param object_name A blotter portfolio object with `$summary` and
+#'   `Net.Trading.PL` column.
+#' @param return_data Logical; if `TRUE` returns the data.frame, otherwise prints.
+#' @return If `return_data = TRUE`, a data.frame of monthly profit totals.
+#' @keywords internal
 .table_monthly_profit <- function(object_name, return_data = TRUE) {
   daily_profit <- object_name$summary[, "Net.Trading.PL"]
   daily_profit <- daily_profit[-1]
@@ -64,6 +86,26 @@
     return(lucro_mensal_tabela)
   }
 }
+#' Print comparative stats table across backtest objects
+#'
+#' Recomputes and displays a concise table of performance and trade statistics
+#' for one or more backtest result objects, aligning windows by the shortest
+#' active trading period across inputs when requested.
+#'
+#' @param objects A list of result objects or a single object; trades are
+#'   detected from common transactions/trades elements or `xts` inputs.
+#' @param colored_lines List of row indices or ranges to color in the output.
+#' @param lines_colors Character vector of color names matching `colored_lines`.
+#'   Supported: `gray`, `red`, `green`, `blue`, `cyan`, `yellow`, `magenta`.
+#' @param col Integer; number of symbol columns per printed block (paging).
+#' @param align_to_shortest Logical; align all stats to the shortest active
+#'   trading window across inputs.
+#' @param sharpe_scale Numeric; scaling factor for daily Sharpe (e.g. 252/365).
+#' @param verbose Logical; print alignment diagnostics.
+#'
+#' @return Invisibly returns a wide data.frame of statistics used for display.
+#' @keywords internal
+#' @export
 .table_stats <- function(objects, colored_lines = list(1:3,4:7,8:10,11:13,14:16,17:26), lines_colors = c("gray", "gray", "red","green", "blue","gray"), col = 8, align_to_shortest = TRUE, sharpe_scale = 365, verbose = TRUE) {
   if (!is.list(objects)) objects <- as.list(objects)
 
