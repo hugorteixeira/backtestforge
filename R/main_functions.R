@@ -52,7 +52,13 @@ bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", 
 
   if(!exists(".strategy")) .strategy <<- new.env()
   if(!exists(".blotter")) .blotter <<- new.env()
-
+  print(list(
+    ticker_val = ticker,
+    class = class(ticker),
+    typeof = typeof(ticker),
+    length = length(ticker),
+    is_character = is.character(ticker)
+  ))
   if(exists(ticker, envir = .GlobalEnv)) {
     ticker_data <- get(ticker)
     future(ticker, tick_size = attr(ticker_data, "fut_tick_size"), multiplier = attr(ticker_data, "fut_multiplier"), maturity = attr(ticker_data, "maturity"),currency ="USD")
@@ -156,7 +162,7 @@ bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", 
   }
 
   my_strategy <- add.indicator(
-    my_strategy, "bt_eldoc",
+    my_strategy, "eldoc",
     arguments = list(
       ticker = quote(mktdata),
       x      = docx,

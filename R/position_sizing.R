@@ -46,6 +46,7 @@
     tick_value  = as.numeric(tick_value)
   ))
 }
+
 #' DI futures rate and tick value from PU
 #'
 #' Computes the annualized DI rate (percent) and tick value from a given PU
@@ -99,6 +100,7 @@
     tick_value  = round(as.numeric(tick_value),3)
   ))
 }
+
 #' Fixed contracts order-sizing function
 #'
 #' Quantstrat `osFUN` that returns a fixed number of contracts unless there is
@@ -127,6 +129,7 @@
     }
   }
 }
+
 #' Percentage-of-equity order-sizing function
 #'
 #' Simple quantstrat `osFUN` that targets approximately 2% of equity per trade,
@@ -174,6 +177,7 @@
     return(qty)
   }
 }
+
 #' Donchian risk-based order-sizing function
 #'
 #' Quantstrat `osFUN` that sizes positions based on a user-specified risk
@@ -307,6 +311,7 @@
   qty <- if (orderside=="short") -qtyAbs else qtyAbs
   return(qty)
 }
+
 #' DI futures risk-based order-sizing function
 #'
 #' Variant of Donchian risk-based sizing tailored to DI futures. It estimates
@@ -383,6 +388,7 @@
   if(verbose)     print(paste("Contracts:", qty))
   return(qty)
 }
+
 #' Transaction fees and slippage calculator
 #'
 #' Computes transaction costs for a given trade. If instrument metadata is
