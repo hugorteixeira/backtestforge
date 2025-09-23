@@ -156,7 +156,7 @@ bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", 
   }
 
   my_strategy <- add.indicator(
-    my_strategy, "eldoc",
+    my_strategy, "bt_eldoc",
     arguments = list(
       ticker = quote(mktdata),
       x      = docx,
