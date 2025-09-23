@@ -15,11 +15,11 @@
 #'   - `"data"`: returns an `xts` with columns `X` (upper) and `Y` (lower), lagged by one bar.
 #'   - `"fulldata"`: returns OHLC columns plus `X` and `Y`.
 #'
-#' @export
 #' @return Depending on `type`: draws a chart (invisible return), or returns an
 #'   `xts` object with channel values.
 #' @examples
 #' # eldoc(my_xts_ohlc, x = 20, y = 20, type = "data")
+#' @export
 eldoc <- function(ticker, name_to_use = NULL, x = 25, y = 25,  hi.col = "High", lo.col = "Low", type = "chart") {
   sm <- chart_theme()
   sm$col$line.col <- "blue"
