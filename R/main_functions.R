@@ -44,7 +44,7 @@
 #' otherwise a Donchian risk-based sizing is applied. Instrument metadata
 #' (multiplier, tick size, maturity) is propagated when available.
 #' @export
-run_bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", fee = "normal", start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, geometric = TRUE, verbose = FALSE, only_returns = FALSE, hide_details = TRUE, plot = FALSE) {
+bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", fee = "normal", start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, geometric = TRUE, verbose = FALSE, only_returns = FALSE, hide_details = TRUE, plot = FALSE) {
 
   # Remove all objects from blotter/strategy environments
   if(exists('.blotter')) rm(list = ls(envir = .blotter), envir = .blotter)
