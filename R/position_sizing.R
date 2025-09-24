@@ -5,13 +5,13 @@
 #' time to maturity.
 #'
 #' @param rates Numeric, annualized DI rate in percent.
-#' @param expiry_date Either a `Date` (maturity date) or the number of business
+#' @param maturity_date Either a `Date` (maturity date) or the number of business
 #'   days to expiry as numeric/integer.
 #' @param basis_date Reference `Date` from which to compute business days.
 #' @param cal Optional `bizdays` calendar. If `NULL`, uses `"Brazil/ANBIMA"`.
 #' @return A list with elements: `valid_days`, `pu`, `tick_size`, `tick_value`.
 #' @keywords internal
-.calculate_futures_di_notional <- function(rates,expiry_date,basis_date = Sys.Date(),cal = NULL) {
+.calculate_futures_di_notional <- function(rates,maturity_date,basis_date = Sys.Date(),cal = NULL) {
   if (is.null(cal)) {
     cal <- create.calendar(
       name      = "Brazil/ANBIMA",
@@ -20,14 +20,14 @@
     )
   }
   # 1) n of valid days
-  if (inherits(expiry_date, "Date")) {
-    n  <- bizdays(basis_date, expiry_date, cal)
-    mm <- interval(basis_date, expiry_date) %/% months(1)
-  } else if (is.numeric(expiry_date)) {
-    n  <- as.integer(expiry_date)
+  if (inherits(maturity_date, "Date")) {
+    n  <- bizdays(basis_date, maturity_date, cal)
+    mm <- interval(basis_date, maturity_date) %/% months(1)
+  } else if (is.numeric(maturity_date)) {
+    n  <- as.integer(maturity_date)
     mm <- n / 21
   } else {
-    stop("'expiry_date' has to be a number of days or Date.")
+    stop("'maturity_date' has to be a number of days or Date.")
   }
   # 2) calculate di rates
   tick_size <- if      (mm <=  3) 0.001
@@ -53,13 +53,13 @@
 #' price and time to expiry. The tick size depends on the time to maturity.
 #'
 #' @param pu Numeric, DI futures price (PU).
-#' @param expiry_date Either a `Date` (maturity date) or the number of business
+#' @param maturity_date Either a `Date` (maturity date) or the number of business
 #'   days to expiry as numeric/integer.
 #' @param basis_date Reference `Date` from which to compute business days.
 #' @param cal Optional `bizdays` calendar. If `NULL`, uses `"Brazil/ANBIMA"`.
 #' @return A list with elements: `valid_days`, `rates`, `tick_size`, `tick_value`.
 #' @keywords internal
-.calculate_futures_di_rates <- function(pu, expiry_date, basis_date = Sys.Date(), cal = NULL) {
+.calculate_futures_di_rates <- function(pu, maturity_date, basis_date = Sys.Date(), cal = NULL) {
   # 0) standard calendar
 
   if (is.null(cal)) {
@@ -72,14 +72,14 @@
 
 
   # 1) valid days
-  if (inherits(expiry_date, "Date")) {
-    n  <- bizdays(basis_date, expiry_date, cal)
-    mm <- lubridate::interval(basis_date, expiry_date) %/% months(1)
-  } else if (is.numeric(expiry_date)) {
-    n  <- as.integer(expiry_date)
+  if (inherits(maturity_date, "Date")) {
+    n  <- bizdays(basis_date, maturity_date, cal)
+    mm <- lubridate::interval(basis_date, maturity_date) %/% months(1)
+  } else if (is.numeric(maturity_date)) {
+    n  <- as.integer(maturity_date)
     mm <- n / 21
   } else {
-    stop("'expiry_date' has to be a number of days or Date.")
+    stop("'maturity_date' has to be a number of days or Date.")
   }
 
   # 2) tick-size
@@ -366,7 +366,7 @@
   print(vencimento_di)
   cal_b3 <- .generate_calendar()
   dados_di <- .calculate_futures_di_notional(type_of_entry,
-                                             expiry_date = as.Date(vencimento_di),
+                                             maturity_date = as.Date(vencimento_di),
                                              basis_date = timestamp,
                                              cal       = cal_b3)
   days_till_mat <- dados_di$valid_days
