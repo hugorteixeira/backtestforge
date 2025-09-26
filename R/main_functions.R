@@ -101,7 +101,7 @@ bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", 
   ticker <- bt_ticker
 
   verbose = TRUE
-  initEq <- 10000000
+  initEq <- 1000000
   path.dependence <- TRUE
 
   portfolio.st = 'elDoc'

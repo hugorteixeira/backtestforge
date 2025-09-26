@@ -211,7 +211,7 @@
                                         portfolio, symbol,
                                         tradeSize , maxSize,
                                         integerQty = TRUE, prefer = "Close", risk,
-                                        reinvest = FALSE, start_capital = 10000000,
+                                        reinvest = FALSE, start_capital = 1000000,
                                         maxQty = NA,
                                         maxQtyBySymbol = NULL,
                                         minRiskPct = 0.0005,
@@ -341,7 +341,7 @@
                                            orderqty, ordertype, orderside,
                                            portfolio, symbol,
                                            tradeSize , maxSize,
-                                           integerQty = TRUE, prefer = "Close", risk, reinvest = FALSE, start_capital = 10000000,verbose=TRUE,...){
+                                           integerQty = TRUE, prefer = "Close", risk, reinvest = FALSE, start_capital = 1000000,verbose=TRUE,...){
   pos <- getPosQty(portfolio, symbol, timestamp)
   if ((orderside=="long"  && pos>0) ||
       (orderside=="short" && pos<0))
@@ -413,15 +413,11 @@
   instrument_info <- tryCatch({
 getInstrument(Symbol)
   }, error = function(e) {
-    NULL  # If getInstrument fails, returns NULL
+    print("Instrument data not found")
+    return(o)  # If getInstrument fails, returns NULL
   })
-  print(instrument_info)
-  print(str(instrument_info))
   # If getInstrument returns valid information, calculates the fees
-  if (!is.null(instrument_info) && !is.na(instrument_info)) {
     # Extracts relevant information
-    print(instrument_info)
-    print(str(instrument_info))
     symbol_id <- instrument_info$primary_id
     # Helper function to check string beginning
     startsWith_any <- function(string, patterns) {
@@ -437,24 +433,20 @@ getInstrument(Symbol)
     matched_pattern <- startsWith_any(symbol_id, patterns1)
     slippage <- instrument_info$identifiers$slippage
     fees <- instrument_info$identifiers$fees
-    multiplier <- instrument_info$identifiers$multiplier
+    multiplier <- instrument_info$multiplier
+    tick_size <- instrument_info$tick_size
+
     # Check if identifiers were loaded correctly
     if (is.null(slippage) || is.null(fees) || is.null(multiplier)) {
       warning(paste("Identifiers (slippage, fees, multiplier) not found for symbol:", Symbol, ". Returning fees 0."))
       return(0)
     }
     # Define fees based on the found pattern
-    if (!is.null(matched_pattern) && matched_pattern == "BGI") { # Added to be more specific
+    if (!is.null(matched_pattern) && matched_pattern == "BGI" || matched_pattern == "CCM") { # Added to be more specific
       # Use as.numeric to ensure values are numbers
-      return(-1 * (as.numeric(slippage) * as.numeric(TxnPrice) * (as.numeric(multiplier)/100) + as.numeric(fees) * abs(as.numeric(TxnQty))))
+      return(-1 * ((as.numeric(0.1) * as.numeric(TxnPrice)) * (as.numeric(multiplier)/100) + as.numeric(fees)) * abs(as.numeric(TxnQty)))
     } else {
       # Fallback for other asset types
       return(-1 * (as.numeric(slippage) * as.numeric(TxnPrice) * abs(as.numeric(TxnQty))))
     }
-  } else {
-    # 2. Correction of return value
-    # If getInstrument fails, the fee is 0, not 1.
-    warning(paste("Instrument not found:", Symbol, ". Returning fees 0."))
-    return(0)
-  }
 }
