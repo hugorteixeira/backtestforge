@@ -6,7 +6,7 @@
 \usage{
 .calculate_futures_di_notional(
   rates,
-  expiry_date,
+  maturity_date,
   basis_date = Sys.Date(),
   cal = NULL
 )
@@ -14,7 +14,7 @@
 \arguments{
 \item{rates}{Numeric, annualized DI rate in percent.}
 
-\item{expiry_date}{Either a \code{Date} (maturity date) or the number of business
+\item{maturity_date}{Either a \code{Date} (maturity date) or the number of business
 days to expiry as numeric/integer.}
 
 \item{basis_date}{Reference \code{Date} from which to compute business days.}

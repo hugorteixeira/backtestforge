@@ -16,10 +16,11 @@ bt_eldoc(
   long = TRUE,
   short = TRUE,
   invert_signals = FALSE,
+  normalize_risk = NULL,
   geometric = TRUE,
   verbose = FALSE,
   only_returns = FALSE,
-  hide_details = TRUE,
+  hide_details = FALSE,
   plot = FALSE
 )
 }

@@ -409,13 +409,14 @@
   if (is.na(TxnPrice) || is.na(TxnQty)) {
     return(0)
   }
-  return(0)
   # Tries to get instrument information using getInstrument
   instrument_info <- tryCatch({
-    suppressWarnings(getInstrument(Symbol))
+getInstrument(Symbol)
   }, error = function(e) {
     NULL  # If getInstrument fails, returns NULL
   })
+  print(instrument_info)
+  print(str(instrument_info))
   # If getInstrument returns valid information, calculates the fees
   if (!is.null(instrument_info) && !is.na(instrument_info)) {
     # Extracts relevant information

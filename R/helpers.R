@@ -104,3 +104,37 @@
   )
   return(invisible(cal_b3))
 }
+
+.print_returns <- function(returns_xts, normalize_risk = NULL, geometric = TRUE) {
+  colnames(returns_xts) <- "Discrete"
+  returns_xts$Log <- log(1 + returns_xts$Discrete)
+  colnames(returns_xts) <- c("Discrete","Log")
+  if(!is.null(normalize_risk)) {
+    column_name <- paste0("Log_AdjRisk_", normalize_risk)
+    temp_log <- log(1 + returns_xts$Discrete)
+    new_column <- bt_normalize_risk(temp_log,risk = normalize_risk,type = "Log")
+    names(new_column) <- column_name
+    ptrets <- cbind(returns_xts, new_column)
+  }
+  if(!is.null(normalize_risk)) {
+    column_name <- paste0("Discrete_AdjRisk_", normalize_risk)
+    temp_dis <- returns_xts$Discrete
+    new_column <- bt_normalize_risk(temp_dis,risk = normalize_risk,type = "Discrete")
+    names(new_column) <- column_name
+    returns_xts <- cbind(returns_xts, new_column)
+  }
+
+  cat(paste0("\nAnnualized Returns Discrete",
+             if(geometric) " (Geometric): " else ": ",
+             sprintf("%.4f%%", Return.annualized(returns_xts$Discrete, geometric = geometric) * 100), "\n"))
+  cat(paste0("Annualized Returns Log",
+             if(geometric) " (Geometric): " else ": ",
+             sprintf("%.4f%%", Return.annualized(returns_xts$Log, geometric = geometric) * 100), "\n"))
+  cat(paste0("Cumulative Returns Discrete",
+             if(geometric) " (Geometric): " else ": ",
+             sprintf("%.4f%%", Return.cumulative(returns_xts$Discrete, geometric = geometric) * 100), "\n"))
+  cat(paste0("Cumulative Returns Log",
+             if(geometric) " (Geometric): " else ": ",
+             sprintf("%.4f%%", Return.cumulative(returns_xts$Log, geometric = geometric) * 100), "\n\n"))
+  return(returns_xts)
+}
