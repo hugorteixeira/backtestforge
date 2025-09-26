@@ -8,6 +8,12 @@
 #' @keywords internal
 .dbg <- function(...) cat(format(Sys.time(), "%T"), "-", ..., "\n")
 
+# Internal environment that mimics `.GlobalEnv` for market data storage
+.bt_data_env <- new.env(parent = emptyenv())
+
+# Accessor for the internal market data environment
+.get_bt_data_env <- function() .bt_data_env
+
 # Null-coalescing helper
 #
 # Returns `y` when `x` is `NULL`, zero-length, or entirely `NA`; otherwise

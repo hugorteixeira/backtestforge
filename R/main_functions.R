@@ -65,12 +65,18 @@ bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", 
     is_character = is.character(ticker)
   ))
 
-  if(exists(ticker, envir = .GlobalEnv)) {
+  data_env <- .get_bt_data_env()
+
+  if (exists(ticker, envir = data_env, inherits = FALSE)) {
+    ticker_data <- get(ticker, envir = data_env)
+  } else if (exists(ticker, envir = .GlobalEnv, inherits = FALSE)) {
     ticker_data <- get(ticker, envir = .GlobalEnv)
   } else {
-    ticker_data <- sm_get_data(ticker,start_date=start_date,end_date=end_date,future_history=FALSE, single_xts = TRUE, local_data=FALSE)
+    ticker_data <- sm_get_data(ticker, start_date = start_date, end_date = end_date,
+                               future_history = FALSE, single_xts = TRUE, local_data = FALSE)
   }
   ticker_data <- .use_close_only(ticker_data)
+  assign(ticker, ticker_data, envir = data_env)
   .register_future_from_data(ticker, ticker_data)
   original_ticker <- ticker
 
@@ -156,7 +162,7 @@ bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", 
   LowCol  <- "Low"
   if ("PU_o" %in% colnames(ticker_data)) Preference <- "PU_o" else Preference <- "Open"
 
-  assign(bt_ticker, ticker_data, envir = parent.frame())
+  assign(bt_ticker, ticker_data, envir = data_env)
   ReplaceBuy <- FALSE
   ReplaceSell <- FALSE
   ReplaceShort <- FALSE
@@ -296,7 +302,7 @@ bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", 
   start_t <- Sys.time()
   getInstrument(ticker)
   # run Backtest
-  applyStrategy(strategy = my_strategy, portfolios = portfolio.st, verbose = FALSE, initEq = initEq, mdenv = parent.frame())
+  applyStrategy(strategy = my_strategy, portfolios = portfolio.st, verbose = FALSE, initEq = initEq, mdenv = data_env)
 
   # aftere applyStrategy
   table(mktdata$Entrada, mktdata$Saida)
@@ -718,12 +724,14 @@ bt_eldoc_batch <- function(
     if (xts::is.xts(dt) && NROW(dt) > 0L) dt else NULL
   }
 
-  # preload suffixed symbol into .GlobalEnv if valid xts (else don't assign)
+  data_env <- .get_bt_data_env()
+
+  # preload suffixed symbol into the internal data environment if valid xts (else don't assign)
   preload_symbol <- function(sym, base_sym) {
     dt <- fetch_xts_or_fallback(sym, base_sym)
     if (!is.null(dt)) {
       dt <- sanitize_dt_attrs(dt)
-      try(assign(sym, dt, envir = .GlobalEnv), silent = TRUE)
+      try(assign(sym, dt, envir = data_env), silent = TRUE)
       .register_future_from_data(sym, dt)
     }
     invisible(dt)
@@ -731,10 +739,10 @@ bt_eldoc_batch <- function(
 
   # remove bad preexisting symbol if not xts
   ensure_xts_or_remove <- function(sym) {
-    if (exists(sym, envir = .GlobalEnv, inherits = FALSE)) {
-      obj <- get(sym, envir = .GlobalEnv)
+    if (exists(sym, envir = data_env, inherits = FALSE)) {
+      obj <- get(sym, envir = data_env)
       if (!xts::is.xts(obj)) {
-        try(rm(list = sym, envir = .GlobalEnv), silent = TRUE)
+        try(rm(list = sym, envir = data_env), silent = TRUE)
       }
     }
   }
@@ -777,7 +785,7 @@ bt_eldoc_batch <- function(
   }
 
   fallback_index <- function(ticker_with_tf, base_sym) {
-    idx <- tryCatch(index(get(ticker_with_tf, envir = .GlobalEnv)), error = function(e) NULL)
+    idx <- tryCatch(index(get(ticker_with_tf, envir = data_env)), error = function(e) NULL)
     if (!is.null(idx)) return(idx)
     td <- fetch_xts_or_fallback(ticker_with_tf, base_sym)
     if (!is.null(td)) return(index(td))
@@ -786,8 +794,6 @@ bt_eldoc_batch <- function(
 
   # safe 'future' wrapper for the bt_eldoc call
   with_safe_future <- function(expr_call) {
-    future_exists_global <- exists("future", envir = .GlobalEnv, inherits = FALSE)
-    old_global_future <- if (future_exists_global) get("future", envir = .GlobalEnv) else NULL
     safe_future <- function(primary_id, tick_size = NULL, multiplier = NULL, maturity = NULL, currency = "USD", ...) {
       if (!requireNamespace("FinancialInstrument", quietly = TRUE)) {
         stop("Package 'FinancialInstrument' is required for instrument definition.")
@@ -803,12 +809,9 @@ bt_eldoc_batch <- function(
                                     currency = cur, ...)
       )
     }
-    assign("future", safe_future, envir = .GlobalEnv)
-    on.exit({
-      if (future_exists_global) assign("future", old_global_future, envir = .GlobalEnv)
-      else try(rm("future", envir = .GlobalEnv), silent = TRUE)
-    }, add = TRUE)
-    eval(expr_call, envir = .GlobalEnv)
+    exec_env <- new.env(parent = .GlobalEnv)
+    assign("future", safe_future, envir = exec_env)
+    eval(expr_call, envir = exec_env)
   }
 
   # ---------- test grid ----------
@@ -941,7 +944,7 @@ bt_eldoc_batch <- function(
             trades = NULL,
             rets_acct = NULL,
             mktdata = tryCatch({
-              obj <- get(tk_tf, envir = .GlobalEnv)
+              obj <- get(tk_tf, envir = data_env)
               if (xts::is.xts(obj)) obj else NULL
             }, error = function(e) NULL)
           )
