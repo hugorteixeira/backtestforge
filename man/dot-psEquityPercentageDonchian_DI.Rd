@@ -18,7 +18,7 @@
   prefer = "Close",
   risk,
   reinvest = FALSE,
-  start_capital = 1e+07,
+  start_capital = 1e+06,
   verbose = TRUE,
   ...
 )

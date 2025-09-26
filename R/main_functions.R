@@ -46,6 +46,8 @@
 #' @export
 bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", fee = "normal", start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, normalize_risk = NULL, geometric = TRUE, verbose = FALSE, only_returns = FALSE, hide_details = FALSE, plot = FALSE) {
 
+  fee_mode <- normalize_fee_mode(fee)
+
   # Remove all objects from blotter/strategy environments
   if(exists('.blotter')) rm(list = ls(envir = .blotter), envir = .blotter)
   if(exists('.strategy')) rm(list = ls(envir = .strategy), envir = .strategy)
@@ -62,12 +64,12 @@ bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", 
   ))
 
   if(exists(ticker, envir = .GlobalEnv)) {
-    ticker_data <- get(ticker)
-    future(ticker, tick_size = attr(ticker_data, "fut_tick_size"), multiplier = attr(ticker_data, "fut_multiplier"), maturity = attr(ticker_data, "maturity"),currency ="USD")
+    ticker_data <- get(ticker, envir = .GlobalEnv)
   } else {
     ticker_data <- sm_get_data(ticker,start_date=start_date,end_date=end_date,future_history=FALSE, single_xts = TRUE, local_data=FALSE)
   }
   ticker_data <- .use_close_only(ticker_data)
+  .register_future_from_data(ticker, ticker_data)
   original_ticker <- ticker
 
   up_str <- as.character(up)
@@ -95,6 +97,10 @@ bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", 
     } else {
       stop("You need to be long, short or both!")
     }
+  }
+
+  if (!is.null(bt_ticker) && fee_mode == "nofee") {
+    bt_ticker <- paste0(bt_ticker, "_nofees")
   }
 
   instrument_attr(ticker, "primary_id", bt_ticker)
@@ -157,7 +163,7 @@ bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", 
   docx = up
   docy = down
 
-  if(fee == "nofee"){
+  if(fee_mode == "nofee"){
     TxnFeesVal <- 0
   } else {
     TxnFeesVal <- ".calculate_fees"
@@ -346,16 +352,18 @@ bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", 
   stats$PosSiz <- ps
   stats$Multiplier <- ticker_data$multiplier
   stats$TickSize <- ticker_data$tick_size
-  if(fee == "nofee"){
+  if(fee_mode == "nofee"){
     stats$Slippage <- 0
     stats$Fees <- 0
   } else {
     stats$Slippage <- ticker_data$identifiers$slippage
     stats$Fees <- ticker_data$identifiers$fees
   }
+  stats$FeeMode <- fee_mode
 
   attr(ptrets, "backtest") <- TRUE
   attr(ptrets, "local") <- TRUE
+  attr(ptrets, "fee_mode") <- fee_mode
 
   elements_names <- c("rets","stats","trades","rets_acct","mktdata")
 
@@ -374,19 +382,19 @@ bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", 
   return(results)
 }
 
+#' Normalize a return series to a target annualized risk level
+#'
+#' Searches for "Log" or "Discrete" return columns inside an `xts` object (or a
+#' nested structure) and rescales them so the realized annualized volatility
+#' matches the requested percentage. The output is returned in the same style
+#' (`"Log"` or `"Discrete"`) requested via `type`.
+#'
+#' @param xts An `xts` object or list containing return series.
+#' @param risk Numeric target annualized volatility in percent.
+#' @param type Output return type, either `"Discrete"` or `"Log"`.
+#' @return A single-column `xts` series with normalized returns.
+#' @export
 bt_normalize_risk <- function(xts, risk = 10, type = c("Discrete", "Log")) {
-  # Normalize the volatility of a returns series to a target annualized risk (in %).
-  # - Searches for "Log" or "Discrete" columns in an xts object.
-  # - If not found, searches inside a list (prefers $rets if present).
-  # - Internally scales using log returns; converts to requested output type.
-  #
-  # Args:
-  #   xts  : an xts object with "Log" or "Discrete" column, or a list containing such.
-  #   risk : target annualized volatility in percent (e.g., 10 == 10%).
-  #   type : output return type: "Discrete" or "Log".
-  #
-  # Returns:
-  #   An xts series (single column) of normalized returns, named "Discrete" or "Log".
 
   if (!requireNamespace("xts", quietly = TRUE)) {
     stop("Package 'xts' is required.")
@@ -548,6 +556,60 @@ bt_normalize_risk <- function(xts, risk = 10, type = c("Discrete", "Log")) {
   out
 }
 
+#' Normalise fee selection flags
+#'
+#' Converts user-facing strings (e.g. "no fee", "with fees") into canonical
+#' modes understood by `bt_eldoc`/`bt_eldoc_batch`. Defaults to "normal" when
+#' the value is missing or unrecognised.
+#'
+#' @param val Input value supplied by the caller.
+#' @param default Fallback mode when `val` cannot be interpreted.
+#' @return Character scalar, either "normal" or "nofee".
+#' @keywords internal
+normalize_fee_mode <- function(val, default = "normal") {
+  if (missing(val) || is.null(val) || length(val) == 0) return(default)
+  raw <- as.character(val)[1]
+  if (!nzchar(raw)) return(default)
+  clean <- gsub("[^A-Za-z0-9]", "", tolower(raw))
+  if (clean %in% c("nofee", "nofees", "none", "zero", "0", "nocharge", "withoutfees")) {
+    return("nofee")
+  }
+  if (clean %in% c("normal", "fees", "withfees", "default")) {
+    return("normal")
+  }
+  warning(sprintf("Unrecognized fee option '%s'; falling back to '%s'.", raw, default), call. = FALSE)
+  default
+}
+
+#' Run multiple `bt_eldoc` configurations in batch
+#'
+#' Vectorises `bt_eldoc()` across tickers and parameter grids, collecting either
+#' full backtest objects or just the selected returns. Parameters recycle so you
+#' can mix scalar defaults with per-test overrides.
+#'
+#' @param tickers Character vector of base symbols to backtest.
+#' @param timeframes Character vector of timeframe suffixes (e.g. `"4H"`).
+#' @param mup,mdown Integer/ numeric breakout lookback lengths for entry/exit.
+#' @param mps_risk_value Numeric risk value passed to the position-sizing
+#'   function.
+#' @param mps Character string specifying the position-sizing method.
+#' @param fee Fee handling mode per test (`"normal"` or `"nofee"`).
+#' @param start_date,end_date Optional `Date` boundaries for fetched data.
+#' @param long,short Logical flags enabling long and/or short trades.
+#' @param invert_signals Logical flag to invert generated signals.
+#' @param normalize_risk Optional numeric target risk for return normalisation.
+#' @param geometric Logical indicating geometric aggregation for reports.
+#' @param verbose Logical for emitting progress messages.
+#' @param only_returns Logical; if TRUE, returns an `xts` matrix of returns
+#'   instead of the full backtest objects.
+#' @param hide_details Logical; if TRUE, shortens generated labels.
+#' @param returns_type Desired returns column (`"Log"`, `"Discrete"`, `"LogAdj"`,
+#'   or `"DiscreteAdj"`).
+#' @param plot_mult Logical flag; if TRUE, plots combined results via `tplot()`.
+#' @return When `only_returns = TRUE`, an `xts` object with merged returns
+#'   columns; otherwise a named list of backtest results keyed by generated
+#'   labels.
+#' @export
 bt_eldoc_batch <- function(
     tickers,
     timeframes = "1D",
@@ -587,26 +649,19 @@ bt_eldoc_batch <- function(
   }
 
   build_label <- function(tk, tf, up, dn, ps, riskv, L, S, fee, inv, geom, nrisk, rtype) {
+    suffix <- if (identical(fee, "nofee")) "_nofees" else ""
     parts <- c(
-      sprintf("%s_%s", tk, tf),
+      sprintf("%s_%s%s", tk, tf, suffix),
       sprintf("%s_%s", up, dn),          # removed slash
       sprintf("%s_%s", ps, riskv),
       if (!isTRUE(L)) "nolong" else "long",
       if (!isTRUE(S)) "noshort" else "short",
       if (isTRUE(inv)) "inv" else NULL,
-      if (!identical(fee, "normal")) paste0("fee_", fee) else NULL,
       paste0("geom_", if (isTRUE(geom)) "T" else "F"),
       if (is.null(nrisk)) NULL else paste0("nr_", nrisk),
       paste0("rt_", rtype)
     )
     paste(parts[!vapply(parts, is.null, logical(1))], collapse = "_")
-  }
-
-  sanitize_scalar_numeric <- function(x, default = NA_real_) {
-    if (is.null(x) || length(x) == 0) return(default)
-    if (is.list(x)) x <- unlist(x, recursive = TRUE, use.names = FALSE)
-    x <- suppressWarnings(as.numeric(x)); x <- x[is.finite(x)]
-    if (length(x) == 0) default else x[1]
   }
 
   idx_to_posixct <- function(idx) {
@@ -633,8 +688,8 @@ bt_eldoc_batch <- function(
 
   sanitize_dt_attrs <- function(dt) {
     if (!xts::is.xts(dt)) return(NULL)
-    tsz <- sanitize_scalar_numeric(attr(dt, "fut_tick_size"), default = 0.01)
-    mult <- sanitize_scalar_numeric(attr(dt, "fut_multiplier"), default = 1)
+    tsz <- .sanitize_scalar_numeric(attr(dt, "fut_tick_size"), default = 0.01)
+    mult <- .sanitize_scalar_numeric(attr(dt, "fut_multiplier"), default = 1)
     mat  <- attr(dt, "maturity")
     cur  <- attr(dt, "currency"); if (is.null(cur)) cur <- "USD"
     attr(dt, "fut_tick_size") <- tsz
@@ -667,18 +722,7 @@ bt_eldoc_batch <- function(
     if (!is.null(dt)) {
       dt <- sanitize_dt_attrs(dt)
       try(assign(sym, dt, envir = .GlobalEnv), silent = TRUE)
-      if (requireNamespace("FinancialInstrument", quietly = TRUE)) {
-        tsz <- attr(dt, "fut_tick_size"); mult <- attr(dt, "fut_multiplier")
-        mat <- attr(dt, "maturity");      cur  <- attr(dt, "currency"); if (is.null(cur)) cur <- "USD"
-        suppressWarnings(try(
-          FinancialInstrument::future(primary_id = sym,
-                                      tick_size = sanitize_scalar_numeric(tsz, 0.01),
-                                      multiplier = sanitize_scalar_numeric(mult, 1),
-                                      maturity = mat,
-                                      currency = cur),
-          silent = TRUE
-        ))
-      }
+      .register_future_from_data(sym, dt)
     }
     invisible(dt)
   }
@@ -803,7 +847,8 @@ bt_eldoc_batch <- function(
       dn   <- value_at(mdown,           i, defaults$mdown)
       rV   <- value_at(mps_risk_value,  i, defaults$mps_risk_value)
       psV  <- value_at(mps,             i, defaults$mps)
-      feeV <- value_at(fee,             i, defaults$fee)
+      fee_raw <- value_at(fee,          i, defaults$fee)
+      feeV   <- normalize_fee_mode(fee_raw)
       L    <- isTRUE(value_at(long,     i, defaults$long))
       S    <- isTRUE(value_at(short,    i, defaults$short))
       inv  <- isTRUE(value_at(invert_signals, i, defaults$invert_signals))
@@ -903,6 +948,9 @@ bt_eldoc_batch <- function(
         }
       }
 
+      if (!is.null(one_res)) attr(one_res, "fee_mode") <- feeV
+      if (!is.null(one_ret)) attr(one_ret, "fee_mode") <- feeV
+
       if (isTRUE(only_returns)) returns_list[[length(returns_list) + 1]] <- one_ret
       else results_list[[label]] <- one_res
     }
@@ -921,4 +969,3 @@ bt_eldoc_batch <- function(
     return(results_list)
   }
 }
-

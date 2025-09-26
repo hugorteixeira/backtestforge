@@ -7,6 +7,160 @@
 #' @return Invisibly returns `NULL`. Called for its side effects (console output).
 #' @keywords internal
 .dbg <- function(...) cat(format(Sys.time(), "%T"), "-", ..., "\n")
+
+#' Null-coalescing helper
+#'
+#' Returns `y` when `x` is `NULL`, zero-length, or entirely `NA`; otherwise
+#' returns `x` unchanged. Useful for filling metadata defaults.
+#'
+#' @param x Primary value to inspect.
+#' @param y Fallback value to return when `x` is missing.
+#' @keywords internal
+`%||%` <- function(x, y) {
+  if (is.null(x) || length(x) == 0) return(y)
+  if (is.atomic(x) && all(is.na(x))) return(y)
+  x
+}
+
+#' Extract a single finite numeric from mixed inputs
+#'
+#' Coerces the first finite numeric value from `x`, which may be a list or
+#' atomic vector. Returns `default` when no finite value is found.
+#'
+#' @param x Value or list of values to inspect.
+#' @param default Numeric scalar returned when no finite number is located.
+#' @keywords internal
+.sanitize_scalar_numeric <- function(x, default = NA_real_) {
+  if (is.null(x) || length(x) == 0) return(default)
+  if (is.list(x)) x <- unlist(x, recursive = TRUE, use.names = FALSE)
+  x <- suppressWarnings(as.numeric(x))
+  x <- x[is.finite(x)]
+  if (length(x) == 0) default else x[1]
+}
+
+#' Gather futures metadata embedded in an xts object
+#'
+#' Inspects the attributes of an xts time series to collect futures-specific
+#' metadata such as tick size, multiplier, maturity, currency, and identifier
+#' fields (fees/slippage). Missing pieces fall back to `NULL`.
+#'
+#' @param object xts object containing market data plus metadata attributes.
+#' @return A list with `tick_size`, `multiplier`, `maturity`, `currency`, and
+#'   `identifiers` entries.
+#' @keywords internal
+.collect_instrument_metadata <- function(object) {
+  meta <- list(
+    tick_size = NULL,
+    multiplier = NULL,
+    maturity = NULL,
+    currency = NULL,
+    identifiers = list()
+  )
+  if (is.null(object)) return(meta)
+
+  fetch_attr <- function(name) attr(object, name, exact = TRUE)
+
+  meta$tick_size <- fetch_attr("fut_tick_size") %||% fetch_attr("tick_size") %||% fetch_attr("TickSize")
+  meta$multiplier <- fetch_attr("fut_multiplier") %||% fetch_attr("multiplier") %||% fetch_attr("Multiplier")
+  meta$maturity <- fetch_attr("maturity") %||% fetch_attr("expiry") %||% fetch_attr("expiration")
+  meta$currency <- fetch_attr("currency") %||% fetch_attr("Currency") %||% fetch_attr("currency_id")
+
+  ids <- fetch_attr("identifiers")
+  if (is.environment(ids)) ids <- as.list(ids)
+  if (!is.list(ids)) ids <- list()
+
+  attr_candidates <- list(
+    slippage = c("slippage", "Slippage", "spread", "Spread"),
+    fees = c("fees", "fee", "Fees", "commission", "commission_per_contract")
+  )
+
+  for (nm in names(attr_candidates)) {
+    if (is.null(ids[[nm]])) {
+      for (cand in attr_candidates[[nm]]) {
+        val <- fetch_attr(cand)
+        if (!is.null(val)) {
+          ids[[nm]] <- val
+          break
+        }
+      }
+    }
+  }
+
+  meta_attr <- fetch_attr("metadata")
+  if (is.environment(meta_attr)) meta_attr <- as.list(meta_attr)
+  if (is.list(meta_attr)) {
+    for (nm in names(attr_candidates)) {
+      if (is.null(ids[[nm]]) && !is.null(meta_attr[[nm]])) {
+        ids[[nm]] <- meta_attr[[nm]]
+      }
+    }
+  }
+
+  meta$identifiers <- ids
+  meta
+}
+
+#' Register/update a `FinancialInstrument` future from raw data
+#'
+#' Uses metadata found on an xts data object to define or update a futures
+#' instrument inside `FinancialInstrument`. Automatically ensures the currency
+#' exists and merges identifiers when the instrument is already present.
+#'
+#' @param symbol Character identifier to register.
+#' @param data_xts xts object with market data and metadata attributes.
+#' @param overwrite Passed to `FinancialInstrument::future()`; defaults to TRUE.
+#' @return Invisibly returns TRUE on successful registration, NULL otherwise.
+#' @keywords internal
+.register_future_from_data <- function(symbol, data_xts, overwrite = TRUE) {
+  if (!requireNamespace("FinancialInstrument", quietly = TRUE)) return(invisible(NULL))
+  if (missing(symbol) || is.null(symbol) || !nzchar(symbol[1])) return(invisible(NULL))
+
+  meta <- .collect_instrument_metadata(data_xts)
+
+  existing <- try(FinancialInstrument::getInstrument(symbol, silent = TRUE), silent = TRUE)
+  if (!inherits(existing, "try-error") && FinancialInstrument::is.instrument(existing)) {
+    meta$tick_size <- meta$tick_size %||% existing$tick_size
+    meta$multiplier <- meta$multiplier %||% existing$multiplier
+    meta$maturity <- meta$maturity %||% existing$maturity
+    meta$currency <- meta$currency %||% existing$currency
+    existing_ids <- existing$identifiers
+    if (is.null(existing_ids)) existing_ids <- list()
+    if (!is.list(meta$identifiers)) meta$identifiers <- list()
+    meta$identifiers <- modifyList(existing_ids, meta$identifiers)
+  }
+
+  tick_size <- .sanitize_scalar_numeric(meta$tick_size, default = 0.01)
+  multiplier <- .sanitize_scalar_numeric(meta$multiplier, default = 1)
+
+  currency <- meta$currency
+  if (is.null(currency) || length(currency) == 0 || !nzchar(as.character(currency)[1])) {
+    currency <- "USD"
+  } else {
+    currency <- as.character(currency)[1]
+  }
+
+  identifiers <- meta$identifiers
+  if (!is.list(identifiers)) identifiers <- list()
+
+  if (!FinancialInstrument::is.currency(currency)) {
+    try(FinancialInstrument::currency(currency), silent = TRUE)
+  }
+
+  suppressWarnings(try(
+    FinancialInstrument::future(
+      primary_id = symbol,
+      tick_size = tick_size,
+      multiplier = multiplier,
+      maturity = meta$maturity,
+      currency = currency,
+      identifiers = identifiers,
+      overwrite = overwrite
+    ),
+    silent = TRUE
+  ))
+
+  invisible(TRUE)
+}
 #' Ensure OHLC columns exist, falling back to Close
 #'
 #' Ensures an object has Open, High, Low, Close columns. If only a Close
