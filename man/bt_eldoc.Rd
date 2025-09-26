@@ -50,6 +50,9 @@ position sizing function.}
 
 \item{invert_signals}{Logical, invert entry/exit mapping (debug/testing).}
 
+\item{normalize_risk}{Optional numeric target risk used to append
+normalized return columns to the output.}
+
 \item{geometric}{Logical, use geometric returns when reporting performance.}
 
 \item{verbose}{Logical, print detailed summaries to the console.}

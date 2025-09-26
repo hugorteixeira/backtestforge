@@ -411,11 +411,14 @@
   }
   # Tries to get instrument information using getInstrument
   instrument_info <- tryCatch({
-getInstrument(Symbol)
+    getInstrument(Symbol)
   }, error = function(e) {
-    print("Instrument data not found")
-    return(o)  # If getInstrument fails, returns NULL
+    message("Instrument data not found for ", Symbol)
+    return(NULL)
   })
+  if (is.null(instrument_info)) {
+    return(0)
+  }
   # If getInstrument returns valid information, calculates the fees
     # Extracts relevant information
     symbol_id <- instrument_info$primary_id

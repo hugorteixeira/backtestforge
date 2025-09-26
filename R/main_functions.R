@@ -25,6 +25,8 @@
 #' @param long Logical, enable long entries.
 #' @param short Logical, enable short entries.
 #' @param invert_signals Logical, invert entry/exit mapping (debug/testing).
+#' @param normalize_risk Optional numeric target risk used to append
+#'   normalized return columns to the output.
 #' @param geometric Logical, use geometric returns when reporting performance.
 #' @param verbose Logical, print detailed summaries to the console.
 #' @param only_returns Logical; if `TRUE`, returns only the portfolio returns `xts`.
@@ -790,8 +792,8 @@ bt_eldoc_batch <- function(
       if (!requireNamespace("FinancialInstrument", quietly = TRUE)) {
         stop("Package 'FinancialInstrument' is required for instrument definition.")
       }
-      tsz <- sanitize_scalar_numeric(tick_size, default = 0.01)
-      mult <- sanitize_scalar_numeric(multiplier, default = 1)
+      tsz <- .sanitize_scalar_numeric(tick_size, default = 0.01)
+      mult <- .sanitize_scalar_numeric(multiplier, default = 1)
       cur  <- if (is.null(currency)) "USD" else as.character(currency)[1]
       suppressWarnings(
         FinancialInstrument::future(primary_id = primary_id,

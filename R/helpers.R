@@ -8,14 +8,10 @@
 #' @keywords internal
 .dbg <- function(...) cat(format(Sys.time(), "%T"), "-", ..., "\n")
 
-#' Null-coalescing helper
-#'
-#' Returns `y` when `x` is `NULL`, zero-length, or entirely `NA`; otherwise
-#' returns `x` unchanged. Useful for filling metadata defaults.
-#'
-#' @param x Primary value to inspect.
-#' @param y Fallback value to return when `x` is missing.
-#' @keywords internal
+# Null-coalescing helper
+#
+# Returns `y` when `x` is `NULL`, zero-length, or entirely `NA`; otherwise
+# returns `x` unchanged. Useful for filling metadata defaults.
 `%||%` <- function(x, y) {
   if (is.null(x) || length(x) == 0) return(y)
   if (is.atomic(x) && all(is.na(x))) return(y)
@@ -126,7 +122,7 @@
     existing_ids <- existing$identifiers
     if (is.null(existing_ids)) existing_ids <- list()
     if (!is.list(meta$identifiers)) meta$identifiers <- list()
-    meta$identifiers <- modifyList(existing_ids, meta$identifiers)
+    meta$identifiers <- utils::modifyList(existing_ids, meta$identifiers)
   }
 
   tick_size <- .sanitize_scalar_numeric(meta$tick_size, default = 0.01)
