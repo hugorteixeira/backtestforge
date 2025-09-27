@@ -524,3 +524,16 @@
 
   -1 * (slippage * price * qty)
 }
+
+#' Fee calculator wrapper exposed for quantstrat callbacks
+#'
+#' Quantstrat resolves `TxnFees` arguments by name from the search path. When
+#' `rBacktestTools` is loaded as a package, internal helpers (prefixed with a
+#' dot) are not visible on the search path, so this thin wrapper delegates to the
+#' internal implementation while remaining available for strategy execution.
+#'
+#' @keywords internal
+#' @export
+calculate_fees <- function(TxnQty, TxnPrice, Symbol) {
+  .calculate_fees(TxnQty, TxnPrice, Symbol)
+}

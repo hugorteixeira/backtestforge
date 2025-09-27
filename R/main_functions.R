@@ -175,8 +175,8 @@ bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", 
   if (fee_mode == "nofee") {
     TxnFeesVal <- 0
   } else {
-    # pass name so quantstrat resolves the function lazily when applying rules
-    TxnFeesVal <- ".calculate_fees"
+    # use exported wrapper so quantstrat can resolve it once package is installed
+    TxnFeesVal <- "calculate_fees"
   }
 
   my_strategy <- add.indicator(
