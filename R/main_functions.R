@@ -172,9 +172,10 @@ bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", 
   docx = up
   docy = down
 
-  if(fee_mode == "nofee"){
+  if (fee_mode == "nofee") {
     TxnFeesVal <- 0
   } else {
+    # pass name so quantstrat resolves the function lazily when applying rules
     TxnFeesVal <- ".calculate_fees"
   }
 

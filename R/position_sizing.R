@@ -404,52 +404,123 @@
 #'   unavailable.
 #' @keywords internal
 .calculate_fees <- function(TxnQty, TxnPrice, Symbol) {
-  # 1. Safety check for NA inputs
-  # If price or quantity are not available, there are no fees.
+  # Return zero when price or quantity are missing.
   if (is.na(TxnPrice) || is.na(TxnQty)) {
     return(0)
   }
-  # Tries to get instrument information using getInstrument
-  instrument_info <- tryCatch({
-    getInstrument(Symbol)
-  }, error = function(e) {
-    message("Instrument data not found for ", Symbol)
-    return(NULL)
-  })
-  if (is.null(instrument_info)) {
+
+  # Attempt to locate the market data for metadata fallbacks.
+  data_obj <- NULL
+  data_env <- .get_bt_data_env()
+  if (exists(Symbol, envir = data_env, inherits = FALSE)) {
+    data_obj <- get(Symbol, envir = data_env)
+  } else if (exists(Symbol, envir = .GlobalEnv, inherits = FALSE)) {
+    data_obj <- get(Symbol, envir = .GlobalEnv)
+  }
+
+  # Try to get the instrument definition registered with FinancialInstrument.
+  instrument_info <- tryCatch(
+    getInstrument(Symbol, silent = TRUE),
+    error = function(e) NULL
+  )
+
+  if (!FinancialInstrument::is.instrument(instrument_info)) {
+    instrument_info <- NULL
+    # Attempt late registration from cached market data if available.
+    if (!is.null(data_obj)) {
+      .register_future_from_data(Symbol, data_obj, overwrite = FALSE)
+      instrument_info <- tryCatch(
+        getInstrument(Symbol, silent = TRUE),
+        error = function(e) NULL
+      )
+      if (!FinancialInstrument::is.instrument(instrument_info)) {
+        instrument_info <- NULL
+      }
+    }
+  }
+
+  ids_from_instrument <- list()
+  symbol_id <- Symbol
+  multiplier <- NA_real_
+  if (!is.null(instrument_info)) {
+    symbol_id <- instrument_info$primary_id %||% Symbol
+    ids_from_instrument <- instrument_info$identifiers
+    if (is.environment(ids_from_instrument)) {
+      ids_from_instrument <- as.list(ids_from_instrument)
+    } else if (!is.list(ids_from_instrument)) {
+      ids_from_instrument <- list()
+    }
+    multiplier <- suppressWarnings(as.numeric(instrument_info$multiplier))
+  }
+
+  ids_from_data <- list()
+  data_multiplier <- NA_real_
+  if (!is.null(data_obj)) {
+    meta <- .collect_instrument_metadata(data_obj)
+    ids_from_data <- meta$identifiers
+    if (is.environment(ids_from_data)) {
+      ids_from_data <- as.list(ids_from_data)
+    } else if (!is.list(ids_from_data)) {
+      ids_from_data <- list()
+    }
+    data_multiplier <- suppressWarnings(as.numeric(meta$multiplier))
+    if (is.null(symbol_id)) {
+      symbol_id <- Symbol
+    }
+  }
+
+  first_numeric <- function(values) {
+    vals <- suppressWarnings(as.numeric(values))
+    vals <- vals[is.finite(vals)]
+    if (length(vals) == 0) NA_real_ else vals[1]
+  }
+
+  pick_identifier <- function(keys) {
+    for (nm in keys) {
+      if (!is.null(ids_from_instrument[[nm]])) {
+        return(first_numeric(ids_from_instrument[[nm]]))
+      }
+      if (!is.null(ids_from_data[[nm]])) {
+        return(first_numeric(ids_from_data[[nm]]))
+      }
+    }
+    NA_real_
+  }
+
+  slippage <- pick_identifier(c("slippage", "Slippage", "spread", "Spread"))
+  fees <- pick_identifier(c("fees", "fee", "Fees", "commission", "commission_per_contract"))
+  multiplier <- first_numeric(c(multiplier, data_multiplier))
+
+  if (is.na(slippage) && is.na(fees)) {
+    warning(sprintf("Transaction cost identifiers not found for symbol: %s. Returning fees 0.", Symbol))
     return(0)
   }
-  # If getInstrument returns valid information, calculates the fees
-    # Extracts relevant information
-    symbol_id <- instrument_info$primary_id
-    # Helper function to check string beginning
-    startsWith_any <- function(string, patterns) {
-      if(!is.character(string) || length(string) == 0) return(NULL)
-      for (pattern in patterns) {
-        if (startsWith(string, pattern)) return(pattern)
-      }
-      return(NULL)
-    }
-    # List of patterns to be checked
-    patterns1 <- c("CCM","BGI","DOL","GOLD","WDO","WIN","IND","COCOA","CORN","NATURAL_GAS")
-    # Find the matching pattern
-    matched_pattern <- startsWith_any(symbol_id, patterns1)
-    slippage <- instrument_info$identifiers$slippage
-    fees <- instrument_info$identifiers$fees
-    multiplier <- instrument_info$multiplier
-    tick_size <- instrument_info$tick_size
 
-    # Check if identifiers were loaded correctly
-    if (is.null(slippage) || is.null(fees) || is.null(multiplier)) {
-      warning(paste("Identifiers (slippage, fees, multiplier) not found for symbol:", Symbol, ". Returning fees 0."))
-      return(0)
+  if (is.na(multiplier)) {
+    warning(sprintf("Multiplier not found for symbol: %s. Returning fees 0.", Symbol))
+    return(0)
+  }
+
+  slippage <- if (is.na(slippage)) 0 else slippage
+  fees <- if (is.na(fees)) 0 else fees
+
+  startsWith_any <- function(string, patterns) {
+    if (!is.character(string) || length(string) == 0) return(NULL)
+    for (pattern in patterns) {
+      if (startsWith(string, pattern)) return(pattern)
     }
-    # Define fees based on the found pattern
-    if (!is.null(matched_pattern) && matched_pattern == "BGI" || matched_pattern == "CCM") { # Added to be more specific
-      # Use as.numeric to ensure values are numbers
-      return(-1 * ((as.numeric(0.1) * as.numeric(TxnPrice)) * (as.numeric(multiplier)/100) + as.numeric(fees)) * abs(as.numeric(TxnQty)))
-    } else {
-      # Fallback for other asset types
-      return(-1 * (as.numeric(slippage) * as.numeric(TxnPrice) * abs(as.numeric(TxnQty))))
-    }
+    NULL
+  }
+
+  patterns1 <- c("CCM", "BGI", "DOL", "GOLD", "WDO", "WIN", "IND", "COCOA", "CORN", "NATURAL_GAS")
+  matched_pattern <- startsWith_any(symbol_id, patterns1)
+
+  qty <- abs(as.numeric(TxnQty))
+  price <- as.numeric(TxnPrice)
+
+  if (!is.null(matched_pattern) && matched_pattern %in% c("BGI", "CCM")) {
+    return(-1 * (((0.1 * price) * (multiplier / 100)) + fees) * qty)
+  }
+
+  -1 * (slippage * price * qty)
 }
