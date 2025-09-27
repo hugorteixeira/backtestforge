@@ -163,6 +163,7 @@ bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", 
   if ("PU_o" %in% colnames(ticker_data)) Preference <- "PU_o" else Preference <- "Open"
 
   assign(bt_ticker, ticker_data, envir = data_env)
+  assign(bt_ticker, ticker_data, envir = .GlobalEnv)  # blotter/quantstrat price lookups expect globals
   ReplaceBuy <- FALSE
   ReplaceSell <- FALSE
   ReplaceShort <- FALSE
@@ -188,7 +189,7 @@ bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", 
       type   = "data"),
     label = "el")
 
-  coisa <- applyIndicators(strategy = my_strategy, mktdata = get(ticker))
+  coisa <- applyIndicators(strategy = my_strategy, mktdata = get(ticker, envir = data_env))
 
   my_strategy <-   add.signal(strategy = my_strategy,
                              name = "sigCrossover",
