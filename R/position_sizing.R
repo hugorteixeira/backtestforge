@@ -418,29 +418,80 @@
     data_obj <- get(Symbol, envir = .GlobalEnv)
   }
 
-  # Try to get the instrument definition registered with FinancialInstrument.
-  instrument_info <- tryCatch(
-    getInstrument(Symbol, silent = TRUE),
-    error = function(e) NULL
-  )
-
-  if (!FinancialInstrument::is.instrument(instrument_info)) {
-    instrument_info <- NULL
-    # Attempt late registration from cached market data if available.
-    if (!is.null(data_obj)) {
-      .register_future_from_data(Symbol, data_obj, overwrite = FALSE)
-      instrument_info <- tryCatch(
-        getInstrument(Symbol, silent = TRUE),
-        error = function(e) NULL
-      )
-      if (!FinancialInstrument::is.instrument(instrument_info)) {
-        instrument_info <- NULL
-      }
-    }
+  drop_suffixes <- function(sym) {
+    if (is.null(sym) || length(sym) == 0 || !nzchar(sym[1])) return(character())
+    parts <- strsplit(sym[1], "_", fixed = TRUE)[[1]]
+    if (length(parts) <= 1) return(character())
+    vapply(seq_along(parts[-length(parts)]), function(i) {
+      paste(parts[seq_len(length(parts) - i)], collapse = "_")
+    }, character(1L))
   }
 
+  gather_candidates <- function(sym, data_xts) {
+    attrs <- character()
+    if (!is.null(data_xts)) {
+      attrs <- c(attrs,
+                 attr(data_xts, "bt_original_symbol"),
+                 attr(data_xts, "bt_root_symbol"))
+    }
+    cand <- c(sym, attrs)
+    extras <- unlist(lapply(unique(c(sym, attrs)), drop_suffixes), use.names = FALSE)
+    cand <- unique(c(cand, extras))
+    cand <- cand[!is.na(cand) & nzchar(cand)]
+    cand
+  }
+
+  fetch_instrument <- function(candidates) {
+    for (cand in candidates) {
+      inst <- tryCatch(getInstrument(cand, silent = TRUE), error = function(e) NULL)
+      if (FinancialInstrument::is.instrument(inst)) {
+        return(list(symbol = cand, instrument = inst))
+      }
+    }
+    NULL
+  }
+
+  candidates <- gather_candidates(Symbol, data_obj)
+  inst_lookup <- fetch_instrument(candidates)
+
+  if (is.null(inst_lookup) && !is.null(data_obj)) {
+    .register_future_from_data(Symbol, data_obj, overwrite = FALSE)
+    inst_lookup <- fetch_instrument(gather_candidates(Symbol, data_obj))
+  }
+
+  if (!is.null(inst_lookup) && !identical(inst_lookup$symbol, Symbol)) {
+    inst <- inst_lookup$instrument
+    ids_copy <- inst$identifiers
+    if (is.environment(ids_copy)) ids_copy <- as.list(ids_copy)
+    tick_copy <- .sanitize_scalar_numeric(inst$tick_size, default = 0.01)
+    mult_copy <- .sanitize_scalar_numeric(inst$multiplier, default = 1)
+    currency_copy <- inst$currency
+    try(
+      FinancialInstrument::future(
+        primary_id = Symbol,
+        tick_size = tick_copy,
+        multiplier = mult_copy,
+        maturity = inst$maturity,
+        currency = currency_copy,
+        identifiers = ids_copy,
+        overwrite = FALSE
+      ),
+      silent = TRUE
+    )
+    inst_lookup <- fetch_instrument(c(Symbol, inst_lookup$symbol))
+  }
+
+  instrument_info <- if (!is.null(inst_lookup)) inst_lookup$instrument else NULL
+  symbol_id <- if (!is.null(inst_lookup)) inst_lookup$symbol else Symbol
+
+  candidate_others <- setdiff(candidates, symbol_id)
+  donor_lookup <- NULL
+  if (length(candidate_others)) {
+    donor_lookup <- fetch_instrument(candidate_others)
+  }
+  donor_info <- if (!is.null(donor_lookup)) donor_lookup$instrument else NULL
+
   ids_from_instrument <- list()
-  symbol_id <- Symbol
   multiplier <- NA_real_
   if (!is.null(instrument_info)) {
     symbol_id <- instrument_info$primary_id %||% Symbol
@@ -451,6 +502,18 @@
       ids_from_instrument <- list()
     }
     multiplier <- suppressWarnings(as.numeric(instrument_info$multiplier))
+  }
+
+  ids_from_donor <- list()
+  donor_multiplier <- NA_real_
+  if (!is.null(donor_info)) {
+    ids_from_donor <- donor_info$identifiers
+    if (is.environment(ids_from_donor)) {
+      ids_from_donor <- as.list(ids_from_donor)
+    } else if (!is.list(ids_from_donor)) {
+      ids_from_donor <- list()
+    }
+    donor_multiplier <- suppressWarnings(as.numeric(donor_info$multiplier))
   }
 
   ids_from_data <- list()
@@ -483,13 +546,16 @@
       if (!is.null(ids_from_data[[nm]])) {
         return(first_numeric(ids_from_data[[nm]]))
       }
+      if (!is.null(ids_from_donor[[nm]])) {
+        return(first_numeric(ids_from_donor[[nm]]))
+      }
     }
     NA_real_
   }
 
   slippage <- pick_identifier(c("slippage", "Slippage", "spread", "Spread"))
   fees <- pick_identifier(c("fees", "fee", "Fees", "commission", "commission_per_contract"))
-  multiplier <- first_numeric(c(multiplier, data_multiplier))
+  multiplier <- first_numeric(c(multiplier, data_multiplier, donor_multiplier))
 
   if (is.na(slippage) && is.na(fees)) {
     warning(sprintf("Transaction cost identifiers not found for symbol: %s. Returning fees 0.", Symbol))

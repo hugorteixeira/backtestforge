@@ -76,6 +76,8 @@ bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", 
                                future_history = FALSE, single_xts = TRUE, local_data = FALSE)
   }
   ticker_data <- .use_close_only(ticker_data)
+  attr(ticker_data, "bt_original_symbol") <- ticker
+  attr(ticker_data, "bt_root_symbol") <- sub("_.*$", "", ticker)
   assign(ticker, ticker_data, envir = data_env)
   .register_future_from_data(ticker, ticker_data)
   original_ticker <- ticker
