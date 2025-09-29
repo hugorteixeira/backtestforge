@@ -341,12 +341,12 @@
                                            orderqty, ordertype, orderside,
                                            portfolio, symbol,
                                            tradeSize , maxSize,
-                                           integerQty = TRUE, prefer = "Close", risk, reinvest = FALSE, start_capital = 1000000,verbose=TRUE,...){
+                                           integerQty = TRUE, prefer = "Close", risk, reinvest = FALSE, start_capital = 10000000,verbose=FALSE,...){
   pos <- getPosQty(portfolio, symbol, timestamp)
   if ((orderside=="long"  && pos>0) ||
       (orderside=="short" && pos<0))
     return(0)
-  verbose = TRUE
+
   # -------- entry and loss rates
   taxaEnt <- as.numeric(data[timestamp,prefer])
   upper   <- as.numeric(data[timestamp,"X.el"])
@@ -363,7 +363,6 @@
 
   # -------- valid days till maturity
   vencimento_di <- attr(data, "maturity")
-  print(vencimento_di)
   cal_b3 <- .generate_calendar()
   dados_di <- .calculate_futures_di_notional(type_of_entry,
                                              maturity_date = as.Date(vencimento_di),
@@ -414,6 +413,8 @@
   data_env <- .get_bt_data_env()
   if (exists(Symbol, envir = data_env, inherits = FALSE)) {
     data_obj <- get(Symbol, envir = data_env)
+    data_obj <<- get(Symbol, envir = data_env)
+
   } else if (exists(Symbol, envir = .GlobalEnv, inherits = FALSE)) {
     data_obj <- get(Symbol, envir = .GlobalEnv)
   }
@@ -552,7 +553,6 @@
     }
     NA_real_
   }
-
   slippage <- pick_identifier(c("slippage", "Slippage", "spread", "Spread"))
   fees <- pick_identifier(c("fees", "fee", "Fees", "commission", "commission_per_contract"))
   multiplier <- first_numeric(c(multiplier, data_multiplier, donor_multiplier))
@@ -579,15 +579,23 @@
   }
 
   patterns1 <- c("CCM", "BGI", "DOL", "GOLD", "WDO", "WIN", "IND", "COCOA", "CORN", "NATURAL_GAS")
-  matched_pattern <- startsWith_any(symbol_id, patterns1)
+  patterns2 <- c("DI1")
+
+  matched_pattern_a <- startsWith_any(symbol_id, patterns1)
+  matched_pattern_b <- startsWith_any(symbol_id, patterns2)
 
   qty <- abs(as.numeric(TxnQty))
   price <- as.numeric(TxnPrice)
 
-  if (!is.null(matched_pattern) && matched_pattern %in% c("BGI", "CCM")) {
+  if (!is.null(matched_pattern_a) && matched_pattern_a %in% c("BGI", "CCM")) {
+    #print("CCM or BGI detected.")
     return(-1 * (((0.1 * price) * (multiplier / 100)) + fees) * qty)
-  }
+  } else if (!is.null(matched_pattern_b) && matched_pattern_b %in% c("DI1")) {
+    #print("DI1 futures detected.")
+    return(-1 * (qty * fees * 2.5))
 
+  }
+  #print("Other detected.")
   -1 * (slippage * price * qty)
 }
 

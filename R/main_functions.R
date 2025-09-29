@@ -46,7 +46,67 @@
 #' otherwise a Donchian risk-based sizing is applied. Instrument metadata
 #' (multiplier, tick size, maturity) is propagated when available.
 #' @export
-bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", fee = "normal", start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, normalize_risk = NULL, geometric = TRUE, verbose = FALSE, only_returns = FALSE, hide_details = FALSE, plot = FALSE) {
+bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", fee = "normal", start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, normalize_risk = NULL, geometric = TRUE, verbose = FALSE, only_returns = FALSE, hide_details = FALSE, stop_before_maturity = NULL, clean_di = TRUE, plot = FALSE) {
+  stop_before <- function(date,
+                          type = c("1mo","3mo","6mo","1y","2y","3y","4y","5y")) {
+
+    # date: an xts object
+    if (!inherits(date, "xts")) stop("date must be an xts object.")
+    if (NROW(date) == 0) return(date)
+
+    type <- match.arg(type)
+
+    # Work with Date indices for robust year/month extraction
+    idx <- as.Date(index(date))
+
+    if (grepl("mo$", type)) {
+      # Remove the last k full calendar months present in the object
+      k <- as.integer(sub("mo$", "", type))
+      ym <- zoo::as.yearmon(idx)
+      last_ym <- max(ym, na.rm = TRUE)
+      months_to_remove <- seq(from = last_ym, by = -1/12, length.out = k)
+      keep <- !(ym %in% months_to_remove)
+    } else {
+      # Remove the last k full calendar years present in the object
+      k <- as.integer(sub("y$", "", type))
+      yrs <- as.integer(format(idx, "%Y"))
+      last_year <- max(yrs, na.rm = TRUE)
+      years_to_remove <- seq(from = last_year, by = -1L, length.out = k)
+      keep <- !(yrs %in% years_to_remove)
+    }
+
+    date[keep]
+  }
+  clean_di <- function(xts_object, column_name = "TickSize", value = 0.001) {
+    if (!inherits(xts_object, "xts")) stop("xts_object must be an xts object.")
+    if (NROW(xts_object) == 0) return(xts_object)
+
+    # If the target column doesn't exist, return unchanged
+    if (!(column_name %in% colnames(xts_object))) {
+      return(xts_object)
+    }
+
+    col_vec <- zoo::coredata(xts_object[, column_name])
+    eq <- col_vec == value
+    eq[is.na(eq)] <- FALSE
+
+    xts_object[!as.vector(eq), ]
+  }
+  clean_di_tick <- function(xts_object, column_name = "TickValue", value_over = -5) {
+    if (!inherits(xts_object, "xts")) stop("xts_object must be an xts object.")
+    if (NROW(xts_object) == 0) return(xts_object)
+
+    # If the target column doesn't exist, return unchanged
+    if (!(column_name %in% colnames(xts_object))) {
+      return(xts_object)
+    }
+
+    col_vec <- zoo::coredata(xts_object[, column_name])
+    gt <- col_vec > value_over
+    gt[is.na(gt)] <- FALSE  # keep NAs (do not remove)
+
+    xts_object[!as.vector(gt), ]
+  }
 
   fee_mode <- normalize_fee_mode(fee)
 
@@ -69,12 +129,19 @@ bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", 
 
   if (exists(ticker, envir = data_env, inherits = FALSE)) {
     ticker_data <- get(ticker, envir = data_env)
+    ticker_data <- clean_di(ticker_data, "TickSize", value = 0.001)
+    ticker_data <- clean_di_tick(ticker_data, "TickValue", value_over = -7.5)
   } else if (exists(ticker, envir = .GlobalEnv, inherits = FALSE)) {
     ticker_data <- get(ticker, envir = .GlobalEnv)
+    ticker_data <- clean_di(ticker_data, "TickSize", value = 0.001)
+    ticker_data <- clean_di_tick(ticker_data, "TickValue", value_over = -7.5)
   } else {
     ticker_data <- sm_get_data(ticker, start_date = start_date, end_date = end_date,
                                future_history = FALSE, single_xts = TRUE, local_data = FALSE)
+    ticker_data <- clean_di(ticker_data, "TickSize", value = 0.001)
+    ticker_data <- clean_di_tick(ticker_data, "TickValue", value_over = -7.5)
   }
+
   ticker_data <- .use_close_only(ticker_data)
   attr(ticker_data, "bt_original_symbol") <- ticker
   attr(ticker_data, "bt_root_symbol") <- sub("_.*$", "", ticker)
@@ -117,7 +184,7 @@ bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", 
   ticker <- bt_ticker
 
   verbose = TRUE
-  initEq <- 1000000
+  initEq <- 10000000
   path.dependence <- TRUE
 
   portfolio.st = 'elDoc'
