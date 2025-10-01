@@ -998,6 +998,14 @@ normalize_fee_mode <- function(val, default = "normal") {
 #' @param returns_type Desired returns column (`"Log"`, `"Discrete"`,
 #'   `"LogAdj"`, or `"DiscreteAdj"`).
 #' @param plot_mult Logical flag; if `TRUE`, plots combined results via `tplot()`.
+#' @param gen_portfolio Optional vector or list of index sets indicating which
+#'   backtest outputs to aggregate into synthetic portfolios. Each element (or
+#'   the entire vector when not a list) is treated as one group of indices based
+#'   on the execution order, producing an additional `Portfolio_*` series.
+#' @param gen_portfolio_weights Optional weights applied to each group defined
+#'   by `gen_portfolio`. Accepts a vector (recycled) or list mirroring the group
+#'   structure. When omitted or containing only zeros/`NA`, equal weights are
+#'   assumed for the corresponding group.
 #' @param ... Indicator-specific parameter vectors (e.g., `fast`, `slow` for
 #'   moving averages).
 #'
@@ -1026,6 +1034,8 @@ bt_batch <- function(
     hide_details = FALSE,
     returns_type = "Log",
     plot_mult = FALSE,
+    gen_portfolio = NULL,
+    gen_portfolio_weights = NULL,
     ...
 ) {
   if (!requireNamespace("xts", quietly = TRUE)) stop("Package 'xts' is required.")
@@ -1154,6 +1164,26 @@ bt_batch <- function(
     xts::xts(matrix(0, nrow = n, ncol = 1), order.by = ob)
   }
 
+  zero_full_returns_xts <- function(idx, normalize_target = NA_real_) {
+    ob <- idx_to_posixct(idx); n <- length(ob)
+    base <- xts::xts(matrix(0, nrow = n, ncol = 2), order.by = ob)
+    colnames(base) <- c("Discrete", "Log")
+    if (n == 0) return(base)
+    if (is.finite(normalize_target)) {
+      log_norm <- tryCatch(bt_normalize_risk(base[, "Log", drop = FALSE], risk = normalize_target, type = "Log"), error = function(e) NULL)
+      if (!is.null(log_norm)) {
+        colnames(log_norm) <- paste0("Log_AdjRisk_", normalize_target)
+        base <- cbind(base, log_norm)
+      }
+      disc_norm <- tryCatch(bt_normalize_risk(base[, "Discrete", drop = FALSE], risk = normalize_target, type = "Discrete"), error = function(e) NULL)
+      if (!is.null(disc_norm)) {
+        colnames(disc_norm) <- paste0("Discrete_AdjRisk_", normalize_target)
+        base <- cbind(base, disc_norm)
+      }
+    }
+    base
+  }
+
   sanitize_dt_attrs <- function(dt) {
     if (!xts::is.xts(dt)) return(NULL)
     tsz <- .sanitize_scalar_numeric(attr(dt, "fut_tick_size"), default = 0.01)
@@ -1184,6 +1214,59 @@ bt_batch <- function(
     td <- fetch_xts_or_fallback(ticker_with_tf, base_sym)
     if (!is.null(td)) return(index(td))
     as.POSIXct(character(0))
+  }
+
+  parse_portfolio_groups <- function(groups, max_index) {
+    if (is.null(groups) || length(groups) == 0) return(list())
+    combos <- groups
+    if (!is.list(combos)) combos <- list(combos)
+    combos <- lapply(combos, function(x) {
+      vals <- stats::na.omit(as.integer(unlist(x)))
+      if (!length(vals)) return(integer())
+      vals <- vals[vals >= 1 & vals <= max_index]
+      unique(vals)
+    })
+    Filter(function(x) length(x) > 0, combos)
+  }
+
+  prepare_weight_sets <- function(weights_input, n_groups) {
+    if (n_groups == 0) return(list())
+    if (is.null(weights_input) || length(weights_input) == 0) {
+      return(vector("list", n_groups))
+    }
+    weights_list <- weights_input
+    if (!is.list(weights_list)) weights_list <- list(weights_list)
+    if (length(weights_list) == 1 && n_groups > 1) {
+      weights_list <- rep(weights_list, n_groups)
+    }
+    if (length(weights_list) < n_groups) {
+      weights_list <- c(weights_list, vector("list", n_groups - length(weights_list)))
+    } else if (length(weights_list) > n_groups) {
+      weights_list <- weights_list[seq_len(n_groups)]
+    }
+    lapply(weights_list, function(w) {
+      if (is.null(w) || length(w) == 0) numeric(0) else as.numeric(w)
+    })
+  }
+
+  resolve_weights <- function(weight_vec, n) {
+    if (n <= 0) return(numeric(0))
+    if (is.null(weight_vec) || length(weight_vec) == 0) {
+      return(rep(1, n))
+    }
+    w <- as.numeric(weight_vec)
+    if (!any(is.finite(w)) || sum(abs(w[is.finite(w)])) == 0) {
+      return(rep(1, n))
+    }
+    w <- rep_len(w, n)
+    w[!is.finite(w)] <- 0
+    w
+  }
+
+  first_finite_numeric <- function(values) {
+    vals <- suppressWarnings(as.numeric(values))
+    vals <- vals[is.finite(vals)]
+    if (length(vals) == 0) NA_real_ else vals[1]
   }
 
   with_safe_future <- function(expr_call) {
@@ -1231,9 +1314,15 @@ bt_batch <- function(
     returns_type = "Log"
   )
 
+  default_combo_rtyp <- normalize_rtype(.bt_value_at(returns_type, 1, defaults$returns_type))
+
   results_list <- list()
   returns_list <- list()
   plot_list <- list()
+  label_sequence <- character()
+  all_returns_map <- list()
+  normalize_risk_map <- list()
+  returns_type_map <- list()
 
   tickers <- as.character(tickers)
 
@@ -1299,29 +1388,26 @@ bt_batch <- function(
       one_res <- NULL
       one_ret <- NULL
       err_msg <- NULL
+      res_full <- NULL
+      selected_plot <- NULL
 
       tryCatch(
         {
           res <- with_safe_future(expr_call)
-
           if (isTRUE(only_returns)) {
-            rets_xts <- res
-            selected <- tryCatch(extract_returns(rets_xts, rtyp, norm_risk_numeric = nr), error = function(e) NULL)
-            if (is.null(selected)) {
+            res_full <- res
+            selected_plot <- tryCatch(extract_returns(res_full, rtyp, norm_risk_numeric = nr), error = function(e) NULL)
+            if (is.null(selected_plot)) {
               warning(sprintf("Could not extract returns type '%s' for %s; filling zeros.", rtyp, label))
-              idx <- index(rets_xts); selected <- zero_returns_xts(idx)
+              idx_warn <- index(res_full)
+              selected_plot <- zero_returns_xts(idx_warn)
             }
-            colnames(selected) <- label
-            one_ret <- selected
-            plot_list[[length(plot_list) + 1]] <- one_ret
+            one_ret <- selected_plot
           } else {
             one_res <- res
+            res_full <- res$rets
             if (!is.null(res$rets)) {
-              selected <- tryCatch(extract_returns(res$rets, rtyp, norm_risk_numeric = nr), error = function(e) NULL)
-              if (!is.null(selected)) {
-                colnames(selected) <- label
-                plot_list[[length(plot_list) + 1]] <- selected
-              }
+              selected_plot <- tryCatch(extract_returns(res$rets, rtyp, norm_risk_numeric = nr), error = function(e) NULL)
             }
           }
         },
@@ -1330,18 +1416,20 @@ bt_batch <- function(
         }
       )
 
-      if (!is.null(err_msg)) {
-        warning(sprintf("Backtest failed for %s: %s. Filling with zeros.", label, err_msg))
+      if (!is.null(err_msg) || is.null(res_full)) {
+        warning(sprintf("Backtest failed for %s: %s. Filling with zeros.", label, if (is.null(err_msg)) "unknown error" else err_msg))
         idx <- fallback_index(tk_tf, base_sym = tk)
-        zeros <- zero_returns_xts(idx)
-        colnames(zeros) <- label
-
+        nr_numeric <- first_finite_numeric(nr)
+        res_full <- zero_full_returns_xts(idx, normalize_target = nr_numeric)
+        selected_plot <- tryCatch(extract_returns(res_full, rtyp, norm_risk_numeric = nr_numeric), error = function(e) NULL)
+        if (is.null(selected_plot)) {
+          selected_plot <- zero_returns_xts(idx)
+        }
         if (isTRUE(only_returns)) {
-          one_ret <- zeros
-          plot_list[[length(plot_list) + 1]] <- one_ret
+          one_ret <- selected_plot
         } else {
           one_res <- list(
-            rets = zeros,
+            rets = res_full,
             stats = NULL,
             trades = NULL,
             rets_acct = NULL,
@@ -1351,15 +1439,130 @@ bt_batch <- function(
             }, error = function(e) NULL)
           )
           names(one_res) <- c("rets", "stats", "trades", "rets_acct", "mktdata")
-          plot_list[[length(plot_list) + 1]] <- zeros
         }
+      }
+
+      if (!is.null(selected_plot)) {
+        colnames(selected_plot) <- label
+        plot_list[[length(plot_list) + 1]] <- selected_plot
       }
 
       if (!is.null(one_res)) attr(one_res, "fee_mode") <- feeV
       if (!is.null(one_ret)) attr(one_ret, "fee_mode") <- feeV
 
-      if (isTRUE(only_returns)) returns_list[[length(returns_list) + 1]] <- one_ret
-      else results_list[[label]] <- one_res
+      label_sequence <- c(label_sequence, label)
+      if (!is.null(res_full)) all_returns_map[[label]] <- res_full
+      normalize_risk_map[[label]] <- nr
+      returns_type_map[[label]] <- rtyp
+
+      if (isTRUE(only_returns)) {
+        if (!is.null(one_ret)) returns_list[[length(returns_list) + 1]] <- one_ret
+      } else if (!is.null(one_res)) {
+        results_list[[label]] <- one_res
+      }
+    }
+  }
+
+  base_test_count <- length(label_sequence)
+  combos <- parse_portfolio_groups(gen_portfolio, base_test_count)
+  if (length(combos) > 0) {
+    weight_sets <- prepare_weight_sets(gen_portfolio_weights, length(combos))
+    for (combo_idx in seq_along(combos)) {
+      indices <- combos[[combo_idx]]
+      if (!length(indices)) next
+      valid_indices <- indices[indices >= 1 & indices <= base_test_count]
+      valid_indices <- unique(valid_indices)
+      if (!length(valid_indices)) next
+
+      combo_labels <- label_sequence[valid_indices]
+      rets_list <- lapply(combo_labels, function(lbl) all_returns_map[[lbl]])
+      if (any(vapply(rets_list, is.null, logical(1)))) {
+        warning(sprintf("Skipping portfolio %s due to missing component returns.", paste(valid_indices, collapse = ",")))
+        next
+      }
+
+      log_series <- vector("list", length(combo_labels))
+      for (k in seq_along(combo_labels)) {
+        lbl <- combo_labels[k]
+        rets <- rets_list[[k]]
+        nr_lbl <- normalize_risk_map[[lbl]]
+        candidate_cols <- character(0)
+        nr_val <- first_finite_numeric(nr_lbl)
+        if (is.finite(nr_val)) {
+          candidate_cols <- c(candidate_cols, paste0("Log_AdjRisk_", nr_val))
+        }
+        candidate_cols <- c(candidate_cols, "Log")
+        available <- candidate_cols[candidate_cols %in% colnames(rets)]
+        if (!length(available)) {
+          warning(sprintf("Log returns not found for component %s; skipping portfolio %s.", lbl, paste(valid_indices, collapse = ",")))
+          next
+        }
+        chosen <- available[1]
+        series <- rets[, chosen, drop = FALSE]
+        colnames(series) <- lbl
+        log_series[[k]] <- series
+      }
+
+      if (length(log_series) != length(combo_labels) || any(vapply(log_series, is.null, logical(1)))) next
+      merged_logs <- tryCatch({ do.call(xts::merge.xts, c(log_series, list(all = TRUE))) }, error = function(e) NULL)
+      if (is.null(merged_logs)) next
+      merged_matrix <- as.matrix(merged_logs)
+      if (is.null(dim(merged_matrix))) next
+      merged_matrix[is.na(merged_matrix)] <- 0
+
+      weights_vec <- resolve_weights(weight_sets[[combo_idx]], length(combo_labels))
+      weights_vec <- rep_len(weights_vec, ncol(merged_matrix))
+      combined_values <- as.numeric(merged_matrix %*% matrix(weights_vec, ncol = 1))
+      combined_log <- xts::xts(combined_values, order.by = index(merged_logs))
+      colnames(combined_log) <- "Log"
+      combined_discrete <- xts::xts(exp(combined_log) - 1, order.by = index(combined_log))
+      colnames(combined_discrete) <- "Discrete"
+      combined <- cbind(combined_discrete, combined_log)
+
+      combo_nr_values <- normalize_risk_map[combo_labels]
+      combo_nr <- first_finite_numeric(unlist(combo_nr_values))
+      if (is.finite(combo_nr)) {
+        log_norm <- tryCatch(bt_normalize_risk(combined_log, risk = combo_nr, type = "Log"), error = function(e) NULL)
+        if (!is.null(log_norm)) {
+          colnames(log_norm) <- paste0("Log_AdjRisk_", combo_nr)
+          combined <- cbind(combined, log_norm)
+        }
+        disc_norm <- tryCatch(bt_normalize_risk(combined_discrete, risk = combo_nr, type = "Discrete"), error = function(e) NULL)
+        if (!is.null(disc_norm)) {
+          colnames(disc_norm) <- paste0("Discrete_AdjRisk_", combo_nr)
+          combined <- cbind(combined, disc_norm)
+        }
+      }
+
+      combo_label <- paste0("Portfolio_", paste(valid_indices, collapse = "_"))
+      combo_rtype_candidates <- unique(unlist(returns_type_map[combo_labels]))
+      combo_rtype_candidates <- combo_rtype_candidates[!vapply(combo_rtype_candidates, is.null, logical(1))]
+      combo_rtyp <- if (length(combo_rtype_candidates) == 1) combo_rtype_candidates[[1]] else default_combo_rtyp
+
+      selected_portfolio <- tryCatch(extract_returns(combined, combo_rtyp, norm_risk_numeric = combo_nr), error = function(e) NULL)
+      if (is.null(selected_portfolio)) {
+        fallback_col <- if (identical(combo_rtyp, "Discrete")) "Discrete" else "Log"
+        selected_portfolio <- combined[, fallback_col, drop = FALSE]
+      }
+      colnames(selected_portfolio) <- combo_label
+      plot_list[[length(plot_list) + 1]] <- selected_portfolio
+
+      label_sequence <- c(label_sequence, combo_label)
+      all_returns_map[[combo_label]] <- combined
+      normalize_risk_map[[combo_label]] <- combo_nr
+      returns_type_map[[combo_label]] <- combo_rtyp
+
+      if (isTRUE(only_returns)) {
+        if (!is.null(selected_portfolio)) returns_list[[length(returns_list) + 1]] <- selected_portfolio
+      } else {
+        results_list[[combo_label]] <- list(
+          rets = combined,
+          stats = NULL,
+          trades = NULL,
+          rets_acct = NULL,
+          mktdata = NULL
+        )
+      }
     }
   }
 

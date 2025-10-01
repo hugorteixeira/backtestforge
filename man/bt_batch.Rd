@@ -25,6 +25,8 @@ bt_batch(
   hide_details = FALSE,
   returns_type = "Log",
   plot_mult = FALSE,
+  gen_portfolio = NULL,
+  gen_portfolio_weights = NULL,
   ...
 )
 }
@@ -69,6 +71,15 @@ the full backtest objects.}
 \code{"LogAdj"}, or \code{"DiscreteAdj"}).}
 
 \item{plot_mult}{Logical flag; if TRUE, plots combined results via \code{tplot()}.}
+
+\item{gen_portfolio}{Optional vector or list defining groups of result indices
+to be aggregated into synthetic portfolios. Each element (or the entire vector
+when not a list) is treated as one group, producing an additional
+\code{Portfolio_*} series built from the specified backtests.}
+
+\item{gen_portfolio_weights}{Optional weights corresponding to
+\code{gen_portfolio}. Accepts a vector (recycled) or a list mirroring the group
+structure. Missing, zero, or \code{NA} weights default to equal weighting.}
 
 \item{...}{Indicator-specific parameter vectors (e.g., \code{fast}, \code{slow}
 for moving averages).}
