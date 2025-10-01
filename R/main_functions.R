@@ -1020,6 +1020,10 @@ normalize_fee_mode <- function(val, default = "normal") {
 #'   by `gen_portfolio`. Accepts a vector (recycled) or list mirroring the group
 #'   structure. When omitted or containing only zeros/`NA`, equal weights are
 #'   assumed for the corresponding group.
+#' @param gen_portfolio_norm_risk Optional numeric vector mirroring the groups
+#'   in `gen_portfolio`, specifying the target annualised volatility for each
+#'   generated portfolio. When omitted, portfolio aggregates keep the natural
+#'   volatility of their components.
 #' @param ... Indicator-specific parameter vectors (e.g., `fast`, `slow` for
 #'   moving averages).
 #'
@@ -1050,6 +1054,7 @@ bt_batch <- function(
     plot_mult = FALSE,
     gen_portfolio = NULL,
     gen_portfolio_weights = NULL,
+    gen_portfolio_norm_risk = NULL,
     ...
 ) {
   if (!requireNamespace("xts", quietly = TRUE)) stop("Package 'xts' is required.")
@@ -1063,6 +1068,8 @@ bt_batch <- function(
     sma = as.name("bt_sma"),
     stop(sprintf("Unsupported backtest type '%s'", type), call. = FALSE)
   )
+
+  tol <- 1e-8
 
   extra_args <- list(...)
   indicator_vectors <- c(list(mup = mup, mdown = mdown), extra_args)
@@ -1223,17 +1230,83 @@ bt_batch <- function(
     as.POSIXct(character(0))
   }
 
-  parse_portfolio_groups <- function(groups, max_index) {
+  prepare_portfolio_specs <- function(groups) {
     if (is.null(groups) || length(groups) == 0) return(list())
     combos <- groups
     if (!is.list(combos)) combos <- list(combos)
-    combos <- lapply(combos, function(x) {
-      vals <- stats::na.omit(as.integer(unlist(x)))
-      if (!length(vals)) return(integer())
-      vals <- vals[vals >= 1 & vals <= max_index]
-      unique(vals)
-    })
-    Filter(function(x) length(x) > 0, combos)
+    combo_names <- names(combos)
+    if (is.null(combo_names)) {
+      combo_names <- paste0("Portfolio", seq_along(combos))
+    } else {
+      combo_names[!nzchar(combo_names)] <- paste0("Portfolio", which(!nzchar(combo_names)))
+    }
+
+    unique_ordered <- function(x) {
+      if (length(x) == 0) return(x)
+      x[!duplicated(x)]
+    }
+
+    collect_tokens <- function(item, acc_nums = integer(), acc_tokens = character()) {
+      if (is.null(item) || length(item) == 0) {
+        return(list(nums = acc_nums, tokens = acc_tokens))
+      }
+
+      append_numeric <- function(vals) {
+        vals <- vals[!is.na(vals)]
+        if (!length(vals)) return()
+        acc_nums <<- c(acc_nums, as.integer(vals))
+      }
+
+      append_token <- function(tok) {
+        if (is.null(tok) || length(tok) == 0) return()
+        tok <- trimws(tok)
+        if ((startsWith(tok, "'") && endsWith(tok, "'")) || (startsWith(tok, '"') && endsWith(tok, '"'))) {
+          tok <- substring(tok, 2, nchar(tok) - 1)
+        }
+        if (!nzchar(tok)) return()
+        parts <- strsplit(tok, "\\+")[[1]]
+        for (part in parts) {
+          part <- trimws(part)
+          if ((startsWith(part, "'") && endsWith(part, "'")) || (startsWith(part, '"') && endsWith(part, '"'))) {
+            part <- substring(part, 2, nchar(part) - 1)
+          }
+          if (!nzchar(part)) next
+          num_val <- suppressWarnings(as.numeric(part))
+          if (length(num_val) == 1 && is.finite(num_val)) {
+            append_numeric(num_val)
+          } else {
+            acc_tokens <<- c(acc_tokens, part)
+          }
+        }
+      }
+
+      if (is.numeric(item)) {
+        append_numeric(item)
+      } else if (is.character(item)) {
+        for (str in item) append_token(str)
+      } else if (is.list(item)) {
+        for (elem in item) {
+          res <- collect_tokens(elem, acc_nums, acc_tokens)
+          acc_nums <- res$nums
+          acc_tokens <- res$tokens
+        }
+      } else if (is.language(item)) {
+        append_token(deparse(item))
+      } else {
+        append_token(as.character(item))
+      }
+
+      list(nums = acc_nums, tokens = acc_tokens)
+    }
+
+    specs <- vector("list", length(combos))
+    for (i in seq_along(combos)) {
+      res <- collect_tokens(combos[[i]])
+      nums <- unique_ordered(res$nums)
+      tokens <- unique_ordered(res$tokens)
+      specs[[i]] <- list(name = combo_names[i], indices = nums, tokens = tokens)
+    }
+    specs
   }
 
   prepare_weight_sets <- function(weights_input, n_groups) {
@@ -1276,6 +1349,27 @@ bt_batch <- function(
     if (length(vals) == 0) NA_real_ else vals[1]
   }
 
+  resolve_portfolio_norms <- function(norm_input, n_groups) {
+    if (n_groups == 0) return(vector("list", 0))
+    if (is.null(norm_input) || length(norm_input) == 0) {
+      return(vector("list", n_groups))
+    }
+    norms <- norm_input
+    if (!is.list(norms)) norms <- as.list(norms)
+    if (length(norms) == 1 && n_groups > 1) {
+      norms <- rep(norms, n_groups)
+    }
+    if (length(norms) < n_groups) {
+      norms <- c(norms, vector("list", n_groups - length(norms)))
+    } else if (length(norms) > n_groups) {
+      norms <- norms[seq_len(n_groups)]
+    }
+    lapply(norms, function(val) {
+      num <- suppressWarnings(as.numeric(val)[1])
+      if (is.finite(num)) num else NULL
+    })
+  }
+
   format_risk_token <- function(value) {
     val <- suppressWarnings(as.numeric(value)[1])
     if (!is.finite(val)) {
@@ -1285,6 +1379,12 @@ bt_batch <- function(
     }
     out <- trimws(out)
     sub("\\.?0+$", "", out)
+  }
+
+  format_group_label <- function(name) {
+    if (is.null(name) || !nzchar(name)) return(NULL)
+    name <- as.character(name)[1]
+    paste0(toupper(substr(name, 1, 1)), substring(name, 2))
   }
 
   with_safe_future <- function(expr_call) {
@@ -1343,6 +1443,7 @@ bt_batch <- function(
   returns_type_map <- list()
   risk_scale_map <- list()
   risk_report <- list()
+  risk_report_map <- list()
 
   tickers <- as.character(tickers)
 
@@ -1467,9 +1568,14 @@ bt_batch <- function(
       risk_target_val <- if (!is.null(res_full)) attr(res_full, "risk_target") else NA_real_
       risk_original_val <- if (!is.null(res_full)) attr(res_full, "risk_original") else NA_real_
 
-      adjusted_risk <- if (is.finite(risk_scale_val) && is.finite(rV_numeric)) rV_numeric * risk_scale_val else NA_real_
+      base_scale_val <- suppressWarnings(as.numeric(risk_scale_val))[1]
+      if (!is.finite(base_scale_val) || base_scale_val <= 0) base_scale_val <- NA_real_
+      base_target_val <- suppressWarnings(as.numeric(risk_target_val))[1]
+      if (!is.finite(base_target_val)) base_target_val <- NA_real_
+      base_adjusted <- if (is.finite(base_scale_val) && is.finite(rV_numeric)) rV_numeric * base_scale_val else rV_numeric
+
       formatted_original_risk <- format_risk_token(rV)
-      formatted_adjusted_risk <- if (is.finite(adjusted_risk)) format_risk_token(adjusted_risk) else NA_character_
+      formatted_adjusted_risk <- if (is.finite(base_scale_val) && is.finite(base_adjusted) && abs(base_adjusted - rV_numeric) > tol) format_risk_token(base_adjusted) else NA_character_
 
       output_label <- label
       old_token <- sprintf("%s_%s", psV, formatted_original_risk)
@@ -1510,90 +1616,277 @@ bt_batch <- function(
         results_list[[output_label]] <- one_res
       }
 
-      if (is.finite(adjusted_risk)) {
-        risk_report[[length(risk_report) + 1]] <- list(
-          label = output_label,
-          ps_label = psV,
-          original = rV_numeric,
-          adjusted = adjusted_risk,
-          scale = risk_scale_val,
-          target = risk_target_val
-        )
-      }
+      risk_report[[length(risk_report) + 1]] <- list(
+        label = output_label,
+        ps_label = psV,
+        original = rV_numeric,
+        base_adjusted = base_adjusted,
+        final_adjusted = base_adjusted,
+        base_scale = base_scale_val,
+        portfolio_scale = NA_real_,
+        base_target = base_target_val,
+        portfolio_target = NA_real_,
+        is_portfolio = FALSE
+      )
+      risk_report_map[[output_label]] <- length(risk_report)
     }
   }
 
-  base_test_count <- length(label_sequence)
-  combos <- parse_portfolio_groups(gen_portfolio, base_test_count)
-  if (length(combos) > 0) {
-    weight_sets <- prepare_weight_sets(gen_portfolio_weights, length(combos))
-    for (combo_idx in seq_along(combos)) {
-      indices <- combos[[combo_idx]]
-      if (!length(indices)) next
-      valid_indices <- indices[indices >= 1 & indices <= base_test_count]
-      valid_indices <- unique(valid_indices)
-      if (!length(valid_indices)) next
+  portfolio_alias_map <- list()
+  external_returns_cache <- list()
 
-      combo_labels <- label_sequence[valid_indices]
-      rets_list <- lapply(combo_labels, function(lbl) all_returns_map[[lbl]])
-      if (any(vapply(rets_list, is.null, logical(1)))) {
-        warning(sprintf("Skipping portfolio %s due to missing component returns.", paste(valid_indices, collapse = ",")))
+  all_idx_values <- unlist(lapply(all_returns_map, function(x) if (is.null(x)) NULL else index(x)), use.names = FALSE)
+  if (length(all_idx_values)) {
+    default_start_date <- as.Date(min(all_idx_values))
+    default_end_date <- as.Date(max(all_idx_values))
+  } else {
+    default_start_date <- Sys.Date() - 365
+    default_end_date <- Sys.Date()
+  }
+  default_start_chr <- format(default_start_date, "%Y-%m-%d")
+  default_end_chr <- format(default_end_date, "%Y-%m-%d")
+  data_env <- .get_bt_data_env()
+
+  resolve_alias_label <- function(token) {
+    if (is.null(token) || !nzchar(token)) return(NULL)
+    token_trim <- trimws(as.character(token)[1])
+    if (!nzchar(token_trim)) return(NULL)
+    keys <- names(portfolio_alias_map)
+    if (length(keys)) {
+      idx <- match(tolower(token_trim), tolower(keys))
+      if (!is.na(idx)) return(portfolio_alias_map[[keys[idx]]])
+    }
+    map_keys <- names(all_returns_map)
+    if (length(map_keys)) {
+      idx <- match(tolower(token_trim), tolower(map_keys))
+      if (!is.na(idx)) return(map_keys[idx])
+    }
+    NULL
+  }
+
+  build_return_matrix <- function(log_xts) {
+    discrete <- xts::xts(exp(as.numeric(log_xts)) - 1, order.by = index(log_xts))
+    colnames(discrete) <- "Discrete"
+    out <- cbind(discrete, log_xts)
+    attr(out, "risk_scale") <- NA_real_
+    attr(out, "risk_target") <- NA_real_
+    attr(out, "risk_original") <- NA_real_
+    out
+  }
+
+  fetch_external_returns <- function(symbol) {
+    if (is.null(symbol) || !nzchar(symbol)) return(NULL)
+    symbol <- as.character(symbol)[1]
+    if (!is.null(all_returns_map[[symbol]])) return(all_returns_map[[symbol]])
+    if (!is.null(external_returns_cache[[symbol]])) return(external_returns_cache[[symbol]])
+
+    clean_xts <- function(obj) {
+      if (is.null(obj)) return(NULL)
+      if (!xts::is.xts(obj)) {
+        obj <- try(xts::as.xts(obj), silent = TRUE)
+        if (inherits(obj, "try-error") || is.null(obj)) return(NULL)
+      }
+      obj
+    }
+
+    fallback_yahoo <- function(sym) {
+      if (!requireNamespace("quantmod", quietly = TRUE)) return(NULL)
+      tryCatch(
+        {
+          suppressWarnings(
+            quantmod::getSymbols(sym,
+                                 src = "yahoo",
+                                 auto.assign = FALSE,
+                                 from = as.Date(default_start_chr),
+                                 to = as.Date(default_end_chr))
+          )
+        },
+        error = function(e) NULL
+      )
+    }
+
+    data <- fallback_yahoo(symbol)
+    data <- clean_xts(data)
+
+    if (is.null(data)) {
+      data <- try(sm_get_data(symbol,
+                              future_history = FALSE,
+                              single_xts = TRUE,
+                              local_data = FALSE),
+                  silent = TRUE)
+      if (inherits(data, "try-error")) data <- NULL
+    }
+
+    data <- clean_xts(data)
+
+    if (is.null(data)) {
+      data <- try(
+        .bt_fetch_ticker_data(symbol,
+                              data_env = data_env,
+                              start_date = default_start_chr,
+                              end_date = default_end_chr,
+                              clean_di = TRUE),
+        silent = TRUE
+      )
+      if (inherits(data, "try-error")) data <- NULL
+    }
+
+    data <- clean_xts(data)
+    if (is.null(data) || NROW(data) < 2) return(NULL)
+
+    if (!all(c("Log", "Discrete") %in% colnames(data))) {
+      data <- .use_close_only(data)
+      close_col <- NULL
+      if ("Close" %in% colnames(data)) close_col <- data$Close
+      if (is.null(close_col)) close_col <- try(Cl(data), silent = TRUE)
+      if (inherits(close_col, "try-error") || is.null(close_col)) close_col <- data[, 1, drop = FALSE]
+      close_col <- zoo::na.locf(close_col, na.rm = FALSE)
+      if (NROW(close_col) < 2) return(NULL)
+      log_ret <- diff(log(as.numeric(close_col)))
+      log_xts <- xts::xts(log_ret, order.by = index(close_col)[-1])
+      colnames(log_xts) <- "Log"
+      combined <- build_return_matrix(log_xts)
+    } else {
+      discrete <- data[, "Discrete", drop = FALSE]
+      log_xts <- data[, "Log", drop = FALSE]
+      combined <- cbind(discrete, log_xts)
+      attr(combined, "risk_scale") <- NA_real_
+      attr(combined, "risk_target") <- NA_real_
+      attr(combined, "risk_original") <- NA_real_
+    }
+
+    external_returns_cache[[symbol]] <<- combined
+    combined
+  }
+
+  base_test_count <- length(label_sequence)
+  portfolio_specs <- prepare_portfolio_specs(gen_portfolio)
+  if (length(portfolio_specs) > 0) {
+    weight_sets <- prepare_weight_sets(gen_portfolio_weights, length(portfolio_specs))
+    portfolio_norms <- resolve_portfolio_norms(gen_portfolio_norm_risk, length(portfolio_specs))
+    for (combo_idx in seq_along(portfolio_specs)) {
+      spec <- portfolio_specs[[combo_idx]]
+
+      numeric_indices <- spec$indices
+      if (length(numeric_indices)) {
+        numeric_indices <- numeric_indices[numeric_indices >= 1 & numeric_indices <= base_test_count]
+        numeric_indices <- numeric_indices[!duplicated(numeric_indices)]
+      }
+
+      tokens <- spec$tokens
+      component_labels <- character()
+      component_returns <- list()
+
+      if (length(numeric_indices)) {
+        for (idx in numeric_indices) {
+          if (idx > length(label_sequence)) next
+          lbl <- label_sequence[idx]
+          ret_obj <- all_returns_map[[lbl]]
+          if (is.null(ret_obj)) next
+          component_labels <- c(component_labels, lbl)
+          component_returns[[length(component_returns) + 1]] <- ret_obj
+        }
+      }
+
+      if (length(tokens)) {
+        for (tok in tokens) {
+          resolved_label <- resolve_alias_label(tok)
+          ret_obj <- NULL
+          if (!is.null(resolved_label)) {
+            ret_obj <- all_returns_map[[resolved_label]]
+            if (!is.null(ret_obj)) {
+              component_labels <- c(component_labels, resolved_label)
+              component_returns[[length(component_returns) + 1]] <- ret_obj
+              next
+            }
+          }
+          ret_obj <- fetch_external_returns(tok)
+          if (is.null(ret_obj)) {
+            warning(sprintf("Unable to resolve component '%s' for portfolio '%s'; skipping.", tok, spec$name))
+            next
+          }
+          label_key <- as.character(tok)[1]
+          all_returns_map[[label_key]] <- ret_obj
+          normalize_risk_map[[label_key]] <- NA_real_
+          component_labels <- c(component_labels, label_key)
+          component_returns[[length(component_returns) + 1]] <- ret_obj
+        }
+      }
+
+      if (!length(component_returns)) {
+        warning(sprintf("Portfolio '%s' has no valid components; skipping.", spec$name))
         next
       }
 
-      log_series <- lapply(seq_along(combo_labels), function(k) {
-        lbl <- combo_labels[k]
-        rets <- rets_list[[k]]
-        if (!"Log" %in% colnames(rets)) {
-          warning(sprintf("Log returns not found for component %s; skipping portfolio %s.", lbl, paste(valid_indices, collapse = ",")))
-          return(NULL)
-        }
+      log_series <- lapply(seq_along(component_returns), function(k) {
+        rets <- component_returns[[k]]
+        if (!"Log" %in% colnames(rets)) return(NULL)
         series <- rets[, "Log", drop = FALSE]
-        colnames(series) <- lbl
+        colnames(series) <- component_labels[k]
         series
       })
+      if (any(vapply(log_series, is.null, logical(1)))) {
+        warning(sprintf("Log returns not found for some components of portfolio '%s'; skipping.", spec$name))
+        next
+      }
 
-      if (any(vapply(log_series, is.null, logical(1)))) next
       merged_logs <- tryCatch({ do.call(xts::merge.xts, c(log_series, list(all = TRUE))) }, error = function(e) NULL)
       if (is.null(merged_logs)) next
       merged_matrix <- as.matrix(merged_logs)
       if (is.null(dim(merged_matrix))) next
       merged_matrix[is.na(merged_matrix)] <- 0
 
-      weights_vec <- resolve_weights(weight_sets[[combo_idx]], length(combo_labels))
+      weights_vec <- resolve_weights(weight_sets[[combo_idx]], length(component_returns))
       weights_vec <- rep_len(weights_vec, ncol(merged_matrix))
       combined_values <- as.numeric(merged_matrix %*% matrix(weights_vec, ncol = 1))
       combined_log <- xts::xts(combined_values, order.by = index(merged_logs))
       colnames(combined_log) <- "Log"
-      combined_discrete <- xts::xts(exp(as.numeric(combined_log)) - 1, order.by = index(combined_log))
-      colnames(combined_discrete) <- "Discrete"
+      combined <- build_return_matrix(combined_log)
 
-      combo_nr_values <- normalize_risk_map[combo_labels]
-      combo_nr <- first_finite_numeric(unlist(combo_nr_values))
+      override <- portfolio_norms[[combo_idx]]
+      combo_target <- if (!is.null(override)) suppressWarnings(as.numeric(override)[1]) else NA_real_
       combo_scale <- NA_real_
       combo_orig_vol <- NA_real_
-      if (is.finite(combo_nr)) {
-        log_norm <- tryCatch(bt_normalize_risk(combined_log, risk = combo_nr, type = "Log"), error = function(e) NULL)
+      if (is.finite(combo_target)) {
+        log_norm <- tryCatch(bt_normalize_risk(combined_log, risk = combo_target, type = "Log"), error = function(e) NULL)
         if (!is.null(log_norm)) {
           combo_scale <- attr(log_norm, "scale_factor")
           combo_orig_vol <- attr(log_norm, "original_vol")
           combined_log <- log_norm
-          combined_discrete <- xts::xts(exp(as.numeric(combined_log)) - 1, order.by = index(combined_log))
-          colnames(combined_discrete) <- "Discrete"
+          combined <- build_return_matrix(combined_log)
         }
       }
 
-      combined <- cbind(combined_discrete, combined_log)
       attr(combined, "risk_scale") <- combo_scale
-      attr(combined, "risk_target") <- combo_nr
+      attr(combined, "risk_target") <- combo_target
       attr(combined, "risk_original") <- if (is.finite(combo_orig_vol)) combo_orig_vol * 100 else NA_real_
 
-      combo_label <- paste0("Portfolio_", paste(valid_indices, collapse = "_"))
-      combo_rtype_candidates <- unique(unlist(returns_type_map[combo_labels]))
+      sanitize_label_component <- function(x) {
+        x <- gsub("[^A-Za-z0-9]", "", x)
+        if (!nzchar(x)) x <- "X"
+        x
+      }
+
+      display_parts <- character()
+      if (length(numeric_indices)) display_parts <- c(display_parts, as.character(numeric_indices))
+      if (length(tokens)) display_parts <- c(display_parts, vapply(tokens, sanitize_label_component, character(1)))
+      if (!length(display_parts)) display_parts <- sanitize_label_component(component_labels)
+
+      raw_name <- spec$name
+      group_label <- format_group_label(raw_name)
+      combo_label <- if (is.null(group_label) || !nzchar(group_label)) {
+        paste0("Portfolio_", paste(display_parts, collapse = "_"))
+      } else {
+        paste0(group_label, "_", paste(display_parts, collapse = "_"))
+      }
+
+      combo_rtype_candidates <- unique(unlist(returns_type_map[component_labels]))
       combo_rtype_candidates <- combo_rtype_candidates[!vapply(combo_rtype_candidates, is.null, logical(1))]
+      combo_rtype_candidates <- combo_rtype_candidates[!is.na(combo_rtype_candidates)]
       combo_rtyp <- if (length(combo_rtype_candidates) == 1) combo_rtype_candidates[[1]] else default_combo_rtyp
 
-      selected_portfolio <- tryCatch(extract_returns(combined, combo_rtyp, norm_risk_numeric = combo_nr), error = function(e) NULL)
+      norm_arg <- if (is.finite(combo_target)) combo_target else NULL
+      selected_portfolio <- tryCatch(extract_returns(combined, combo_rtyp, norm_risk_numeric = norm_arg), error = function(e) NULL)
       if (is.null(selected_portfolio)) {
         fallback_col <- if (identical(combo_rtyp, "Discrete")) "Discrete" else "Log"
         selected_portfolio <- combined[, fallback_col, drop = FALSE]
@@ -1603,9 +1896,54 @@ bt_batch <- function(
 
       label_sequence <- c(label_sequence, combo_label)
       all_returns_map[[combo_label]] <- combined
-      normalize_risk_map[[combo_label]] <- combo_nr
+      normalize_risk_map[[combo_label]] <- combo_target
       returns_type_map[[combo_label]] <- combo_rtyp
       risk_scale_map[[combo_label]] <- combo_scale
+
+      if (!is.null(raw_name) && nzchar(raw_name)) {
+        portfolio_alias_map[[raw_name]] <- combo_label
+      }
+      if (!is.null(group_label) && nzchar(group_label)) {
+        portfolio_alias_map[[group_label]] <- combo_label
+      }
+
+      orig_risk <- attr(combined, "risk_original")
+      if (!is.finite(orig_risk)) orig_risk <- NA_real_
+      final_adjusted <- if (is.finite(combo_scale) && is.finite(orig_risk)) orig_risk * combo_scale else if (is.finite(combo_target)) combo_target else orig_risk
+      risk_report[[length(risk_report) + 1]] <- list(
+        label = combo_label,
+        ps_label = NA_character_,
+        original = orig_risk,
+        base_adjusted = orig_risk,
+        final_adjusted = final_adjusted,
+        base_scale = NA_real_,
+        portfolio_scale = if (is.finite(combo_scale)) combo_scale else NA_real_,
+        base_target = NA_real_,
+        portfolio_target = combo_target,
+        is_portfolio = TRUE
+      )
+
+      if (!is.null(override) && is.finite(combo_scale)) {
+        for (member in unique(component_labels)) {
+          idx <- risk_report_map[[member]]
+          if (!is.null(idx)) {
+            rec <- risk_report[[idx]]
+            current_scale <- rec$portfolio_scale
+            if (is.finite(current_scale)) {
+              rec$portfolio_scale <- current_scale * combo_scale
+            } else {
+              rec$portfolio_scale <- combo_scale
+            }
+            rec$portfolio_target <- combo_target
+            base_adj <- rec$base_adjusted
+            if (!is.finite(base_adj)) base_adj <- rec$original
+            if (is.finite(base_adj) && is.finite(rec$portfolio_scale)) {
+              rec$final_adjusted <- base_adj * rec$portfolio_scale
+            }
+            risk_report[[idx]] <- rec
+          }
+        }
+      }
 
       if (isTRUE(only_returns)) {
         if (!is.null(selected_portfolio)) returns_list[[length(returns_list) + 1]] <- selected_portfolio
@@ -1620,16 +1958,58 @@ bt_batch <- function(
       }
     }
   }
-
   if (length(risk_report) > 0) {
     cat("\nRisk normalization impact (position sizing):\n")
     for (rec in risk_report) {
-      orig_txt <- format_risk_token(rec$original)
-      adj_txt <- format_risk_token(rec$adjusted)
-      scale_txt <- if (is.finite(rec$scale)) sprintf("%.3fx", rec$scale) else "N/A"
-      target_txt <- if (is.finite(rec$target)) paste0(format_risk_token(rec$target), "%") else "N/A"
-      cat(sprintf(" - %s: ps_risk_value %s -> %s (scale %s, target %s)\n",
-                  rec$label, orig_txt, adj_txt, scale_txt, target_txt))
+      descriptor <- if (isTRUE(rec$is_portfolio)) "portfolio risk" else "ps_risk_value"
+      orig_txt <- if (is.finite(rec$original)) format_risk_token(rec$original) else "NA"
+      line <- sprintf(" - %s: %s %s", rec$label, descriptor, orig_txt)
+
+      base_step <- !isTRUE(rec$is_portfolio) && is.finite(rec$base_scale) && is.finite(rec$base_adjusted) && abs(rec$base_adjusted - rec$original) > tol
+      if (base_step) {
+        base_txt <- format_risk_token(rec$base_adjusted)
+        base_scale_txt <- sprintf("%.3fx", rec$base_scale)
+        base_target_txt <- if (is.finite(rec$base_target)) paste0(format_risk_token(rec$base_target), "%") else NULL
+        if (is.null(base_target_txt)) {
+          line <- sprintf("%s -> %s (normalize_risk %s)", line, base_txt, base_scale_txt)
+        } else {
+          line <- sprintf("%s -> %s (normalize_risk %s, target %s)", line, base_txt, base_scale_txt, base_target_txt)
+        }
+      }
+
+      final_step <- FALSE
+      if (isTRUE(rec$is_portfolio)) {
+        if (is.finite(rec$portfolio_scale) && is.finite(rec$final_adjusted) && (is.na(rec$original) || abs(rec$final_adjusted - rec$original) > tol)) {
+          final_step <- TRUE
+          final_txt <- format_risk_token(rec$final_adjusted)
+          port_scale_txt <- sprintf("%.3fx", rec$portfolio_scale)
+          port_target_txt <- if (is.finite(rec$portfolio_target)) paste0(format_risk_token(rec$portfolio_target), "%") else NULL
+          if (is.null(port_target_txt)) {
+            line <- sprintf("%s -> %s (portfolio %s)", line, final_txt, port_scale_txt)
+          } else {
+            line <- sprintf("%s -> %s (portfolio %s, target %s)", line, final_txt, port_scale_txt, port_target_txt)
+          }
+        }
+      } else {
+        if (is.finite(rec$portfolio_scale) && is.finite(rec$final_adjusted) && abs(rec$final_adjusted - rec$base_adjusted) > tol) {
+          final_step <- TRUE
+          final_txt <- format_risk_token(rec$final_adjusted)
+          port_scale_txt <- sprintf("%.3fx", rec$portfolio_scale)
+          port_target_txt <- if (is.finite(rec$portfolio_target)) paste0(format_risk_token(rec$portfolio_target), "%") else NULL
+          if (is.null(port_target_txt)) {
+            line <- sprintf("%s -> %s (portfolio %s)", line, final_txt, port_scale_txt)
+          } else {
+            line <- sprintf("%s -> %s (portfolio %s, target %s)", line, final_txt, port_scale_txt, port_target_txt)
+          }
+        }
+      }
+
+      if (!base_step && !final_step) {
+        note <- if (isTRUE(rec$is_portfolio)) " (no normalization applied)" else " (no normalization applied)"
+        line <- paste0(line, note)
+      }
+
+      cat(line, "\n")
     }
   }
 

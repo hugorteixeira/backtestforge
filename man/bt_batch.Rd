@@ -27,6 +27,7 @@ bt_batch(
   plot_mult = FALSE,
   gen_portfolio = NULL,
   gen_portfolio_weights = NULL,
+  gen_portfolio_norm_risk = NULL,
   ...
 )
 }
@@ -80,6 +81,11 @@ when not a list) is treated as one group, producing an additional
 \item{gen_portfolio_weights}{Optional weights corresponding to
 \code{gen_portfolio}. Accepts a vector (recycled) or a list mirroring the group
 structure. Missing, zero, or \code{NA} weights default to equal weighting.}
+
+\item{gen_portfolio_norm_risk}{Optional numeric vector mirroring the groups in
+\code{gen_portfolio}, specifying the target annualised volatility for each
+generated portfolio. When omitted, portfolio aggregates keep their natural
+risk.}
 
 \item{...}{Indicator-specific parameter vectors (e.g., \code{fast}, \code{slow}
 for moving averages).}
