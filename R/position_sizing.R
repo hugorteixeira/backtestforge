@@ -11,40 +11,57 @@
 #' @param cal Optional `bizdays` calendar. If `NULL`, uses `"Brazil/ANBIMA"`.
 #' @return A list with elements: `valid_days`, `pu`, `tick_size`, `tick_value`.
 #' @keywords internal
-.calculate_futures_di_notional <- function(rates,maturity_date,basis_date = Sys.Date(),cal = NULL) {
+.calculate_futures_di_notional <- function(
+    rates,
+    maturity_date,
+    basis_date = Sys.Date(),
+    cal = NULL,
+    rule_change_date = as.Date("2025-08-28")
+) {
+  # 0) Calendar
   if (is.null(cal)) {
-    cal <- create.calendar(
+    cal <- bizdays::create.calendar(
       name      = "Brazil/ANBIMA",
-      holidays  = holidays("Brazil/ANBIMA"),
+      holidays  = bizdays::holidays("Brazil/ANBIMA"),
       weekdays  = c("saturday", "sunday")
     )
   }
-  # 1) n of valid days
+  basis_date <- as.Date(basis_date)
+
+  # 1) Business days (n) and months to maturity (mm)
   if (inherits(maturity_date, "Date")) {
-    n  <- bizdays(basis_date, maturity_date, cal)
-    mm <- interval(basis_date, maturity_date) %/% months(1)
+    md <- maturity_date
+    n  <- bizdays::bizdays(basis_date, md, cal)
+    mm <- lubridate::interval(basis_date, md) %/% months(1)
   } else if (is.numeric(maturity_date)) {
+    md <- NULL
     n  <- as.integer(maturity_date)
     mm <- n / 21
   } else {
-    stop("'maturity_date' has to be a number of days or Date.")
+    stop("'maturity_date' must be a number of business days or Date.")
   }
-  # 2) calculate di rates
-  tick_size <- if      (mm <=  3) 0.001
-  else if (mm <= 60) 0.005
-  else               0.010
-  # 3) PU
+
+  if (n <= 0) stop("Number of business days to maturity (n) must be positive.")
+
+  # 2) Tick-size (depends on regime at basis_date)
+  tick_size <- .get_di_tick_size(mm, basis_date, rule_change_date)
+
+  # 3) PU from rate
+  rates <- as.numeric(rates)
+  if (any(!is.finite(rates) | rates <= -100)) stop("'rates' must be finite and > -100%.")
   pu <- 1e5 / (1 + rates/100)^(n/252)
-  # 4) tick-value
-  deriv <- (n/252) * 1e5/100 * (1 + rates/100)^(-(n/252) - 1)
-  tick_value <- deriv * tick_size
-  # 5) return
-  return(list(
-    valid_days  = n,
-    pu          = as.numeric(pu),
-    tick_size   = tick_size,
-    tick_value  = as.numeric(tick_value)
-  ))
+
+  # 4) Tick-value (magnitude)
+  deriv_pp   <- -(n/252) * pu / (100 * (1 + rates/100))
+  tick_value <- abs(deriv_pp) * tick_size
+
+  # 5) Return (no rounding for precision)
+  list(
+    valid_days = n,
+    pu         = as.numeric(pu),        # PU
+    tick_size  = tick_size,             # percent points per tick
+    tick_value = as.numeric(tick_value) # PU points per tick
+  )
 }
 
 #' DI futures rate and tick value from PU
@@ -59,47 +76,77 @@
 #' @param cal Optional `bizdays` calendar. If `NULL`, uses `"Brazil/ANBIMA"`.
 #' @return A list with elements: `valid_days`, `rates`, `tick_size`, `tick_value`.
 #' @keywords internal
-.calculate_futures_di_rates <- function(pu, maturity_date, basis_date = Sys.Date(), cal = NULL) {
-  # 0) standard calendar
-
+.calculate_futures_di_rates <- function(
+    pu,
+    maturity_date,
+    basis_date = Sys.Date(),
+    cal = NULL,
+    rule_change_date = as.Date("2025-08-01")
+) {
+  # 0) Calendar
   if (is.null(cal)) {
-    cal <- create.calendar(
+    cal <- bizdays::create.calendar(
       name      = "Brazil/ANBIMA",
-      holidays  = holidays("Brazil/ANBIMA"),
+      holidays  = bizdays::holidays("Brazil/ANBIMA"),
       weekdays  = c("saturday", "sunday")
     )
   }
+  basis_date <- as.Date(basis_date)
 
-
-  # 1) valid days
+  # 1) Business days (n) and months to maturity (mm)
   if (inherits(maturity_date, "Date")) {
-    n  <- bizdays(basis_date, maturity_date, cal)
-    mm <- lubridate::interval(basis_date, maturity_date) %/% months(1)
+    md <- maturity_date
+    n  <- bizdays::bizdays(basis_date, md, cal)
+    mm <- lubridate::interval(basis_date, md) %/% lubridate::months(1)
   } else if (is.numeric(maturity_date)) {
+    md <- NULL
     n  <- as.integer(maturity_date)
     mm <- n / 21
   } else {
-    stop("'maturity_date' has to be a number of days or Date.")
+    md <- try(as.Date(maturity_date), silent = TRUE)
+    if (inherits(md, "try-error") || is.na(md)) {
+      stop("'maturity_date' must be Date, a number of business days, or coercible to Date.")
+    }
+    n  <- bizdays::bizdays(basis_date, md, cal)
+    mm <- lubridate::interval(basis_date, md) %/% months(1)
   }
 
-  # 2) tick-size
-  tick_size <- if      (mm <=  3) 0.001
-  else if (mm <= 60) 0.005
-  else               0.010
+  if (n <= 0) stop("Number of business days to maturity (n) must be positive.")
 
-  rates <- 100 * ( (1e5 / pu)^(252 / n) - 1 )
+  # 2) Tick-size (depends on regime at basis_date)
+  tick_size <- .get_di_tick_size(mm, basis_date, rule_change_date)
 
-  deriv       <- (n/252) * 1e5/100 * (1 + rates/100)^(-(n/252) - 1)
-  tick_value  <- deriv * tick_size
+  # 3) Rate from PU
+  pu <- as.numeric(pu)
+  if (any(!is.finite(pu) | pu <= 0)) stop("'pu' must be positive and finite.")
 
-  # 5) return
-  return(list(
-    valid_days  = n,
-    rates        = round(as.numeric(rates),3),
-    tick_size   = tick_size,
-    tick_value  = round(as.numeric(tick_value),3)
-  ))
+  rates <- 100 * ((1e5 / pu)^(252 / n) - 1)  # percent
+
+  # 4) Tick-value (magnitude), using dPU/d(rate in percentage points)
+  # dPU/d(r%) = -(n/252) * PU / (100 * (1 + r%/100))
+  deriv_pp   <- -(n/252) * pu / (100 * (1 + rates/100))
+  tick_value <- abs(deriv_pp) * tick_size
+
+  # 5) Return (no rounding for precision)
+  list(
+    valid_days = n,
+    rates      = as.numeric(rates),     # percent
+    tick_size  = tick_size,             # percent points per tick
+    tick_value = as.numeric(tick_value) # PU points per tick
+  )
 }
+.get_di_tick_size <- function(mm, basis_date, rule_change_date = as.Date("2025-08-28")) {
+  basis_date <- as.Date(basis_date)
+  if (basis_date < rule_change_date) {
+    # Old rule (pre-change): 0–3m: 0.001; 3–60m: 0.005; >60m: 0.010
+    if (mm <= 3) 0.001 else if (mm <= 60) 0.005 else 0.010
+  } else {
+    # New rule (post-change): 0–3m: 0.001; >3m: 0.005 (no 0.010 tier)
+    if (mm <= 3) 0.001 else 0.005
+  }
+}
+
+
 
 #' Fixed contracts order-sizing function
 #'
@@ -211,7 +258,7 @@
                                         portfolio, symbol,
                                         tradeSize , maxSize,
                                         integerQty = TRUE, prefer = "Close", risk,
-                                        reinvest = FALSE, start_capital = 1000000,
+                                        reinvest = FALSE, start_capital = 10000000,
                                         maxQty = NA,
                                         maxQtyBySymbol = NULL,
                                         minRiskPct = 0.0005,
@@ -592,7 +639,7 @@
     return(-1 * (((0.1 * price) * (multiplier / 100)) + fees) * qty)
   } else if (!is.null(matched_pattern_b) && matched_pattern_b %in% c("DI1")) {
     #print("DI1 futures detected.")
-    return(-1 * (qty * fees * 2.5))
+    return(-1 * (qty * fees * 1.25))
 
   }
   #print("Other detected.")

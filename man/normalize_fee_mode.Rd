@@ -16,7 +16,7 @@ Character scalar, either "normal" or "nofee".
 }
 \description{
 Converts user-facing strings (e.g. "no fee", "with fees") into canonical
-modes understood by \code{bt_eldoc}/\code{bt_eldoc_batch}. Defaults to "normal" when
+modes understood by \code{bt_eldoc}/\code{bt_batch}. Defaults to "normal" when
 the value is missing or unrecognised.
 }
 \keyword{internal}
