@@ -10,7 +10,16 @@
 }
 
 .bt_value_at <- function(vec, i, default_val) {
-  if (is.null(vec) || length(vec) < i) default_val else vec[[i]]
+  if (is.null(vec) || length(vec) == 0) {
+    return(default_val)
+  }
+  if (length(vec) == 1) {
+    return(vec[[1]])
+  }
+  if (length(vec) < i) {
+    return(default_val)
+  }
+  vec[[i]]
 }
 
 .bt_clean_di_column <- function(xts_object, column_name, predicate) {
@@ -940,6 +949,11 @@ bt_normalize_risk <- function(xts, risk = 10, type = c("Discrete", "Log")) {
     colnames(out) <- "Discrete"
   }
 
+  attr(out, "scale_factor") <- scale_factor
+  attr(out, "original_vol") <- vol_ann
+  attr(out, "target_vol") <- target_vol_ann
+  attr(out, "target_risk_pct") <- risk
+
   out
 }
 
@@ -1166,21 +1180,14 @@ bt_batch <- function(
 
   zero_full_returns_xts <- function(idx, normalize_target = NA_real_) {
     ob <- idx_to_posixct(idx); n <- length(ob)
-    base <- xts::xts(matrix(0, nrow = n, ncol = 2), order.by = ob)
-    colnames(base) <- c("Discrete", "Log")
-    if (n == 0) return(base)
-    if (is.finite(normalize_target)) {
-      log_norm <- tryCatch(bt_normalize_risk(base[, "Log", drop = FALSE], risk = normalize_target, type = "Log"), error = function(e) NULL)
-      if (!is.null(log_norm)) {
-        colnames(log_norm) <- paste0("Log_AdjRisk_", normalize_target)
-        base <- cbind(base, log_norm)
-      }
-      disc_norm <- tryCatch(bt_normalize_risk(base[, "Discrete", drop = FALSE], risk = normalize_target, type = "Discrete"), error = function(e) NULL)
-      if (!is.null(disc_norm)) {
-        colnames(disc_norm) <- paste0("Discrete_AdjRisk_", normalize_target)
-        base <- cbind(base, disc_norm)
-      }
-    }
+    discrete <- xts::xts(matrix(0, nrow = n, ncol = 1), order.by = ob)
+    colnames(discrete) <- "Discrete"
+    log_xts <- xts::xts(matrix(0, nrow = n, ncol = 1), order.by = ob)
+    colnames(log_xts) <- "Log"
+    base <- cbind(discrete, log_xts)
+    attr(base, "risk_scale") <- NA_real_
+    attr(base, "risk_target") <- normalize_target
+    attr(base, "risk_original") <- NA_real_
     base
   }
 
@@ -1269,6 +1276,17 @@ bt_batch <- function(
     if (length(vals) == 0) NA_real_ else vals[1]
   }
 
+  format_risk_token <- function(value) {
+    val <- suppressWarnings(as.numeric(value)[1])
+    if (!is.finite(val)) {
+      out <- as.character(value)[1]
+    } else {
+      out <- format(val, trim = TRUE, scientific = FALSE)
+    }
+    out <- trimws(out)
+    sub("\\.?0+$", "", out)
+  }
+
   with_safe_future <- function(expr_call) {
     safe_future <- function(primary_id, tick_size = NULL, multiplier = NULL, maturity = NULL, currency = "USD", ...) {
       if (!requireNamespace("FinancialInstrument", quietly = TRUE)) {
@@ -1323,6 +1341,8 @@ bt_batch <- function(
   all_returns_map <- list()
   normalize_risk_map <- list()
   returns_type_map <- list()
+  risk_scale_map <- list()
+  risk_report <- list()
 
   tickers <- as.character(tickers)
 
@@ -1343,6 +1363,7 @@ bt_batch <- function(
       indicator_args_i <- module$resolve_indicator_args(indicator_candidates)
       indicator_suffix <- if (!is.null(module$batch_suffix)) module$batch_suffix(indicator_args_i) else paste(indicator_args_i, collapse = "_")
       rV   <- .bt_value_at(mps_risk_value, i, defaults$mps_risk_value)
+      rV_numeric <- suppressWarnings(as.numeric(rV))[1]
       psV  <- .bt_value_at(mps, i, defaults$mps)
       fee_raw <- .bt_value_at(fee, i, defaults$fee)
       feeV <- normalize_fee_mode(fee_raw)
@@ -1442,23 +1463,62 @@ bt_batch <- function(
         }
       }
 
+      risk_scale_val <- if (!is.null(res_full)) attr(res_full, "risk_scale") else NA_real_
+      risk_target_val <- if (!is.null(res_full)) attr(res_full, "risk_target") else NA_real_
+      risk_original_val <- if (!is.null(res_full)) attr(res_full, "risk_original") else NA_real_
+
+      adjusted_risk <- if (is.finite(risk_scale_val) && is.finite(rV_numeric)) rV_numeric * risk_scale_val else NA_real_
+      formatted_original_risk <- format_risk_token(rV)
+      formatted_adjusted_risk <- if (is.finite(adjusted_risk)) format_risk_token(adjusted_risk) else NA_character_
+
+      output_label <- label
+      old_token <- sprintf("%s_%s", psV, formatted_original_risk)
+      if (!is.na(formatted_adjusted_risk)) {
+        new_token <- sprintf("%s%s_aj%s", psV, formatted_original_risk, formatted_adjusted_risk)
+        if (grepl(old_token, output_label, fixed = TRUE)) {
+          output_label <- sub(old_token, new_token, output_label, fixed = TRUE)
+        } else {
+          output_label <- paste0(output_label, "_aj", formatted_adjusted_risk)
+        }
+      }
+
       if (!is.null(selected_plot)) {
-        colnames(selected_plot) <- label
+        colnames(selected_plot) <- output_label
         plot_list[[length(plot_list) + 1]] <- selected_plot
       }
 
       if (!is.null(one_res)) attr(one_res, "fee_mode") <- feeV
       if (!is.null(one_ret)) attr(one_ret, "fee_mode") <- feeV
 
-      label_sequence <- c(label_sequence, label)
-      if (!is.null(res_full)) all_returns_map[[label]] <- res_full
-      normalize_risk_map[[label]] <- nr
-      returns_type_map[[label]] <- rtyp
+      label_sequence <- c(label_sequence, output_label)
+      if (!is.null(res_full)) {
+        all_returns_map[[output_label]] <- res_full
+        attr(all_returns_map[[output_label]], "risk_scale") <- risk_scale_val
+        attr(all_returns_map[[output_label]], "risk_target") <- risk_target_val
+        attr(all_returns_map[[output_label]], "risk_original") <- risk_original_val
+      }
+      normalize_risk_map[[output_label]] <- risk_target_val
+      returns_type_map[[output_label]] <- rtyp
+      risk_scale_map[[output_label]] <- risk_scale_val
 
       if (isTRUE(only_returns)) {
-        if (!is.null(one_ret)) returns_list[[length(returns_list) + 1]] <- one_ret
+        if (!is.null(one_ret)) {
+          colnames(one_ret) <- output_label
+          returns_list[[length(returns_list) + 1]] <- one_ret
+        }
       } else if (!is.null(one_res)) {
-        results_list[[label]] <- one_res
+        results_list[[output_label]] <- one_res
+      }
+
+      if (is.finite(adjusted_risk)) {
+        risk_report[[length(risk_report) + 1]] <- list(
+          label = output_label,
+          ps_label = psV,
+          original = rV_numeric,
+          adjusted = adjusted_risk,
+          scale = risk_scale_val,
+          target = risk_target_val
+        )
       }
     }
   }
@@ -1481,29 +1541,19 @@ bt_batch <- function(
         next
       }
 
-      log_series <- vector("list", length(combo_labels))
-      for (k in seq_along(combo_labels)) {
+      log_series <- lapply(seq_along(combo_labels), function(k) {
         lbl <- combo_labels[k]
         rets <- rets_list[[k]]
-        nr_lbl <- normalize_risk_map[[lbl]]
-        candidate_cols <- character(0)
-        nr_val <- first_finite_numeric(nr_lbl)
-        if (is.finite(nr_val)) {
-          candidate_cols <- c(candidate_cols, paste0("Log_AdjRisk_", nr_val))
-        }
-        candidate_cols <- c(candidate_cols, "Log")
-        available <- candidate_cols[candidate_cols %in% colnames(rets)]
-        if (!length(available)) {
+        if (!"Log" %in% colnames(rets)) {
           warning(sprintf("Log returns not found for component %s; skipping portfolio %s.", lbl, paste(valid_indices, collapse = ",")))
-          next
+          return(NULL)
         }
-        chosen <- available[1]
-        series <- rets[, chosen, drop = FALSE]
+        series <- rets[, "Log", drop = FALSE]
         colnames(series) <- lbl
-        log_series[[k]] <- series
-      }
+        series
+      })
 
-      if (length(log_series) != length(combo_labels) || any(vapply(log_series, is.null, logical(1)))) next
+      if (any(vapply(log_series, is.null, logical(1)))) next
       merged_logs <- tryCatch({ do.call(xts::merge.xts, c(log_series, list(all = TRUE))) }, error = function(e) NULL)
       if (is.null(merged_logs)) next
       merged_matrix <- as.matrix(merged_logs)
@@ -1515,24 +1565,28 @@ bt_batch <- function(
       combined_values <- as.numeric(merged_matrix %*% matrix(weights_vec, ncol = 1))
       combined_log <- xts::xts(combined_values, order.by = index(merged_logs))
       colnames(combined_log) <- "Log"
-      combined_discrete <- xts::xts(exp(combined_log) - 1, order.by = index(combined_log))
+      combined_discrete <- xts::xts(exp(as.numeric(combined_log)) - 1, order.by = index(combined_log))
       colnames(combined_discrete) <- "Discrete"
-      combined <- cbind(combined_discrete, combined_log)
 
       combo_nr_values <- normalize_risk_map[combo_labels]
       combo_nr <- first_finite_numeric(unlist(combo_nr_values))
+      combo_scale <- NA_real_
+      combo_orig_vol <- NA_real_
       if (is.finite(combo_nr)) {
         log_norm <- tryCatch(bt_normalize_risk(combined_log, risk = combo_nr, type = "Log"), error = function(e) NULL)
         if (!is.null(log_norm)) {
-          colnames(log_norm) <- paste0("Log_AdjRisk_", combo_nr)
-          combined <- cbind(combined, log_norm)
-        }
-        disc_norm <- tryCatch(bt_normalize_risk(combined_discrete, risk = combo_nr, type = "Discrete"), error = function(e) NULL)
-        if (!is.null(disc_norm)) {
-          colnames(disc_norm) <- paste0("Discrete_AdjRisk_", combo_nr)
-          combined <- cbind(combined, disc_norm)
+          combo_scale <- attr(log_norm, "scale_factor")
+          combo_orig_vol <- attr(log_norm, "original_vol")
+          combined_log <- log_norm
+          combined_discrete <- xts::xts(exp(as.numeric(combined_log)) - 1, order.by = index(combined_log))
+          colnames(combined_discrete) <- "Discrete"
         }
       }
+
+      combined <- cbind(combined_discrete, combined_log)
+      attr(combined, "risk_scale") <- combo_scale
+      attr(combined, "risk_target") <- combo_nr
+      attr(combined, "risk_original") <- if (is.finite(combo_orig_vol)) combo_orig_vol * 100 else NA_real_
 
       combo_label <- paste0("Portfolio_", paste(valid_indices, collapse = "_"))
       combo_rtype_candidates <- unique(unlist(returns_type_map[combo_labels]))
@@ -1551,6 +1605,7 @@ bt_batch <- function(
       all_returns_map[[combo_label]] <- combined
       normalize_risk_map[[combo_label]] <- combo_nr
       returns_type_map[[combo_label]] <- combo_rtyp
+      risk_scale_map[[combo_label]] <- combo_scale
 
       if (isTRUE(only_returns)) {
         if (!is.null(selected_portfolio)) returns_list[[length(returns_list) + 1]] <- selected_portfolio
@@ -1563,6 +1618,18 @@ bt_batch <- function(
           mktdata = NULL
         )
       }
+    }
+  }
+
+  if (length(risk_report) > 0) {
+    cat("\nRisk normalization impact (position sizing):\n")
+    for (rec in risk_report) {
+      orig_txt <- format_risk_token(rec$original)
+      adj_txt <- format_risk_token(rec$adjusted)
+      scale_txt <- if (is.finite(rec$scale)) sprintf("%.3fx", rec$scale) else "N/A"
+      target_txt <- if (is.finite(rec$target)) paste0(format_risk_token(rec$target), "%") else "N/A"
+      cat(sprintf(" - %s: ps_risk_value %s -> %s (scale %s, target %s)\n",
+                  rec$label, orig_txt, adj_txt, scale_txt, target_txt))
     }
   }
 

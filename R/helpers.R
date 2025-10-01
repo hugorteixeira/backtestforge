@@ -262,35 +262,54 @@
 }
 
 .print_returns <- function(returns_xts, normalize_risk = NULL, geometric = TRUE) {
-  colnames(returns_xts) <- "Discrete"
-  returns_xts$Log <- log(1 + returns_xts$Discrete)
-  colnames(returns_xts) <- c("Discrete","Log")
-  if(!is.null(normalize_risk)) {
-    column_name <- paste0("Log_AdjRisk_", normalize_risk)
-    temp_log <- log(1 + returns_xts$Discrete)
-    new_column <- bt_normalize_risk(temp_log,risk = normalize_risk,type = "Log")
-    names(new_column) <- column_name
-    ptrets <- cbind(returns_xts, new_column)
-  }
-  if(!is.null(normalize_risk)) {
-    column_name <- paste0("Discrete_AdjRisk_", normalize_risk)
-    temp_dis <- returns_xts$Discrete
-    new_column <- bt_normalize_risk(temp_dis,risk = normalize_risk,type = "Discrete")
-    names(new_column) <- column_name
-    returns_xts <- cbind(returns_xts, new_column)
+  if (!xts::is.xts(returns_xts)) {
+    stop("returns_xts must be an xts object.")
   }
 
+  discrete <- returns_xts
+  colnames(discrete) <- "Discrete"
+  log_xts <- xts::xts(log1p(as.numeric(discrete$Discrete)), order.by = index(discrete))
+  colnames(log_xts) <- "Log"
+
+  risk_scale <- NA_real_
+  risk_target <- NA_real_
+  risk_original <- NA_real_
+
+  target_input <- normalize_risk
+  if (!is.null(target_input)) {
+    target_val <- suppressWarnings(as.numeric(target_input)[1])
+    if (is.finite(target_val)) {
+      scaled_log <- bt_normalize_risk(log_xts, risk = target_val, type = "Log")
+      scale_factor <- attr(scaled_log, "scale_factor")
+      orig_vol <- attr(scaled_log, "original_vol")
+      if (is.finite(scale_factor) && scale_factor > 0) {
+        log_xts <- scaled_log
+        discrete <- xts::xts(exp(as.numeric(log_xts)) - 1, order.by = index(log_xts))
+        colnames(discrete) <- "Discrete"
+        risk_scale <- scale_factor
+        risk_original <- if (is.finite(orig_vol)) orig_vol * 100 else NA_real_
+        risk_target <- target_val
+      }
+    }
+  }
+
+  out <- cbind(discrete, log_xts)
+  attr(out, "risk_scale") <- risk_scale
+  attr(out, "risk_target") <- risk_target
+  attr(out, "risk_original") <- risk_original
+
   cat(paste0("\nAnnualized Returns Discrete",
-             if(geometric) " (Geometric): " else ": ",
-             sprintf("%.4f%%", Return.annualized(returns_xts$Discrete, geometric = geometric) * 100), "\n"))
+             if (geometric) " (Geometric): " else ": ",
+             sprintf("%.4f%%", Return.annualized(out$Discrete, geometric = geometric) * 100), "\n"))
   cat(paste0("Annualized Returns Log",
-             if(geometric) " (Geometric): " else ": ",
-             sprintf("%.4f%%", Return.annualized(returns_xts$Log, geometric = geometric) * 100), "\n"))
+             if (geometric) " (Geometric): " else ": ",
+             sprintf("%.4f%%", Return.annualized(out$Log, geometric = geometric) * 100), "\n"))
   cat(paste0("Cumulative Returns Discrete",
-             if(geometric) " (Geometric): " else ": ",
-             sprintf("%.4f%%", Return.cumulative(returns_xts$Discrete, geometric = geometric) * 100), "\n"))
+             if (geometric) " (Geometric): " else ": ",
+             sprintf("%.4f%%", Return.cumulative(out$Discrete, geometric = geometric) * 100), "\n"))
   cat(paste0("Cumulative Returns Log",
-             if(geometric) " (Geometric): " else ": ",
-             sprintf("%.4f%%", Return.cumulative(returns_xts$Log, geometric = geometric) * 100), "\n\n"))
-  return(returns_xts)
+             if (geometric) " (Geometric): " else ": ",
+             sprintf("%.4f%%", Return.cumulative(out$Log, geometric = geometric) * 100), "\n\n"))
+
+  out
 }
