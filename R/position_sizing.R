@@ -634,9 +634,18 @@
   qty <- abs(as.numeric(TxnQty))
   price <- as.numeric(TxnPrice)
 
-  if (!is.null(matched_pattern_a) && matched_pattern_a %in% c("BGI", "CCM")) {
-    #print("CCM or BGI detected.")
+  if (!is.null(matched_pattern_a) && matched_pattern_a %in% c("BGI")) {
+    #print("BGI detected.")
     return(-1 * (((0.1 * price) * (multiplier / 100)) + fees) * qty)
+  } else if (!is.null(matched_pattern_a) && matched_pattern_a %in% c("CCM")) {
+      #print("CCM detected.")
+      return(-1 * (((0.07 * price) * (multiplier / 100)) + fees) * qty)
+  } else if (!is.null(matched_pattern_a) && matched_pattern_a %in% c("WDO")) {
+    #print("WDO detected.")
+    return(-1 * (((fees * 3)+10)*qty))
+  } else if (!is.null(matched_pattern_a) && matched_pattern_a %in% c("WIN")) {
+    #print("WIN detected.")
+    return(-1 * (((fees * 3)+10)*qty))
   } else if (!is.null(matched_pattern_b) && matched_pattern_b %in% c("DI1")) {
     #print("DI1 futures detected.")
     return(-1 * (qty * fees * 1.25))

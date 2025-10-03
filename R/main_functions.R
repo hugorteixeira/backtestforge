@@ -991,7 +991,13 @@ normalize_fee_mode <- function(val, default = "normal") {
 #'
 #' @param type Character scalar selecting the indicator module. One of
 #'   `"eldoc"` (Donchian), `"ema"`, or `"sma"`.
-#' @param tickers Character vector of base symbols to backtest.
+#' @param tickers Character vector of base symbols to backtest, or a (named)
+#'   list where each element describes overrides for a specific ticker (e.g.
+#'   `list(ES = list(timeframes = c("30M", "1H"), mup = c(30, 40)))`). When
+#'   omitted you may pass the specification list as the first argument (e.g.
+#'   `bt_batch(list(MySpec = list(ticker = "ES", type = "eldoc", timeframes = "1H"))))`),
+#'   allowing each specification to provide its own `ticker`, `type`, and
+#'   parameter grid.
 #' @param timeframes Character vector of timeframe suffixes appended to each
 #'   ticker (e.g. `"4H"`).
 #' @param mup,mdown Numeric vectors used as Donchian window lengths and also as
@@ -1012,10 +1018,12 @@ normalize_fee_mode <- function(val, default = "normal") {
 #' @param returns_type Desired returns column (`"Log"`, `"Discrete"`,
 #'   `"LogAdj"`, or `"DiscreteAdj"`).
 #' @param plot_mult Logical flag; if `TRUE`, plots combined results via `tplot()`.
-#' @param gen_portfolio Optional vector or list of index sets indicating which
-#'   backtest outputs to aggregate into synthetic portfolios. Each element (or
-#'   the entire vector when not a list) is treated as one group of indices based
-#'   on the execution order, producing an additional `Portfolio_*` series.
+#' @param gen_portfolio Optional vector or list describing which backtest
+#'   outputs to aggregate into synthetic portfolios. Each element (or the entire
+#'   vector when not a list) is treated as one group of indices based on the
+#'   execution order, producing an additional `Portfolio_*` series. Elements may
+#'   be numeric vectors, character identifiers, or lists containing `indices`
+#'   and/or `labels` entries.
 #' @param gen_portfolio_weights Optional weights applied to each group defined
 #'   by `gen_portfolio`. Accepts a vector (recycled) or list mirroring the group
 #'   structure. When omitted or containing only zeros/`NA`, equal weights are
@@ -1059,20 +1067,54 @@ bt_batch <- function(
 ) {
   if (!requireNamespace("xts", quietly = TRUE)) stop("Package 'xts' is required.")
 
-  type <- match.arg(type)
-  module <- .bt_indicator_spec(type)
-  runner_symbol <- switch(
-    type,
-    eldoc = as.name("bt_eldoc"),
-    ema = as.name("bt_ema"),
-    sma = as.name("bt_sma"),
-    stop(sprintf("Unsupported backtest type '%s'", type), call. = FALSE)
-  )
+  spec_list_input <- NULL
+  using_spec_list <- FALSE
+  if (missing(tickers) && is.list(type) && !is.data.frame(type)) {
+    spec_list_input <- type
+    tickers <- NULL
+    type <- NULL
+    using_spec_list <- TRUE
+  }
+
+  default_type <- NULL
+  if (!using_spec_list) {
+    type <- match.arg(type)
+    default_type <- type
+  }
 
   tol <- 1e-8
 
   extra_args <- list(...)
   indicator_vectors <- c(list(mup = mup, mdown = mdown), extra_args)
+
+  module_cache <- new.env(parent = emptyenv())
+  resolve_module <- function(type_name) {
+    if (is.null(type_name) || length(type_name) == 0) {
+      stop("Each specification must declare a backtest 'type'.", call. = FALSE)
+    }
+    type_token <- tolower(trimws(as.character(type_name)[1]))
+    if (!nzchar(type_token)) {
+      stop("Each specification must declare a non-empty backtest 'type'.", call. = FALSE)
+    }
+    if (!exists(type_token, envir = module_cache, inherits = FALSE)) {
+      canonical <- switch(type_token,
+        eldoc = "eldoc",
+        ema = "ema",
+        sma = "sma",
+        stop(sprintf("Unsupported backtest type '%s'", type_name), call. = FALSE)
+      )
+      module_obj <- .bt_indicator_spec(canonical)
+      runner_sym <- switch(canonical,
+        eldoc = as.name("bt_eldoc"),
+        ema = as.name("bt_ema"),
+        sma = as.name("bt_sma")
+      )
+      assign(type_token, list(module = module_obj, runner = runner_sym, type = canonical), envir = module_cache)
+    }
+    get(type_token, envir = module_cache, inherits = FALSE)
+  }
+
+  spec_input <- if (using_spec_list) spec_list_input else tickers
 
   normalize_rtype <- function(x) {
     if (is.null(x) || length(x) == 0) return("Log")
@@ -1161,6 +1203,123 @@ bt_batch <- function(
     }
     if (!is.null(base_col)) return(base_col)
     rets_xts[, 1, drop = FALSE]
+  }
+
+  normalize_ticker_specs <- function(spec_input, default_type = NULL) {
+    if (is.null(spec_input) || length(spec_input) == 0) {
+      stop("Argument 'tickers' cannot be empty.", call. = FALSE)
+    }
+
+    trim_token <- function(token) {
+      if (is.null(token) || !length(token)) return(NA_character_)
+      token <- as.character(token)[1]
+      token <- trimws(token)
+      if (!nzchar(token)) return(NA_character_)
+      token
+    }
+
+    select_first_non_null <- function(...) {
+      for (item in list(...)) {
+        if (is.null(item)) next
+        if (length(item) == 0) next
+        return(item[[1]])
+      }
+      NULL
+    }
+
+    normalize_entry <- function(entry_value, entry_name) {
+      alias_token <- trim_token(entry_name)
+      overrides <- list()
+      primary_candidate <- alias_token
+      label_candidate <- alias_token
+      type_candidate <- NULL
+
+      if (is.null(entry_value)) {
+        overrides <- list()
+      } else if (is.list(entry_value) && !is.data.frame(entry_value)) {
+        overrides <- entry_value
+      } else if (is.atomic(entry_value)) {
+        primary_candidate <- entry_value[1]
+        overrides <- list()
+      } else {
+        stop("Unsupported ticker specification provided to 'bt_batch'.", call. = FALSE)
+      }
+
+      if (!is.list(overrides)) overrides <- as.list(overrides)
+
+      if (!is.null(overrides$ticker)) {
+        primary_candidate <- overrides$ticker
+        overrides$ticker <- NULL
+      } else if (!is.null(overrides$symbol)) {
+        primary_candidate <- overrides$symbol
+        overrides$symbol <- NULL
+      } else if (!is.null(overrides$base)) {
+        primary_candidate <- overrides$base
+        overrides$base <- NULL
+      }
+
+      label_fields <- c("label", "alias", "display", "name")
+      for (fld in label_fields) {
+        if (!is.null(overrides[[fld]])) {
+          label_candidate <- overrides[[fld]]
+          overrides[[fld]] <- NULL
+          break
+        }
+      }
+
+      type_fields <- c("type", "module")
+      for (fld in type_fields) {
+        if (!is.null(overrides[[fld]])) {
+          type_candidate <- overrides[[fld]]
+          overrides[[fld]] <- NULL
+          break
+        }
+      }
+
+      ticker_token <- trim_token(select_first_non_null(primary_candidate, alias_token))
+      if (is.na(ticker_token)) {
+        stop("Each specification must resolve to a non-empty ticker symbol.", call. = FALSE)
+      }
+
+      label_token <- trim_token(select_first_non_null(label_candidate, alias_token, ticker_token))
+      if (is.na(label_token)) label_token <- ticker_token
+
+      type_token <- trim_token(select_first_non_null(type_candidate, default_type))
+      if (is.na(type_token)) {
+        stop(sprintf("No backtest type provided for specification '%s'.", label_token), call. = FALSE)
+      }
+
+      overrides <- overrides[!(vapply(overrides, function(x) is.null(x) || (is.list(x) && length(x) == 0), logical(1)))]
+
+      list(
+        alias = alias_token,
+        label = label_token,
+        ticker = ticker_token,
+        type = type_token,
+        overrides = overrides
+      )
+    }
+
+    entries <- list()
+    if (is.list(spec_input) && !is.data.frame(spec_input)) {
+      names_vec <- names(spec_input)
+      if (is.null(names_vec)) names_vec <- rep("", length(spec_input))
+      for (i in seq_along(spec_input)) {
+        entries[[length(entries) + 1]] <- normalize_entry(spec_input[[i]], names_vec[[i]])
+      }
+    } else {
+      vec <- as.list(spec_input)
+      names_vec <- names(spec_input)
+      if (is.null(names_vec)) names_vec <- rep("", length(vec))
+      for (i in seq_along(vec)) {
+        entries[[length(entries) + 1]] <- normalize_entry(vec[[i]], names_vec[[i]])
+      }
+    }
+
+    if (!length(entries)) {
+      stop("Argument 'tickers' cannot be empty.", call. = FALSE)
+    }
+    entries
   }
 
   idx_to_posixct <- function(idx) {
@@ -1264,7 +1423,7 @@ bt_batch <- function(
           tok <- substring(tok, 2, nchar(tok) - 1)
         }
         if (!nzchar(tok)) return()
-        parts <- strsplit(tok, "\\+")[[1]]
+        parts <- strsplit(tok, "[+,]")[[1]]
         for (part in parts) {
           part <- trimws(part)
           if ((startsWith(part, "'") && endsWith(part, "'")) || (startsWith(part, '"') && endsWith(part, '"'))) {
@@ -1299,11 +1458,71 @@ bt_batch <- function(
       list(nums = acc_nums, tokens = acc_tokens)
     }
 
+    idx_fields <- c("indices", "index", "row", "rows", "line", "lines", "select", "include")
+    component_fields <- c("labels", "tokens", "names", "symbols", "components", "members", "tickers")
+
     specs <- vector("list", length(combos))
     for (i in seq_along(combos)) {
-      res <- collect_tokens(combos[[i]])
-      nums <- unique_ordered(res$nums)
-      tokens <- unique_ordered(res$tokens)
+      entry <- combos[[i]]
+      manual_nums <- integer()
+      manual_tokens <- character()
+
+      append_manual_nums <- function(val) {
+        if (is.null(val) || length(val) == 0) return()
+        vec <- unlist(val, use.names = FALSE)
+        if (!length(vec)) return()
+        for (item in vec) {
+          parts <- if (is.character(item)) strsplit(item, "[+,;\\s]+")[[1]] else as.character(item)
+          if (length(parts) == 0) next
+          for (part in parts) {
+            part <- trimws(as.character(part))
+            if (!nzchar(part)) next
+            num_candidate <- suppressWarnings(as.numeric(part))[1]
+            if (is.finite(num_candidate)) manual_nums <<- c(manual_nums, as.integer(num_candidate))
+          }
+        }
+      }
+
+      append_manual_components <- function(val) {
+        if (is.null(val) || length(val) == 0) return()
+        vec <- unlist(val, use.names = FALSE)
+        if (!length(vec)) return()
+        for (item in vec) {
+          parts <- if (is.character(item)) strsplit(item, "[+,;]")[[1]] else as.character(item)
+          if (length(parts) == 0) next
+          for (part in parts) {
+            part_chr <- trimws(as.character(part))
+            if (!nzchar(part_chr)) next
+            num_candidate <- suppressWarnings(as.numeric(part_chr))[1]
+            if (is.finite(num_candidate)) {
+              manual_nums <<- c(manual_nums, as.integer(num_candidate))
+            } else {
+              manual_tokens <<- c(manual_tokens, part_chr)
+            }
+          }
+        }
+      }
+
+      if (is.list(entry) && !is.data.frame(entry) && length(entry) && !is.null(names(entry))) {
+        for (fld in intersect(names(entry), idx_fields)) {
+          append_manual_nums(entry[[fld]])
+          entry[[fld]] <- NULL
+        }
+        for (fld in intersect(names(entry), component_fields)) {
+          append_manual_components(entry[[fld]])
+          entry[[fld]] <- NULL
+        }
+        if (length(entry) == 1 && is.null(names(entry)) && is.numeric(entry[[1]])) {
+          append_manual_nums(entry[[1]])
+          entry <- NULL
+        } else if (length(entry) == 0) {
+          entry <- NULL
+        }
+      }
+
+      res <- if (is.null(entry) || length(entry) == 0) list(nums = integer(), tokens = character()) else collect_tokens(entry)
+      nums <- unique_ordered(c(manual_nums, res$nums))
+      tokens <- unique_ordered(c(manual_tokens, res$tokens))
       specs[[i]] <- list(name = combo_names[i], indices = nums, tokens = tokens)
     }
     specs
@@ -1408,15 +1627,6 @@ bt_batch <- function(
     eval(expr_call, envir = exec_env)
   }
 
-  lens <- c(
-    length(timeframes), length(mps_risk_value), length(mps),
-    length(fee), length(long), length(short), length(invert_signals),
-    length(normalize_risk), length(geometric), length(verbose),
-    length(hide_details), length(returns_type),
-    vapply(indicator_vectors, length, integer(1))
-  )
-  n_tests <- max(c(1, lens))
-
   defaults <- list(
     timeframes = "1D",
     mps_risk_value = 2,
@@ -1434,6 +1644,25 @@ bt_batch <- function(
 
   default_combo_rtyp <- normalize_rtype(.bt_value_at(returns_type, 1, defaults$returns_type))
 
+  base_param_sources <- list(
+    timeframes = timeframes,
+    mps_risk_value = mps_risk_value,
+    mps = mps,
+    fee = fee,
+    long = long,
+    short = short,
+    invert_signals = invert_signals,
+    normalize_risk = normalize_risk,
+    geometric = geometric,
+    verbose = verbose,
+    hide_details = hide_details,
+    returns_type = returns_type
+  )
+  recognized_override_fields <- names(base_param_sources)
+  base_indicator_vectors <- indicator_vectors
+
+  ticker_specs <- normalize_ticker_specs(spec_input, default_type = default_type)
+
   results_list <- list()
   returns_list <- list()
   plot_list <- list()
@@ -1445,48 +1674,93 @@ bt_batch <- function(
   risk_report <- list()
   risk_report_map <- list()
 
-  tickers <- as.character(tickers)
+  for (spec in ticker_specs) {
+    spec_ticker <- as.character(spec$ticker)[1]
+    label_value <- spec$label
+    if (length(label_value) == 0 || is.na(label_value)) label_value <- spec_ticker
+    spec_label <- as.character(label_value)[1]
+    overrides <- spec$overrides
+    if (is.null(overrides)) overrides <- list()
 
-  for (tk in tickers) {
-    for (i in seq_len(n_tests)) {
-      tf   <- .bt_value_at(timeframes, i, defaults$timeframes)
-      indicator_candidates <- list(
-        up = .bt_value_at(mup, i, NULL),
-        mup = .bt_value_at(mup, i, NULL),
-        down = .bt_value_at(mdown, i, NULL),
-        mdown = .bt_value_at(mdown, i, NULL)
-      )
-      if (length(extra_args)) {
-        for (nm in names(extra_args)) {
-          indicator_candidates[[nm]] <- .bt_value_at(extra_args[[nm]], i, NULL)
+    module_info <- resolve_module(spec$type)
+    module <- module_info$module
+    runner_symbol <- module_info$runner
+    type_name <- module_info$type
+
+    per_params <- base_param_sources
+    if (length(overrides)) {
+      override_names <- intersect(names(overrides), recognized_override_fields)
+      if (length(override_names)) {
+        for (nm in override_names) {
+          per_params[[nm]] <- overrides[[nm]]
+          overrides[[nm]] <- NULL
         }
       }
+    }
+
+    indicator_vectors_local <- base_indicator_vectors
+    if (length(overrides)) {
+      for (nm in names(overrides)) {
+        indicator_vectors_local[[nm]] <- overrides[[nm]]
+      }
+    }
+
+    lens <- c(
+      length(per_params$timeframes), length(per_params$mps_risk_value), length(per_params$mps),
+      length(per_params$fee), length(per_params$long), length(per_params$short),
+      length(per_params$invert_signals), length(per_params$normalize_risk),
+      length(per_params$geometric), length(per_params$verbose),
+      length(per_params$hide_details), length(per_params$returns_type),
+      if (length(indicator_vectors_local)) vapply(indicator_vectors_local, length, integer(1)) else integer(0)
+    )
+    n_tests <- max(c(1, lens))
+
+    for (i in seq_len(n_tests)) {
+      tf <- .bt_value_at(per_params$timeframes, i, defaults$timeframes)
+
+      indicator_candidates <- list()
+      if (length(indicator_vectors_local)) {
+        for (nm in names(indicator_vectors_local)) {
+          value <- .bt_value_at(indicator_vectors_local[[nm]], i, NULL)
+          indicator_candidates[[nm]] <- value
+          if (nm %in% c("mup", "up")) {
+            indicator_candidates[["mup"]] <- value
+            indicator_candidates[["up"]] <- value
+          }
+          if (nm %in% c("mdown", "down")) {
+            indicator_candidates[["mdown"]] <- value
+            indicator_candidates[["down"]] <- value
+          }
+        }
+      }
+
       indicator_args_i <- module$resolve_indicator_args(indicator_candidates)
       indicator_suffix <- if (!is.null(module$batch_suffix)) module$batch_suffix(indicator_args_i) else paste(indicator_args_i, collapse = "_")
-      rV   <- .bt_value_at(mps_risk_value, i, defaults$mps_risk_value)
-      rV_numeric <- suppressWarnings(as.numeric(rV))[1]
-      psV  <- .bt_value_at(mps, i, defaults$mps)
-      fee_raw <- .bt_value_at(fee, i, defaults$fee)
-      feeV <- normalize_fee_mode(fee_raw)
-      L    <- isTRUE(.bt_value_at(long, i, defaults$long))
-      S    <- isTRUE(.bt_value_at(short, i, defaults$short))
-      inv  <- isTRUE(.bt_value_at(invert_signals, i, defaults$invert_signals))
-      nr   <- .bt_value_at(normalize_risk, i, defaults$normalize_risk)
-      geom <- isTRUE(.bt_value_at(geometric, i, defaults$geometric))
-      verb <- isTRUE(.bt_value_at(verbose, i, defaults$verbose))
-      hide <- isTRUE(.bt_value_at(hide_details, i, defaults$hide_details))
-      rtyp <- normalize_rtype(.bt_value_at(returns_type, i, defaults$returns_type))
 
-      tk_tf <- paste0(tk, "_", tf)
-      label <- build_label(tk, tf, type, indicator_suffix, psV, rV, L, S, feeV, inv, geom, nr, rtyp)
+      rV <- .bt_value_at(per_params$mps_risk_value, i, defaults$mps_risk_value)
+      rV_numeric <- suppressWarnings(as.numeric(rV))[1]
+      psV <- .bt_value_at(per_params$mps, i, defaults$mps)
+      fee_raw <- .bt_value_at(per_params$fee, i, defaults$fee)
+      feeV <- normalize_fee_mode(fee_raw)
+      L <- isTRUE(.bt_value_at(per_params$long, i, defaults$long))
+      S <- isTRUE(.bt_value_at(per_params$short, i, defaults$short))
+      inv <- isTRUE(.bt_value_at(per_params$invert_signals, i, defaults$invert_signals))
+      nr <- .bt_value_at(per_params$normalize_risk, i, defaults$normalize_risk)
+      geom <- isTRUE(.bt_value_at(per_params$geometric, i, defaults$geometric))
+      verb <- isTRUE(.bt_value_at(per_params$verbose, i, defaults$verbose))
+      hide <- isTRUE(.bt_value_at(per_params$hide_details, i, defaults$hide_details))
+      rtyp <- normalize_rtype(.bt_value_at(per_params$returns_type, i, defaults$returns_type))
+
+      data_symbol <- paste0(spec_ticker, "_", tf)
+      label <- build_label(spec_label, tf, type_name, indicator_suffix, psV, rV, L, S, feeV, inv, geom, nr, rtyp)
       if (isTRUE(verbose) || verb) message(sprintf("Running %s ...", label))
 
-      ensure_xts_or_remove(tk_tf)
-      preload_symbol(tk_tf, base_sym = tk)
+      ensure_xts_or_remove(data_symbol)
+      preload_symbol(data_symbol, base_sym = spec_ticker)
 
       call_args <- c(
         list(
-          ticker = tk_tf,
+          ticker = data_symbol,
           ps_risk_value = rV,
           ps = psV,
           fee = feeV,
@@ -1540,7 +1814,7 @@ bt_batch <- function(
 
       if (!is.null(err_msg) || is.null(res_full)) {
         warning(sprintf("Backtest failed for %s: %s. Filling with zeros.", label, if (is.null(err_msg)) "unknown error" else err_msg))
-        idx <- fallback_index(tk_tf, base_sym = tk)
+        idx <- fallback_index(data_symbol, base_sym = spec_ticker)
         nr_numeric <- first_finite_numeric(nr)
         res_full <- zero_full_returns_xts(idx, normalize_target = nr_numeric)
         selected_plot <- tryCatch(extract_returns(res_full, rtyp, norm_risk_numeric = nr_numeric), error = function(e) NULL)
@@ -1556,7 +1830,7 @@ bt_batch <- function(
             trades = NULL,
             rets_acct = NULL,
             mktdata = tryCatch({
-              obj <- get(tk_tf, envir = data_env)
+              obj <- get(data_symbol, envir = data_env)
               if (xts::is.xts(obj)) obj else NULL
             }, error = function(e) NULL)
           )
