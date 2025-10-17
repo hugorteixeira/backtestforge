@@ -21,6 +21,8 @@ bt_eldoc(
   verbose = FALSE,
   only_returns = FALSE,
   hide_details = FALSE,
+  stop_before_maturity = NULL,
+  clean_di = TRUE,
   plot = FALSE
 )
 }

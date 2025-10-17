@@ -1,5 +1,3 @@
-# Internal helpers shared across backtest runners -----------------------------------
-
 .bt_first_non_null <- function(...) {
   for (arg in list(...)) {
     if (!is.null(arg) && length(arg) > 0) {
@@ -24,8 +22,12 @@
 
 .bt_clean_di_column <- function(xts_object, column_name, predicate) {
   if (!inherits(xts_object, "xts")) stop("xts_object must be an xts object.")
-  if (NROW(xts_object) == 0) return(xts_object)
-  if (!(column_name %in% colnames(xts_object))) return(xts_object)
+  if (NROW(xts_object) == 0) {
+    return(xts_object)
+  }
+  if (!(column_name %in% colnames(xts_object))) {
+    return(xts_object)
+  }
 
   col_vec <- zoo::coredata(xts_object[, column_name])
   keep <- predicate(col_vec)
@@ -48,11 +50,12 @@
     ticker_data <- get(symbol, envir = .GlobalEnv)
   } else {
     ticker_data <- sm_get_data(symbol,
-                               start_date = start_date,
-                               end_date = end_date,
-                               future_history = FALSE,
-                               single_xts = TRUE,
-                               local_data = FALSE)
+      start_date = start_date,
+      end_date = end_date,
+      future_history = FALSE,
+      single_xts = TRUE,
+      local_data = FALSE
+    )
   }
 
   if (isTRUE(clean_di)) {
@@ -65,11 +68,10 @@
 
 .bt_indicator_spec <- function(type) {
   type <- tolower(type)
-  switch(
-    type,
+  switch(type,
     eldoc = .bt_module_eldoc(),
-    ema   = .bt_module_ma("ema"),
-    sma   = .bt_module_ma("sma"),
+    ema = .bt_module_ma("ema"),
+    sma = .bt_module_ma("sma"),
     stop(sprintf("Unsupported backtest type '%s'", type), call. = FALSE)
   )
 }
@@ -89,8 +91,10 @@
     down_str <- as.character(context$indicator_args$down)
 
     if (!isTRUE(context$hide_details)) {
-      paste0(context$base_ticker, "_eD_", up_str, "_", down_str, "_",
-             context$ps, "_", context$ps_risk_value, fee_mode_suffix)
+      paste0(
+        context$base_ticker, "_eD_", up_str, "_", down_str, "_",
+        context$ps, "_", context$ps_risk_value, fee_mode_suffix
+      )
     } else {
       paste0(context$base_ticker, "_eD_nodets", fee_mode_suffix)
     }
@@ -183,8 +187,10 @@
 
   build_label <- function(context, fee_mode_suffix = "") {
     args <- context$indicator_args
-    base <- paste0(context$base_ticker, "_", kind, "_", args$fast, "_", args$slow,
-                   "_", context$ps, "_", context$ps_risk_value)
+    base <- paste0(
+      context$base_ticker, "_", kind, "_", args$fast, "_", args$slow,
+      "_", context$ps, "_", context$ps_risk_value
+    )
     if (isTRUE(context$hide_details)) {
       base <- paste0(context$base_ticker, "_", kind, "_nodets")
     }
@@ -282,25 +288,25 @@
 }
 
 .bt_run_module <- function(
-    type,
-    ticker,
-    indicator_args = list(),
-    ps_risk_value = 2,
-    ps = "pct",
-    fee = "normal",
-    start_date = "1900-01-01",
-    end_date = Sys.Date(),
-    long = TRUE,
-    short = TRUE,
-    invert_signals = FALSE,
-    normalize_risk = NULL,
-    geometric = TRUE,
-    verbose = FALSE,
-    only_returns = FALSE,
-    hide_details = FALSE,
-    stop_before_maturity = NULL,
-    clean_di = TRUE,
-    plot = FALSE
+  type,
+  ticker,
+  indicator_args = list(),
+  ps_risk_value = 2,
+  ps = "pct",
+  fee = "normal",
+  start_date = "1900-01-01",
+  end_date = Sys.Date(),
+  long = TRUE,
+  short = TRUE,
+  invert_signals = FALSE,
+  normalize_risk = NULL,
+  geometric = TRUE,
+  verbose = FALSE,
+  only_returns = FALSE,
+  hide_details = FALSE,
+  stop_before_maturity = NULL,
+  clean_di = TRUE,
+  plot = FALSE
 ) {
   module <- .bt_indicator_spec(type)
 
@@ -308,11 +314,14 @@
 
   fee_mode <- normalize_fee_mode(fee)
 
-  if (exists('.blotter')) rm(list = ls(envir = .blotter), envir = .blotter)
-  if (exists('.strategy')) rm(list = ls(envir = .strategy), envir = .strategy)
+  if (exists(".blotter")) rm(list = ls(envir = .blotter), envir = .blotter)
+  if (exists(".strategy")) rm(list = ls(envir = .strategy), envir = .strategy)
+
+  #  if (exists("data_env")) rm(list = ls(envir = data_env), envir = data_env)
 
   if (!exists(".strategy")) .strategy <<- new.env()
   if (!exists(".blotter")) .blotter <<- new.env()
+  # if (!exists("data_env")) data_env <<- new.env()
 
   data_env <- .get_bt_data_env()
 
@@ -344,10 +353,13 @@
   fee_suffix <- if (identical(fee_mode, "nofee")) "_nofees" else ""
   bt_ticker <- module$build_bt_ticker(context, fee_mode_suffix = fee_suffix)
 
-  base_instrument <- tryCatch({
-    inst <- getInstrument(context$base_ticker, silent = TRUE)
-    if (FinancialInstrument::is.instrument(inst)) inst else NULL
-  }, error = function(e) NULL)
+  base_instrument <- tryCatch(
+    {
+      inst <- getInstrument(context$base_ticker, silent = TRUE)
+      if (FinancialInstrument::is.instrument(inst)) inst else NULL
+    },
+    error = function(e) NULL
+  )
 
   .register_future_from_data(bt_ticker, ticker_data)
 
@@ -392,30 +404,35 @@
   bcontracts <- 1
   scontracts <- -1
 
-  isDI <- startsWith(ticker, "DI1")
+  isDI <- startsWith(ticker, "DI1") |
+    (!is.null(attr(ticker_data, "subcategoria")) &&
+      grepl("juros", attr(ticker_data, "subcategoria"), ignore.case = TRUE))
+  .dbg("Is it DI?", isDI)
 
   PositionSizing <- if (isDI) {
     function(data, timestamp, orderqty, ordertype, orderside,
              portfolio, symbol, tradeSize, maxSize, ...) {
       .psEquityPercentageDonchian_DI(data, timestamp, orderqty, ordertype, orderside,
-                                     portfolio, symbol, tradeSize, maxSize,
-                                     risk = ps_risk_value, ...)
+        portfolio, symbol, tradeSize, maxSize,
+        risk = ps_risk_value, ...
+      )
     }
   } else {
     function(data, timestamp, orderqty, ordertype, orderside,
              portfolio, symbol, tradeSize, maxSize, ...) {
       .psEquityPercentageDonchian(data, timestamp, orderqty, ordertype, orderside,
-                                  portfolio, symbol, tradeSize, maxSize,
-                                  risk = ps_risk_value, ...)
+        portfolio, symbol, tradeSize, maxSize,
+        risk = ps_risk_value, ...
+      )
     }
   }
 
-  OrderType <- 'market'
+  OrderType <- "market"
   LongEnabled <- isTRUE(long)
   ShortEnabled <- isTRUE(short)
 
   HighCol <- "High"
-  LowCol  <- "Low"
+  LowCol <- "Low"
   if ("PU_o" %in% colnames(ticker_data)) Preference <- "PU_o" else Preference <- "Open"
 
   assign(bt_ticker, ticker_data, envir = data_env)
@@ -445,17 +462,17 @@
   }
 
   long_entry_col <- signal_or("long_entry", "Entry")
-  long_exit_col  <- signal_or("long_exit", "Exit")
+  long_exit_col <- signal_or("long_exit", "Exit")
   short_entry_col <- signal_or("short_entry", long_exit_col)
   short_exit_col <- signal_or("short_exit", long_entry_col)
 
-  n.ent  <- sum(coisa[, long_entry_col] == 1, na.rm = TRUE)
-  n.saida<- sum(coisa[, long_exit_col] == 1, na.rm = TRUE)
-  .dbg("signals   Entry:", n.ent, " Exit:", n.saida)
+  n.ent <- sum(coisa[, long_entry_col] == 1, na.rm = TRUE)
+  n.saida <- sum(coisa[, long_exit_col] == 1, na.rm = TRUE)
+  .dbg("Signals detected - Entry:", n.ent, " Exit:", n.saida)
 
   my_strategy <- add.rule(
     strategy = my_strategy,
-    name = 'ruleSignal',
+    name = "ruleSignal",
     arguments = list(
       sigcol = long_entry_col,
       sigval = TRUE,
@@ -464,7 +481,7 @@
       orderqty = tradeSize,
       portfolio = portfolio.st,
       ordertype = OrderType,
-      orderside = if (!isDI) 'long' else 'short',
+      orderside = if (!isDI) "long" else "short",
       osFUN = PositionSizing,
       tradeSize = tradeSize,
       buyorderqty = bcontracts,
@@ -474,8 +491,8 @@
       replace = ReplaceBuy,
       TxnFees = TxnFeesVal
     ),
-    type = if (invert_signals) 'exit' else 'enter',
-    label = if (invert_signals) 'exitLong' else 'enterLong',
+    type = if (invert_signals) "exit" else "enter",
+    label = if (invert_signals) "exitLong" else "enterLong",
     storefun = TRUE,
     path.dep = path.dependence,
     enabled = LongEnabled
@@ -483,19 +500,19 @@
 
   my_strategy <- add.rule(
     strategy = my_strategy,
-    name = 'ruleSignal',
+    name = "ruleSignal",
     arguments = list(
       sigcol = long_exit_col,
       sigval = TRUE,
       orderqty = "all",
       ordertype = OrderType,
-      orderside = if (!isDI) 'long' else 'short',
+      orderside = if (!isDI) "long" else "short",
       prefer = Preference,
       replace = ReplaceSell,
       TxnFees = TxnFeesVal
     ),
-    type = if (invert_signals) 'enter' else 'exit',
-    label = if (invert_signals) 'enterLong' else 'exitLong',
+    type = if (invert_signals) "enter" else "exit",
+    label = if (invert_signals) "enterLong" else "exitLong",
     storefun = TRUE,
     path.dep = path.dependence,
     enabled = LongEnabled
@@ -503,7 +520,7 @@
 
   my_strategy <- add.rule(
     strategy = my_strategy,
-    name = 'ruleSignal',
+    name = "ruleSignal",
     arguments = list(
       sigcol = short_entry_col,
       sigval = TRUE,
@@ -512,7 +529,7 @@
       orderqty = tradeSize,
       portfolio = portfolio.st,
       ordertype = OrderType,
-      orderside = if (isDI) 'long' else 'short',
+      orderside = if (isDI) "long" else "short",
       osFUN = PositionSizing,
       tradeSize = -tradeSize,
       buyorderqty = bcontracts,
@@ -522,8 +539,8 @@
       replace = ReplaceShort,
       TxnFees = TxnFeesVal
     ),
-    type = if (invert_signals) 'exit' else 'enter',
-    label = if (invert_signals) 'exitShort' else 'enterShort',
+    type = if (invert_signals) "exit" else "enter",
+    label = if (invert_signals) "exitShort" else "enterShort",
     storefun = TRUE,
     path.dep = path.dependence,
     enabled = ShortEnabled
@@ -531,19 +548,19 @@
 
   my_strategy <- add.rule(
     strategy = my_strategy,
-    name = 'ruleSignal',
+    name = "ruleSignal",
     arguments = list(
       sigcol = short_exit_col,
       sigval = TRUE,
       orderqty = "all",
       ordertype = OrderType,
-      orderside = if (isDI) 'long' else 'short',
+      orderside = if (isDI) "long" else "short",
       prefer = Preference,
       replace = ReplaceCover,
       TxnFees = TxnFeesVal
     ),
-    type = if (invert_signals) 'enter' else 'exit',
-    label = if (invert_signals) 'enterShort' else 'exitShort',
+    type = if (invert_signals) "enter" else "exit",
+    label = if (invert_signals) "enterShort" else "exitShort",
     storefun = TRUE,
     path.dep = path.dependence,
     enabled = ShortEnabled
@@ -791,7 +808,6 @@ bt_sma <- function(ticker, fast = 20, slow = 50, ps_risk_value = 2, ps = "pct", 
 #' @return A single-column `xts` series with normalized returns.
 #' @export
 bt_normalize_risk <- function(xts, risk = 10, type = c("Discrete", "Log")) {
-
   if (!requireNamespace("xts", quietly = TRUE)) {
     stop("Package 'xts' is required.")
   }
@@ -800,7 +816,9 @@ bt_normalize_risk <- function(xts, risk = 10, type = c("Discrete", "Log")) {
 
   # ---- helpers ----
   find_returns_in_xts <- function(x) {
-    if (!xts::is.xts(x)) return(list(log = NULL, discrete = NULL))
+    if (!xts::is.xts(x)) {
+      return(list(log = NULL, discrete = NULL))
+    }
     cn <- colnames(x)
     if (is.null(cn)) cn <- character(0)
     lc <- tolower(cn)
@@ -813,7 +831,9 @@ bt_normalize_risk <- function(xts, risk = 10, type = c("Discrete", "Log")) {
   }
 
   search_returns <- function(obj, depth = 0, max_depth = 4) {
-    if (depth > max_depth) return(NULL)
+    if (depth > max_depth) {
+      return(NULL)
+    }
     # 1) Direct xts with columns
     if (xts::is.xts(obj)) {
       fr <- find_returns_in_xts(obj)
@@ -824,7 +844,9 @@ bt_normalize_risk <- function(xts, risk = 10, type = c("Discrete", "Log")) {
       ra <- attr(obj, "rets")
       if (!is.null(ra)) {
         res <- search_returns(ra, depth + 1, max_depth)
-        if (!is.null(res)) return(res)
+        if (!is.null(res)) {
+          return(res)
+        }
       }
       return(NULL)
     }
@@ -835,12 +857,16 @@ bt_normalize_risk <- function(xts, risk = 10, type = c("Discrete", "Log")) {
       if (!is.null(nm) && "rets" %in% tolower(nm)) {
         rets_name <- nm[match("rets", tolower(nm))]
         res <- search_returns(obj[[rets_name]], depth + 1, max_depth)
-        if (!is.null(res)) return(res)
+        if (!is.null(res)) {
+          return(res)
+        }
       }
       # then scan all elements
       for (i in seq_along(obj)) {
         res <- search_returns(obj[[i]], depth + 1, max_depth)
-        if (!is.null(res)) return(res)
+        if (!is.null(res)) {
+          return(res)
+        }
       }
       return(NULL)
     }
@@ -848,7 +874,9 @@ bt_normalize_risk <- function(xts, risk = 10, type = c("Discrete", "Log")) {
     ra <- attr(obj, "rets")
     if (!is.null(ra)) {
       res <- search_returns(ra, depth + 1, max_depth)
-      if (!is.null(res)) return(res)
+      if (!is.null(res)) {
+        return(res)
+      }
     }
     NULL
   }
@@ -860,7 +888,9 @@ bt_normalize_risk <- function(xts, risk = 10, type = c("Discrete", "Log")) {
     # - Other/intraday/irregular: use median spacing over Gregorian year seconds
     if (!xts::is.xts(x)) stop("periods_per_year requires an xts object.")
     idx <- index(x)
-    if (length(idx) < 2) return(NA_real_)
+    if (length(idx) < 2) {
+      return(NA_real_)
+    }
     p <- tryCatch(xts::periodicity(x)$scale, error = function(e) NA_character_)
     if (!is.na(p)) {
       p <- tolower(p)
@@ -882,7 +912,9 @@ bt_normalize_risk <- function(xts, risk = 10, type = c("Discrete", "Log")) {
     }
     # fallback using median spacing
     dt <- stats::median(diff(as.numeric(idx)))
-    if (is.na(dt) || dt <= 0) return(NA_real_)
+    if (is.na(dt) || dt <= 0) {
+      return(NA_real_)
+    }
     if (inherits(idx, "Date")) {
       secs_per_period <- dt * 86400
     } else {
@@ -894,7 +926,9 @@ bt_normalize_risk <- function(xts, risk = 10, type = c("Discrete", "Log")) {
   annualized_vol <- function(r, ppy) {
     rnum <- as.numeric(r)
     rnum <- rnum[is.finite(rnum)]
-    if (length(rnum) < 2) return(NA_real_)
+    if (length(rnum) < 2) {
+      return(NA_real_)
+    }
     stats::sd(rnum) * sqrt(ppy)
   }
 
@@ -933,7 +967,7 @@ bt_normalize_risk <- function(xts, risk = 10, type = c("Discrete", "Log")) {
     stop("Realized volatility is zero or undefined; cannot normalize risk.")
   }
 
-  target_vol_ann <- risk / 100  # convert percent to decimal
+  target_vol_ann <- risk / 100 # convert percent to decimal
   scale_factor <- as.numeric(target_vol_ann / vol_ann)
 
   # Scale log returns
@@ -968,9 +1002,13 @@ bt_normalize_risk <- function(xts, risk = 10, type = c("Discrete", "Log")) {
 #' @return Character scalar, either "normal" or "nofee".
 #' @keywords internal
 normalize_fee_mode <- function(val, default = "normal") {
-  if (missing(val) || is.null(val) || length(val) == 0) return(default)
+  if (missing(val) || is.null(val) || length(val) == 0) {
+    return(default)
+  }
   raw <- as.character(val)[1]
-  if (!nzchar(raw)) return(default)
+  if (!nzchar(raw)) {
+    return(default)
+  }
   clean <- gsub("[^A-Za-z0-9]", "", tolower(raw))
   if (clean %in% c("nofee", "nofees", "none", "zero", "0", "nocharge", "withoutfees")) {
     return("nofee")
@@ -1040,30 +1078,30 @@ normalize_fee_mode <- function(val, default = "normal") {
 #'   labels.
 #' @export
 bt_batch <- function(
-    type = c("eldoc", "ema", "sma"),
-    tickers,
-    timeframes = "1D",
-    mup = 40,
-    mdown = 40,
-    mps_risk_value = 2,
-    mps = "pct",
-    fee = "normal",
-    start_date = "1900-01-01",
-    end_date = Sys.Date(),
-    long = TRUE,
-    short = TRUE,
-    invert_signals = FALSE,
-    normalize_risk = NULL,
-    geometric = FALSE,
-    verbose = FALSE,
-    only_returns = FALSE,
-    hide_details = FALSE,
-    returns_type = "Log",
-    plot_mult = FALSE,
-    gen_portfolio = NULL,
-    gen_portfolio_weights = NULL,
-    gen_portfolio_norm_risk = NULL,
-    ...
+  type = c("eldoc", "ema", "sma"),
+  tickers,
+  timeframes = "1D",
+  mup = 40,
+  mdown = 40,
+  mps_risk_value = 2,
+  mps = "pct",
+  fee = "normal",
+  start_date = "1900-01-01",
+  end_date = Sys.Date(),
+  long = TRUE,
+  short = TRUE,
+  invert_signals = FALSE,
+  normalize_risk = NULL,
+  geometric = FALSE,
+  verbose = FALSE,
+  only_returns = FALSE,
+  hide_details = FALSE,
+  returns_type = "Log",
+  plot_mult = FALSE,
+  gen_portfolio = NULL,
+  gen_portfolio_weights = NULL,
+  gen_portfolio_norm_risk = NULL,
+  ...
 ) {
   if (!requireNamespace("xts", quietly = TRUE)) stop("Package 'xts' is required.")
 
@@ -1117,12 +1155,23 @@ bt_batch <- function(
   spec_input <- if (using_spec_list) spec_list_input else tickers
 
   normalize_rtype <- function(x) {
-    if (is.null(x) || length(x) == 0) return("Log")
-    x <- as.character(x)[1]; y <- tolower(gsub("[^A-Za-z]", "", x))
-    if (y %in% c("log", "l")) return("Log")
-    if (y %in% c("discrete", "d")) return("Discrete")
-    if (y %in% c("logadj", "lognormalized", "lognorm")) return("LogAdj")
-    if (y %in% c("discreteadj", "discretenormalized", "discretenorm")) return("DiscreteAdj")
+    if (is.null(x) || length(x) == 0) {
+      return("Log")
+    }
+    x <- as.character(x)[1]
+    y <- tolower(gsub("[^A-Za-z]", "", x))
+    if (y %in% c("log", "l")) {
+      return("Log")
+    }
+    if (y %in% c("discrete", "d")) {
+      return("Discrete")
+    }
+    if (y %in% c("logadj", "lognormalized", "lognorm")) {
+      return("LogAdj")
+    }
+    if (y %in% c("discreteadj", "discretenormalized", "discretenorm")) {
+      return("DiscreteAdj")
+    }
     "Log"
   }
 
@@ -1153,8 +1202,12 @@ bt_batch <- function(
   data_env <- .get_bt_data_env()
 
   preload_symbol <- function(symbol, base_sym) {
-    if (exists(symbol, envir = data_env, inherits = FALSE)) return(invisible(NULL))
-    if (exists(symbol, envir = .GlobalEnv, inherits = FALSE)) return(invisible(NULL))
+    if (exists(symbol, envir = data_env, inherits = FALSE)) {
+      return(invisible(NULL))
+    }
+    if (exists(symbol, envir = .GlobalEnv, inherits = FALSE)) {
+      return(invisible(NULL))
+    }
     base_obj <- NULL
     if (exists(base_sym, envir = data_env, inherits = FALSE)) base_obj <- get(base_sym, envir = data_env)
     if (is.null(base_obj) && exists(base_sym, envir = .GlobalEnv, inherits = FALSE)) base_obj <- get(base_sym, envir = .GlobalEnv)
@@ -1164,10 +1217,14 @@ bt_batch <- function(
   }
 
   extract_returns <- function(rets_xts, rtype, norm_risk_numeric) {
-    if (is.null(rets_xts)) return(NULL)
+    if (is.null(rets_xts)) {
+      return(NULL)
+    }
     find_col <- function(column) {
       idx <- which(tolower(colnames(rets_xts)) == tolower(column))
-      if (!length(idx)) return(NULL)
+      if (!length(idx)) {
+        return(NULL)
+      }
       rets_xts[, idx[1], drop = FALSE]
     }
     base <- switch(rtype,
@@ -1201,7 +1258,9 @@ bt_batch <- function(
         }
       }
     }
-    if (!is.null(base_col)) return(base_col)
+    if (!is.null(base_col)) {
+      return(base_col)
+    }
     rets_xts[, 1, drop = FALSE]
   }
 
@@ -1211,10 +1270,14 @@ bt_batch <- function(
     }
 
     trim_token <- function(token) {
-      if (is.null(token) || !length(token)) return(NA_character_)
+      if (is.null(token) || !length(token)) {
+        return(NA_character_)
+      }
       token <- as.character(token)[1]
       token <- trimws(token)
-      if (!nzchar(token)) return(NA_character_)
+      if (!nzchar(token)) {
+        return(NA_character_)
+      }
       token
     }
 
@@ -1323,29 +1386,43 @@ bt_batch <- function(
   }
 
   idx_to_posixct <- function(idx) {
-    if (length(idx) == 0) return(as.POSIXct(character(0), tz = "UTC"))
-    if (inherits(idx, "POSIXt")) return(as.POSIXct(idx, tz = "UTC"))
-    if (inherits(idx, "Date"))   return(as.POSIXct(idx, tz = "UTC"))
+    if (length(idx) == 0) {
+      return(as.POSIXct(character(0), tz = "UTC"))
+    }
+    if (inherits(idx, "POSIXt")) {
+      return(as.POSIXct(idx, tz = "UTC"))
+    }
+    if (inherits(idx, "Date")) {
+      return(as.POSIXct(idx, tz = "UTC"))
+    }
     if (inherits(idx, "yearmon") || inherits(idx, "yearqtr")) {
       if (requireNamespace("zoo", quietly = TRUE)) {
         d <- tryCatch(as.Date(idx), error = function(e) NA)
-        if (!all(is.na(d))) return(as.POSIXct(d, tz = "UTC"))
+        if (!all(is.na(d))) {
+          return(as.POSIXct(d, tz = "UTC"))
+        }
       }
     }
     try1 <- suppressWarnings(try(as.POSIXct(idx, origin = "1970-01-01", tz = "UTC"), silent = TRUE))
-    if (!inherits(try1, "try-error") && all(is.finite(as.numeric(try1)))) return(try1)
+    if (!inherits(try1, "try-error") && all(is.finite(as.numeric(try1)))) {
+      return(try1)
+    }
     try2 <- suppressWarnings(try(as.POSIXct(idx, tz = "UTC"), silent = TRUE))
-    if (!inherits(try2, "try-error") && all(is.finite(as.numeric(try2)))) return(try2)
+    if (!inherits(try2, "try-error") && all(is.finite(as.numeric(try2)))) {
+      return(try2)
+    }
     as.POSIXct(character(0), tz = "UTC")
   }
 
   zero_returns_xts <- function(idx) {
-    ob <- idx_to_posixct(idx); n <- length(ob)
+    ob <- idx_to_posixct(idx)
+    n <- length(ob)
     xts::xts(matrix(0, nrow = n, ncol = 1), order.by = ob)
   }
 
   zero_full_returns_xts <- function(idx, normalize_target = NA_real_) {
-    ob <- idx_to_posixct(idx); n <- length(ob)
+    ob <- idx_to_posixct(idx)
+    n <- length(ob)
     discrete <- xts::xts(matrix(0, nrow = n, ncol = 1), order.by = ob)
     colnames(discrete) <- "Discrete"
     log_xts <- xts::xts(matrix(0, nrow = n, ncol = 1), order.by = ob)
@@ -1358,11 +1435,14 @@ bt_batch <- function(
   }
 
   sanitize_dt_attrs <- function(dt) {
-    if (!xts::is.xts(dt)) return(NULL)
+    if (!xts::is.xts(dt)) {
+      return(NULL)
+    }
     tsz <- .sanitize_scalar_numeric(attr(dt, "fut_tick_size"), default = 0.01)
     mult <- .sanitize_scalar_numeric(attr(dt, "fut_multiplier"), default = 1)
-    mat  <- attr(dt, "maturity")
-    cur  <- attr(dt, "currency"); if (is.null(cur)) cur <- "USD"
+    mat <- attr(dt, "maturity")
+    cur <- attr(dt, "currency")
+    if (is.null(cur)) cur <- "USD"
     attr(dt, "fut_tick_size") <- tsz
     attr(dt, "fut_multiplier") <- mult
     attr(dt, "maturity") <- mat
@@ -1373,7 +1453,9 @@ bt_batch <- function(
   fetch_xts_or_fallback <- function(symbol, base_sym) {
     if (exists(symbol, envir = data_env, inherits = FALSE)) {
       obj <- get(symbol, envir = data_env)
-      if (xts::is.xts(obj)) return(obj)
+      if (xts::is.xts(obj)) {
+        return(obj)
+      }
     }
     base_obj <- NULL
     if (exists(base_sym, envir = data_env, inherits = FALSE)) base_obj <- get(base_sym, envir = data_env)
@@ -1383,14 +1465,20 @@ bt_batch <- function(
 
   fallback_index <- function(ticker_with_tf, base_sym) {
     idx <- tryCatch(index(get(ticker_with_tf, envir = data_env)), error = function(e) NULL)
-    if (!is.null(idx)) return(idx)
+    if (!is.null(idx)) {
+      return(idx)
+    }
     td <- fetch_xts_or_fallback(ticker_with_tf, base_sym)
-    if (!is.null(td)) return(index(td))
+    if (!is.null(td)) {
+      return(index(td))
+    }
     as.POSIXct(character(0))
   }
 
   prepare_portfolio_specs <- function(groups) {
-    if (is.null(groups) || length(groups) == 0) return(list())
+    if (is.null(groups) || length(groups) == 0) {
+      return(list())
+    }
     combos <- groups
     if (!is.list(combos)) combos <- list(combos)
     combo_names <- names(combos)
@@ -1401,7 +1489,9 @@ bt_batch <- function(
     }
 
     unique_ordered <- function(x) {
-      if (length(x) == 0) return(x)
+      if (length(x) == 0) {
+        return(x)
+      }
       x[!duplicated(x)]
     }
 
@@ -1412,17 +1502,23 @@ bt_batch <- function(
 
       append_numeric <- function(vals) {
         vals <- vals[!is.na(vals)]
-        if (!length(vals)) return()
+        if (!length(vals)) {
+          return()
+        }
         acc_nums <<- c(acc_nums, as.integer(vals))
       }
 
       append_token <- function(tok) {
-        if (is.null(tok) || length(tok) == 0) return()
+        if (is.null(tok) || length(tok) == 0) {
+          return()
+        }
         tok <- trimws(tok)
         if ((startsWith(tok, "'") && endsWith(tok, "'")) || (startsWith(tok, '"') && endsWith(tok, '"'))) {
           tok <- substring(tok, 2, nchar(tok) - 1)
         }
-        if (!nzchar(tok)) return()
+        if (!nzchar(tok)) {
+          return()
+        }
         parts <- strsplit(tok, "[+,]")[[1]]
         for (part in parts) {
           part <- trimws(part)
@@ -1468,9 +1564,13 @@ bt_batch <- function(
       manual_tokens <- character()
 
       append_manual_nums <- function(val) {
-        if (is.null(val) || length(val) == 0) return()
+        if (is.null(val) || length(val) == 0) {
+          return()
+        }
         vec <- unlist(val, use.names = FALSE)
-        if (!length(vec)) return()
+        if (!length(vec)) {
+          return()
+        }
         for (item in vec) {
           parts <- if (is.character(item)) strsplit(item, "[+,;\\s]+")[[1]] else as.character(item)
           if (length(parts) == 0) next
@@ -1484,9 +1584,13 @@ bt_batch <- function(
       }
 
       append_manual_components <- function(val) {
-        if (is.null(val) || length(val) == 0) return()
+        if (is.null(val) || length(val) == 0) {
+          return()
+        }
         vec <- unlist(val, use.names = FALSE)
-        if (!length(vec)) return()
+        if (!length(vec)) {
+          return()
+        }
         for (item in vec) {
           parts <- if (is.character(item)) strsplit(item, "[+,;]")[[1]] else as.character(item)
           if (length(parts) == 0) next
@@ -1529,7 +1633,9 @@ bt_batch <- function(
   }
 
   prepare_weight_sets <- function(weights_input, n_groups) {
-    if (n_groups == 0) return(list())
+    if (n_groups == 0) {
+      return(list())
+    }
     if (is.null(weights_input) || length(weights_input) == 0) {
       return(vector("list", n_groups))
     }
@@ -1549,7 +1655,9 @@ bt_batch <- function(
   }
 
   resolve_weights <- function(weight_vec, n) {
-    if (n <= 0) return(numeric(0))
+    if (n <= 0) {
+      return(numeric(0))
+    }
     if (is.null(weight_vec) || length(weight_vec) == 0) {
       return(rep(1, n))
     }
@@ -1569,7 +1677,9 @@ bt_batch <- function(
   }
 
   resolve_portfolio_norms <- function(norm_input, n_groups) {
-    if (n_groups == 0) return(vector("list", 0))
+    if (n_groups == 0) {
+      return(vector("list", 0))
+    }
     if (is.null(norm_input) || length(norm_input) == 0) {
       return(vector("list", n_groups))
     }
@@ -1601,7 +1711,9 @@ bt_batch <- function(
   }
 
   format_group_label <- function(name) {
-    if (is.null(name) || !nzchar(name)) return(NULL)
+    if (is.null(name) || !nzchar(name)) {
+      return(NULL)
+    }
     name <- as.character(name)[1]
     paste0(toupper(substr(name, 1, 1)), substring(name, 2))
   }
@@ -1613,13 +1725,15 @@ bt_batch <- function(
       }
       tsz <- .sanitize_scalar_numeric(tick_size, default = 0.01)
       mult <- .sanitize_scalar_numeric(multiplier, default = 1)
-      cur  <- if (is.null(currency)) "USD" else as.character(currency)[1]
+      cur <- if (is.null(currency)) "USD" else as.character(currency)[1]
       suppressWarnings(
-        FinancialInstrument::future(primary_id = primary_id,
-                                    tick_size = tsz,
-                                    multiplier = mult,
-                                    maturity = maturity,
-                                    currency = cur, ...)
+        FinancialInstrument::future(
+          primary_id = primary_id,
+          tick_size = tsz,
+          multiplier = mult,
+          maturity = maturity,
+          currency = cur, ...
+        )
       )
     }
     exec_env <- new.env(parent = .GlobalEnv)
@@ -1829,10 +1943,13 @@ bt_batch <- function(
             stats = NULL,
             trades = NULL,
             rets_acct = NULL,
-            mktdata = tryCatch({
-              obj <- get(data_symbol, envir = data_env)
-              if (xts::is.xts(obj)) obj else NULL
-            }, error = function(e) NULL)
+            mktdata = tryCatch(
+              {
+                obj <- get(data_symbol, envir = data_env)
+                if (xts::is.xts(obj)) obj else NULL
+              },
+              error = function(e) NULL
+            )
           )
           names(one_res) <- c("rets", "stats", "trades", "rets_acct", "mktdata")
         }
@@ -1922,18 +2039,26 @@ bt_batch <- function(
   data_env <- .get_bt_data_env()
 
   resolve_alias_label <- function(token) {
-    if (is.null(token) || !nzchar(token)) return(NULL)
+    if (is.null(token) || !nzchar(token)) {
+      return(NULL)
+    }
     token_trim <- trimws(as.character(token)[1])
-    if (!nzchar(token_trim)) return(NULL)
+    if (!nzchar(token_trim)) {
+      return(NULL)
+    }
     keys <- names(portfolio_alias_map)
     if (length(keys)) {
       idx <- match(tolower(token_trim), tolower(keys))
-      if (!is.na(idx)) return(portfolio_alias_map[[keys[idx]]])
+      if (!is.na(idx)) {
+        return(portfolio_alias_map[[keys[idx]]])
+      }
     }
     map_keys <- names(all_returns_map)
     if (length(map_keys)) {
       idx <- match(tolower(token_trim), tolower(map_keys))
-      if (!is.na(idx)) return(map_keys[idx])
+      if (!is.na(idx)) {
+        return(map_keys[idx])
+      }
     }
     NULL
   }
@@ -1949,30 +2074,43 @@ bt_batch <- function(
   }
 
   fetch_external_returns <- function(symbol) {
-    if (is.null(symbol) || !nzchar(symbol)) return(NULL)
+    if (is.null(symbol) || !nzchar(symbol)) {
+      return(NULL)
+    }
     symbol <- as.character(symbol)[1]
-    if (!is.null(all_returns_map[[symbol]])) return(all_returns_map[[symbol]])
-    if (!is.null(external_returns_cache[[symbol]])) return(external_returns_cache[[symbol]])
+    if (!is.null(all_returns_map[[symbol]])) {
+      return(all_returns_map[[symbol]])
+    }
+    if (!is.null(external_returns_cache[[symbol]])) {
+      return(external_returns_cache[[symbol]])
+    }
 
     clean_xts <- function(obj) {
-      if (is.null(obj)) return(NULL)
+      if (is.null(obj)) {
+        return(NULL)
+      }
       if (!xts::is.xts(obj)) {
         obj <- try(xts::as.xts(obj), silent = TRUE)
-        if (inherits(obj, "try-error") || is.null(obj)) return(NULL)
+        if (inherits(obj, "try-error") || is.null(obj)) {
+          return(NULL)
+        }
       }
       obj
     }
 
     fallback_yahoo <- function(sym) {
-      if (!requireNamespace("quantmod", quietly = TRUE)) return(NULL)
+      if (!requireNamespace("quantmod", quietly = TRUE)) {
+        return(NULL)
+      }
       tryCatch(
         {
           suppressWarnings(
             quantmod::getSymbols(sym,
-                                 src = "yahoo",
-                                 auto.assign = FALSE,
-                                 from = as.Date(default_start_chr),
-                                 to = as.Date(default_end_chr))
+              src = "yahoo",
+              auto.assign = FALSE,
+              from = as.Date(default_start_chr),
+              to = as.Date(default_end_chr)
+            )
           )
         },
         error = function(e) NULL
@@ -1983,11 +2121,14 @@ bt_batch <- function(
     data <- clean_xts(data)
 
     if (is.null(data)) {
-      data <- try(sm_get_data(symbol,
-                              future_history = FALSE,
-                              single_xts = TRUE,
-                              local_data = FALSE),
-                  silent = TRUE)
+      data <- try(
+        sm_get_data(symbol,
+          future_history = FALSE,
+          single_xts = TRUE,
+          local_data = FALSE
+        ),
+        silent = TRUE
+      )
       if (inherits(data, "try-error")) data <- NULL
     }
 
@@ -1996,17 +2137,20 @@ bt_batch <- function(
     if (is.null(data)) {
       data <- try(
         .bt_fetch_ticker_data(symbol,
-                              data_env = data_env,
-                              start_date = default_start_chr,
-                              end_date = default_end_chr,
-                              clean_di = TRUE),
+          data_env = data_env,
+          start_date = default_start_chr,
+          end_date = default_end_chr,
+          clean_di = TRUE
+        ),
         silent = TRUE
       )
       if (inherits(data, "try-error")) data <- NULL
     }
 
     data <- clean_xts(data)
-    if (is.null(data) || NROW(data) < 2) return(NULL)
+    if (is.null(data) || NROW(data) < 2) {
+      return(NULL)
+    }
 
     if (!all(c("Log", "Discrete") %in% colnames(data))) {
       data <- .use_close_only(data)
@@ -2015,7 +2159,9 @@ bt_batch <- function(
       if (is.null(close_col)) close_col <- try(Cl(data), silent = TRUE)
       if (inherits(close_col, "try-error") || is.null(close_col)) close_col <- data[, 1, drop = FALSE]
       close_col <- zoo::na.locf(close_col, na.rm = FALSE)
-      if (NROW(close_col) < 2) return(NULL)
+      if (NROW(close_col) < 2) {
+        return(NULL)
+      }
       log_ret <- diff(log(as.numeric(close_col)))
       log_xts <- xts::xts(log_ret, order.by = index(close_col)[-1])
       colnames(log_xts) <- "Log"
@@ -2094,7 +2240,9 @@ bt_batch <- function(
 
       log_series <- lapply(seq_along(component_returns), function(k) {
         rets <- component_returns[[k]]
-        if (!"Log" %in% colnames(rets)) return(NULL)
+        if (!"Log" %in% colnames(rets)) {
+          return(NULL)
+        }
         series <- rets[, "Log", drop = FALSE]
         colnames(series) <- component_labels[k]
         series
@@ -2104,7 +2252,12 @@ bt_batch <- function(
         next
       }
 
-      merged_logs <- tryCatch({ do.call(xts::merge.xts, c(log_series, list(all = TRUE))) }, error = function(e) NULL)
+      merged_logs <- tryCatch(
+        {
+          do.call(xts::merge.xts, c(log_series, list(all = TRUE)))
+        },
+        error = function(e) NULL
+      )
       if (is.null(merged_logs)) next
       merged_matrix <- as.matrix(merged_logs)
       if (is.null(dim(merged_matrix))) next
@@ -2288,13 +2441,24 @@ bt_batch <- function(
   }
 
   if (isTRUE(plot_mult) && length(plot_list) > 0) {
-    tryCatch({ do.call(tplot, plot_list) }, error = function(e) warning(sprintf("plot_mult failed: %s", conditionMessage(e))))
+    tryCatch(
+      {
+        do.call(tplot, plot_list)
+      },
+      error = function(e) warning(sprintf("plot_mult failed: %s", conditionMessage(e)))
+    )
   }
 
   if (isTRUE(only_returns)) {
-    if (length(returns_list) == 0) return(xts::xts(matrix(numeric(0), ncol = 0), order.by = as.POSIXct(character(0))))
-    out <- tryCatch({ do.call(xts::merge.xts, c(returns_list, list(all = TRUE))) },
-                    error = function(e) Reduce(function(a, b) merge(a, b, all = TRUE), returns_list))
+    if (length(returns_list) == 0) {
+      return(xts::xts(matrix(numeric(0), ncol = 0), order.by = as.POSIXct(character(0))))
+    }
+    out <- tryCatch(
+      {
+        do.call(xts::merge.xts, c(returns_list, list(all = TRUE)))
+      },
+      error = function(e) Reduce(function(a, b) merge(a, b, all = TRUE), returns_list)
+    )
     return(out)
   } else {
     return(results_list)

@@ -1,6 +1,6 @@
-Package: rBacktestTools
+Package: backtestforge
 Type: Package
-Title: What the Package Does (Title Case)
+Title: Easy backtesting tools
 Version: 0.0.1
 Authors@R: person(
     given = "Hugo",

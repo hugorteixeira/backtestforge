@@ -18,7 +18,7 @@
   prefer = "Close",
   risk,
   reinvest = FALSE,
-  start_capital = 1e+06,
+  start_capital = 1e+07,
   maxQty = NA,
   maxQtyBySymbol = NULL,
   minRiskPct = 5e-04,

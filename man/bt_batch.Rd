@@ -35,23 +35,28 @@ bt_batch(
 \item{type}{Character scalar selecting the indicator module. One of
 \code{"eldoc"} (Donchian), \code{"ema"}, or \code{"sma"}.}
 
-\item{tickers}{Character vector of base symbols to backtest.}
+\item{tickers}{Character vector of base symbols to backtest, or a (named)
+list where each element describes overrides for a specific ticker (e.g.
+\code{list(ES = list(timeframes = c("30M", "1H"), mup = c(30, 40)))}). When
+omitted you may pass the specification list as the first argument (e.g.
+\verb{bt_batch(list(MySpec = list(ticker = "ES", type = "eldoc", timeframes = "1H"))))}),
+allowing each specification to provide its own \code{ticker}, \code{type}, and
+parameter grid.}
 
 \item{timeframes}{Character vector of timeframe suffixes appended to each
-symbol (e.g. \code{"4H"}).}
+ticker (e.g. \code{"4H"}).}
 
 \item{mup, mdown}{Numeric vectors used as Donchian window lengths and also as
-fallbacks for moving-average speeds when the selected module expects
-\code{fast}/\code{slow} parameters.}
+fallbacks for moving-average speeds.}
 
-\item{mps_risk_value}{Numeric risk value passed to the position-sizing
+\item{mps_risk_value}{Numeric risk percentage passed to the position-sizing
 function.}
 
 \item{mps}{Character string specifying the position-sizing method.}
 
 \item{fee}{Fee handling mode per test (\code{"normal"} or \code{"nofee"}).}
 
-\item{start_date, end_date}{Optional \code{Date} boundaries for fetched data.}
+\item{start_date, end_date}{Optional boundaries for fetched data.}
 
 \item{long, short}{Logical flags enabling long and/or short trades.}
 
@@ -61,34 +66,37 @@ function.}
 
 \item{geometric}{Logical indicating geometric aggregation for reports.}
 
-\item{verbose}{Logical for emitting progress messages.}
+\item{verbose}{Logical or logical vector for emitting progress messages.}
 
-\item{only_returns}{Logical; if TRUE, returns an \code{xts} matrix of returns instead of
-the full backtest objects.}
+\item{only_returns}{Logical; if \code{TRUE}, returns an \code{xts} matrix of returns
+instead of the full backtest objects.}
 
 \item{hide_details}{Logical flag propagated to the underlying backtest.}
 
 \item{returns_type}{Desired returns column (\code{"Log"}, \code{"Discrete"},
 \code{"LogAdj"}, or \code{"DiscreteAdj"}).}
 
-\item{plot_mult}{Logical flag; if TRUE, plots combined results via \code{tplot()}.}
+\item{plot_mult}{Logical flag; if \code{TRUE}, plots combined results via \code{tplot()}.}
 
-\item{gen_portfolio}{Optional vector or list defining groups of result indices
-to be aggregated into synthetic portfolios. Each element (or the entire vector
-when not a list) is treated as one group, producing an additional
-\code{Portfolio_*} series built from the specified backtests.}
+\item{gen_portfolio}{Optional vector or list describing which backtest
+outputs to aggregate into synthetic portfolios. Each element (or the entire
+vector when not a list) is treated as one group of indices based on the
+execution order, producing an additional \verb{Portfolio_*} series. Elements may
+be numeric vectors, character identifiers, or lists containing \code{indices}
+and/or \code{labels} entries.}
 
-\item{gen_portfolio_weights}{Optional weights corresponding to
-\code{gen_portfolio}. Accepts a vector (recycled) or a list mirroring the group
-structure. Missing, zero, or \code{NA} weights default to equal weighting.}
+\item{gen_portfolio_weights}{Optional weights applied to each group defined
+by \code{gen_portfolio}. Accepts a vector (recycled) or list mirroring the group
+structure. When omitted or containing only zeros/\code{NA}, equal weights are
+assumed for the corresponding group.}
 
-\item{gen_portfolio_norm_risk}{Optional numeric vector mirroring the groups in
-\code{gen_portfolio}, specifying the target annualised volatility for each
-generated portfolio. When omitted, portfolio aggregates keep their natural
-risk.}
+\item{gen_portfolio_norm_risk}{Optional numeric vector mirroring the groups
+in \code{gen_portfolio}, specifying the target annualised volatility for each
+generated portfolio. When omitted, portfolio aggregates keep the natural
+volatility of their components.}
 
-\item{...}{Indicator-specific parameter vectors (e.g., \code{fast}, \code{slow}
-for moving averages).}
+\item{...}{Indicator-specific parameter vectors (e.g., \code{fast}, \code{slow} for
+moving averages).}
 }
 \value{
 When \code{only_returns = TRUE}, an \code{xts} object with merged returns
@@ -97,6 +105,7 @@ labels.
 }
 \description{
 Vectorises the single-ticker backtest wrappers (\code{bt_eldoc()}, \code{bt_ema()},
-\code{bt_sma()}) across symbols, timeframes, and parameter grids. Indicator
-parameters recycle so you can mix scalar defaults with per-test overrides.
+\code{bt_sma()}) across symbols, timeframes, and parameter grids. Indicator-specific
+parameters can be supplied through \code{mup}/\code{mdown} for Donchian runs or via
+\code{...} when using other modules.
 }

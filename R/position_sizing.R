@@ -97,7 +97,7 @@
   if (inherits(maturity_date, "Date")) {
     md <- maturity_date
     n  <- bizdays::bizdays(basis_date, md, cal)
-    mm <- lubridate::interval(basis_date, md) %/% lubridate::months(1)
+    mm <- lubridate::interval(basis_date, md) %/% months(1)
   } else if (is.numeric(maturity_date)) {
     md <- NULL
     n  <- as.integer(maturity_date)
@@ -648,7 +648,7 @@
     return(-1 * (((fees * 3)+10)*qty))
   } else if (!is.null(matched_pattern_b) && matched_pattern_b %in% c("DI1")) {
     #print("DI1 futures detected.")
-    return(-1 * (qty * fees * 1.25))
+    return(-1 * (qty * fees * 2))
 
   }
   #print("Other detected.")

@@ -8,7 +8,8 @@
   rates,
   maturity_date,
   basis_date = Sys.Date(),
-  cal = NULL
+  cal = NULL,
+  rule_change_date = as.Date("2025-08-28")
 )
 }
 \arguments{

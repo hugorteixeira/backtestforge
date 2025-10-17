@@ -1,4 +1,4 @@
-# 📈 rBacktestTools
+# 📈 backtestforge
 
 > **⚠️ WORK IN PROGRESS - EXPECT BUGS!** ⚠️
 
@@ -14,7 +14,7 @@ A powerful R library for simplifying backtesting with **blotter/quantstrat** usi
 - **Smart Position Sizing** - Risk-based position sizing with multiple methods
 - **Multi-Asset Support** - Works with stocks, futures, and crypto
 - **Futures Specialization** - Custom logic for DI futures and other instruments
-- **Visual Backtesting** - Integrated plotting with `rTradingPlots`
+- **Visual Backtesting** - Integrated plotting with `tplotforge`
 - **Performance Analytics** - Comprehensive performance reporting
 
 ## ⚠️ Important Disclaimer
@@ -53,7 +53,7 @@ A powerful R library for simplifying backtesting with **blotter/quantstrat** usi
 install.packages("devtools")
 
 # Install from GitHub
-devtools::install_github("hugorteixeira/rBacktestTools")
+devtools::install_github("hugorteixeira/backtestforge")
 ```
 
 ## 🚀 Quick Start
@@ -61,7 +61,7 @@ devtools::install_github("hugorteixeira/rBacktestTools")
 Here's how to run a basic Donchian Channel backtest:
 
 ```r
-library(rBacktestTools)
+library(backtestforge)
 
 # Simple stock backtest with 40/40 Donchian channels
 results <- bt_eldoc(
@@ -135,7 +135,7 @@ This library builds on top of these excellent R packages:
 - `FinancialInstrument` - Instrument modeling
 - `PerformanceAnalytics` - Performance metrics
 - `rSenhorMercadoAPI` - Data fetching (custom)
-- `rTradingPlots` - Visualization (custom)
+- `tplotforge` - Visualization (custom)
 
 ## 🤝 Contributing
 
@@ -163,11 +163,11 @@ This project is licensed under the GPL-3 License - see the [LICENSE](LICENSE) fi
 
 ## 👨‍💻 About the Author
 
-Hi, I’m Hugo. I build tools around trading and backtesting in R to streamline workflow and help iterate on strategies faster. If you find rBacktestTools useful (or frustrating!), feedback is welcome.
+Hi, I’m Hugo. I build tools around trading and backtesting in R to streamline workflow and help iterate on strategies faster. If you find backtestforge useful (or frustrating!), feedback is welcome.
 
 
 ---
 
-Project Link: [https://github.com/hugorteixeira/rBacktestTools](https://github.com/hugorteixeira/rBacktestTools)
+Project Link: [https://github.com/hugorteixeira/backtestforge](https://github.com/hugorteixeira/backtestforge)
 
 <p align="center">Made with ❤️ and ☕ in R</p>

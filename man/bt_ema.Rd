@@ -27,20 +27,47 @@ bt_ema(
 )
 }
 \arguments{
-\item{ticker}{Symbol or the name of an object containing OHLC data.}
+\item{ticker}{Character symbol or name of an object in the global environment
+with OHLC data. If not found, data is fetched via \code{sm_get_data()}.}
 
-\item{fast}{Integer length of the fast EMA.}
+\item{fast}{Integer length of the fast EMA (default 20).}
 
-\item{slow}{Integer length of the slow EMA.}
+\item{slow}{Integer length of the slow EMA (default 50).}
 
-\item{ps_risk_value, ps, fee, start_date, end_date, long, short, invert_signals, normalize_risk, geometric, verbose, only_returns, hide_details, stop_before_maturity, clean_di, plot}{Parameters forwarded to \code{bt_eldoc()} for data handling, risk calibration, and reporting.}
-}
-\value{
-A list with backtest artefacts identical to \code{bt_eldoc()} or, when
-\code{only_returns = TRUE}, an \code{xts} series of returns.
+\item{ps_risk_value}{Numeric risk percentage (e.g., 2 for 2\%) used by the
+position sizing function.}
+
+\item{ps}{Character label for position sizing mode (informational).}
+
+\item{fee}{Either \code{"normal"} (use instrument fees/slippage if available) or
+\code{"nofee"} to disable fees.}
+
+\item{start_date}{Character or Date, start date when fetching data.}
+
+\item{end_date}{Date, end date when fetching data (default \code{Sys.Date()}).}
+
+\item{long}{Logical, enable long entries.}
+
+\item{short}{Logical, enable short entries.}
+
+\item{invert_signals}{Logical, invert entry/exit mapping (debug/testing).}
+
+\item{normalize_risk}{Optional numeric target risk used to append
+normalized return columns to the output.}
+
+\item{geometric}{Logical, use geometric returns when reporting performance.}
+
+\item{verbose}{Logical, print detailed summaries to the console.}
+
+\item{only_returns}{Logical; if \code{TRUE}, returns only the portfolio returns \code{xts}.}
+
+\item{hide_details}{Logical; if \code{TRUE}, simplifies internal object names.}
+
+\item{plot}{Logical; if \code{TRUE}, plots the portfolio using \code{rTradingPlots::tplot}.}
 }
 \description{
-Builds a two-line exponential moving average crossover system where trades are
-opened when the fast EMA crosses the slow EMA and closed when the relationship
-reverses while reusing the same infrastructure as \code{bt_eldoc()}.
+Builds a two-line exponential moving average crossover system where trades
+are opened when the fast EMA crosses the slow EMA and closed when the
+relationship reverses. All other parameters mirror \code{\link[=bt_eldoc]{bt_eldoc()}}, allowing
+reuse of the same position sizing, data sourcing, and reporting pipeline.
 }
