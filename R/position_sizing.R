@@ -480,7 +480,9 @@
     if (!is.null(data_xts)) {
       attrs <- c(attrs,
                  attr(data_xts, "bt_original_symbol"),
-                 attr(data_xts, "bt_root_symbol"))
+                 attr(data_xts, "bt_root_symbol"),
+                 attr(data_xts, "bt_fetched_symbol"),
+                 attr(data_xts, "bt_requested_symbol"))
     }
     cand <- c(sym, attrs)
     extras <- unlist(lapply(unique(c(sym, attrs)), drop_suffixes), use.names = FALSE)
@@ -505,6 +507,27 @@
   if (is.null(inst_lookup) && !is.null(data_obj)) {
     .register_future_from_data(Symbol, data_obj, overwrite = FALSE)
     inst_lookup <- fetch_instrument(gather_candidates(Symbol, data_obj))
+    if (is.null(inst_lookup)) {
+      fetched_sym <- attr(data_obj, "bt_fetched_symbol")
+      if (!is.null(fetched_sym) && length(fetched_sym)) {
+        fetched_sym <- as.character(fetched_sym)[1]
+        if (nzchar(fetched_sym) && !identical(fetched_sym, Symbol)) {
+          .register_future_from_data(fetched_sym, data_obj, overwrite = FALSE)
+          inst_lookup <- fetch_instrument(gather_candidates(Symbol, data_obj))
+        }
+      }
+    }
+  }
+
+  if (is.null(inst_lookup) && !is.null(data_obj)) {
+    fetched_sym <- attr(data_obj, "bt_root_symbol")
+    if (!is.null(fetched_sym) && length(fetched_sym)) {
+      fetched_sym <- as.character(fetched_sym)[1]
+      if (nzchar(fetched_sym) && !identical(fetched_sym, Symbol)) {
+        .register_future_from_data(fetched_sym, data_obj, overwrite = FALSE)
+        inst_lookup <- fetch_instrument(gather_candidates(Symbol, data_obj))
+      }
+    }
   }
 
   if (!is.null(inst_lookup) && !identical(inst_lookup$symbol, Symbol)) {

@@ -22,7 +22,7 @@ Imports:
     FinancialInstrument,
     PerformanceAnalytics,
     rSenhorMercadoAPI,
-    rTradingPlots,
+    tradeplotr,
     quantmod,
     httr,
     TTR,

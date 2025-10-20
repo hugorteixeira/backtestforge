@@ -21,12 +21,12 @@
 #' @importFrom TTR runMax runMin
 #' @importFrom magrittr %>%
 #' @importFrom rSenhorMercadoAPI sm_get_data
-#' @importFrom rTradingPlots tplot
+#' @importFrom tradeplotr tplot
 #' @importFrom bizdays create.calendar
 ## usethis namespace: end
 NULL
 
 # Suppress R CMD check notes for non-standard evaluation
 utils::globalVariables(c(
-  "mktdata","cal_b3","Symbol", "Portfolio", "stat_name", "value", "order_key"
+  "mktdata", "cal_b3", "Symbol", "Portfolio", "stat_name", "value", "order_key"
 ))

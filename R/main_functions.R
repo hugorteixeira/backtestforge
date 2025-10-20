@@ -44,23 +44,79 @@
 }
 
 .bt_fetch_ticker_data <- function(symbol, data_env, start_date, end_date, clean_di = TRUE) {
-  if (exists(symbol, envir = data_env, inherits = FALSE)) {
-    ticker_data <- get(symbol, envir = data_env)
-  } else if (exists(symbol, envir = .GlobalEnv, inherits = FALSE)) {
-    ticker_data <- get(symbol, envir = .GlobalEnv)
-  } else {
-    ticker_data <- sm_get_data(symbol,
-      start_date = start_date,
-      end_date = end_date,
-      future_history = FALSE,
-      single_xts = TRUE,
-      local_data = FALSE
+  symbol_chr <- if (length(symbol)) as.character(symbol)[1] else ""
+  candidate_symbols <- symbol_chr
+  daily_suffix <- "_1[dD]$"
+  if (nzchar(symbol_chr) && grepl(daily_suffix, symbol_chr)) {
+    base_symbol <- sub(daily_suffix, "", symbol_chr)
+    if (nzchar(base_symbol)) {
+      candidate_symbols <- unique(c(base_symbol, symbol_chr))
+    }
+  }
+  candidate_symbols <- as.character(candidate_symbols)
+  candidate_symbols <- candidate_symbols[nzchar(candidate_symbols)]
+  if (!length(candidate_symbols)) {
+    stop("No valid symbol provided to '.bt_fetch_ticker_data'.", call. = FALSE)
+  }
+
+  last_error_msg <- NULL
+  ticker_data <- NULL
+  resolved_symbol <- NULL
+
+  fetch_candidate <- function(sym) {
+    if (exists(sym, envir = data_env, inherits = FALSE)) {
+      return(get(sym, envir = data_env))
+    }
+    if (exists(sym, envir = .GlobalEnv, inherits = FALSE)) {
+      return(get(sym, envir = .GlobalEnv))
+    }
+    tryCatch(
+      sm_get_data(sym,
+        start_date = start_date,
+        end_date = end_date,
+        future_history = FALSE,
+        single_xts = TRUE,
+        local_data = FALSE
+      ),
+      error = function(e) {
+        last_error_msg <<- conditionMessage(e)
+        NULL
+      }
     )
+  }
+
+  for (sym in candidate_symbols) {
+    tmp_data <- fetch_candidate(sym)
+    if (!is.null(tmp_data)) {
+      ticker_data <- tmp_data
+      resolved_symbol <- sym
+      break
+    }
+  }
+
+  if (is.null(ticker_data) || is.null(resolved_symbol)) {
+    msg <- last_error_msg %||% sprintf("Could not locate market data for symbol '%s'.", symbol_chr)
+    stop(msg, call. = FALSE)
   }
 
   if (isTRUE(clean_di)) {
     ticker_data <- .bt_clean_di(ticker_data, "TickSize", value = 0.001)
     ticker_data <- .bt_clean_di_tick(ticker_data, "TickValue", value_over = -5)
+  }
+
+  attr(ticker_data, "bt_fetched_symbol") <- resolved_symbol
+  if (!identical(resolved_symbol, symbol_chr) && nzchar(symbol_chr)) {
+    attr(ticker_data, "bt_requested_symbol") <- symbol_chr
+  }
+
+  if (!identical(resolved_symbol, symbol_chr) && nzchar(resolved_symbol)) {
+    if (!exists(resolved_symbol, envir = data_env, inherits = FALSE)) {
+      try(assign(resolved_symbol, ticker_data, envir = data_env), silent = TRUE)
+    }
+  }
+
+  if (nzchar(resolved_symbol) && exists(".register_future_from_data", mode = "function")) {
+    try(.register_future_from_data(resolved_symbol, ticker_data, overwrite = FALSE), silent = TRUE)
   }
 
   ticker_data
@@ -353,13 +409,21 @@
   fee_suffix <- if (identical(fee_mode, "nofee")) "_nofees" else ""
   bt_ticker <- module$build_bt_ticker(context, fee_mode_suffix = fee_suffix)
 
-  base_instrument <- tryCatch(
-    {
-      inst <- getInstrument(context$base_ticker, silent = TRUE)
-      if (FinancialInstrument::is.instrument(inst)) inst else NULL
-    },
-    error = function(e) NULL
-  )
+  fetched_symbol <- attr(ticker_data, "bt_fetched_symbol", exact = TRUE)
+  root_symbol <- attr(ticker_data, "bt_root_symbol", exact = TRUE)
+  merge_candidates <- unique(c(context$base_ticker, fetched_symbol, root_symbol))
+  merge_candidates <- merge_candidates[!is.na(merge_candidates) & nzchar(merge_candidates)]
+
+  base_instrument <- NULL
+  if (length(merge_candidates)) {
+    for (cand in merge_candidates) {
+      inst <- tryCatch(getInstrument(cand, silent = TRUE), error = function(e) NULL)
+      if (FinancialInstrument::is.instrument(inst)) {
+        base_instrument <- inst
+        break
+      }
+    }
+  }
 
   .register_future_from_data(bt_ticker, ticker_data)
 
