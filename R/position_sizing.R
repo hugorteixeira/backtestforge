@@ -460,8 +460,6 @@
   data_env <- .get_bt_data_env()
   if (exists(Symbol, envir = data_env, inherits = FALSE)) {
     data_obj <- get(Symbol, envir = data_env)
-    data_obj <<- get(Symbol, envir = data_env)
-
   } else if (exists(Symbol, envir = .GlobalEnv, inherits = FALSE)) {
     data_obj <- get(Symbol, envir = .GlobalEnv)
   }
@@ -505,14 +503,14 @@
   inst_lookup <- fetch_instrument(candidates)
 
   if (is.null(inst_lookup) && !is.null(data_obj)) {
-    .register_future_from_data(Symbol, data_obj, overwrite = FALSE)
+    .register_future_from_data(Symbol, data_obj, overwrite = TRUE)
     inst_lookup <- fetch_instrument(gather_candidates(Symbol, data_obj))
     if (is.null(inst_lookup)) {
       fetched_sym <- attr(data_obj, "bt_fetched_symbol")
       if (!is.null(fetched_sym) && length(fetched_sym)) {
         fetched_sym <- as.character(fetched_sym)[1]
         if (nzchar(fetched_sym) && !identical(fetched_sym, Symbol)) {
-          .register_future_from_data(fetched_sym, data_obj, overwrite = FALSE)
+          .register_future_from_data(fetched_sym, data_obj, overwrite = TRUE)
           inst_lookup <- fetch_instrument(gather_candidates(Symbol, data_obj))
         }
       }
@@ -524,7 +522,7 @@
     if (!is.null(fetched_sym) && length(fetched_sym)) {
       fetched_sym <- as.character(fetched_sym)[1]
       if (nzchar(fetched_sym) && !identical(fetched_sym, Symbol)) {
-        .register_future_from_data(fetched_sym, data_obj, overwrite = FALSE)
+        .register_future_from_data(fetched_sym, data_obj, overwrite = TRUE)
         inst_lookup <- fetch_instrument(gather_candidates(Symbol, data_obj))
       }
     }

@@ -115,8 +115,8 @@
     }
   }
 
-  if (nzchar(resolved_symbol) && exists(".register_future_from_data", mode = "function")) {
-    try(.register_future_from_data(resolved_symbol, ticker_data, overwrite = FALSE), silent = TRUE)
+  if (nzchar(resolved_symbol)) {
+    try(.register_future_from_data(resolved_symbol, ticker_data, overwrite = TRUE), silent = TRUE)
   }
 
   ticker_data
@@ -411,43 +411,99 @@
 
   fetched_symbol <- attr(ticker_data, "bt_fetched_symbol", exact = TRUE)
   root_symbol <- attr(ticker_data, "bt_root_symbol", exact = TRUE)
-  merge_candidates <- unique(c(context$base_ticker, fetched_symbol, root_symbol))
+  merge_candidates <- unique(c(fetched_symbol, root_symbol, context$base_ticker))
   merge_candidates <- merge_candidates[!is.na(merge_candidates) & nzchar(merge_candidates)]
 
-  base_instrument <- NULL
+  candidate_instruments <- list()
   if (length(merge_candidates)) {
     for (cand in merge_candidates) {
       inst <- tryCatch(getInstrument(cand, silent = TRUE), error = function(e) NULL)
       if (FinancialInstrument::is.instrument(inst)) {
-        base_instrument <- inst
-        break
+        candidate_instruments[[length(candidate_instruments) + 1]] <- list(
+          symbol = cand,
+          instrument = inst
+        )
       }
     }
   }
+
+  select_source_instrument <- function(candidates) {
+    if (!length(candidates)) {
+      return(NULL)
+    }
+    has_ids <- Filter(function(entry) {
+      ids <- entry$instrument$identifiers
+      if (is.environment(ids)) ids <- as.list(ids)
+      is.list(ids) && length(ids) > 0
+    }, candidates)
+    if (length(has_ids)) {
+      return(has_ids[[1]])
+    }
+    preferred_symbols <- unique(c(fetched_symbol, root_symbol))
+    preferred <- Filter(function(entry) entry$symbol %in% preferred_symbols, candidates)
+    if (length(preferred)) {
+      return(preferred[[1]])
+    }
+    candidates[[1]]
+  }
+
+  source_info <- select_source_instrument(candidate_instruments)
+
+  merge_instrument_metadata <- function(target_symbol, source_entry) {
+    if (is.null(target_symbol) || !nzchar(target_symbol)) {
+      return(invisible(NULL))
+    }
+    target_inst <- tryCatch(getInstrument(target_symbol, silent = TRUE), error = function(e) NULL)
+    if (!FinancialInstrument::is.instrument(target_inst)) {
+      return(invisible(NULL))
+    }
+    if (is.null(source_entry) || is.null(source_entry$instrument)) {
+      return(invisible(NULL))
+    }
+    source_inst <- source_entry$instrument
+
+    normalize_ids <- function(ids) {
+      if (is.null(ids)) return(list())
+      if (is.environment(ids)) ids <- as.list(ids)
+      if (!is.list(ids)) ids <- list()
+      ids
+    }
+
+    source_ids <- normalize_ids(source_inst$identifiers)
+    target_ids <- normalize_ids(target_inst$identifiers)
+    merged_ids <- utils::modifyList(source_ids, target_ids)
+    if (length(merged_ids) && !identical(merged_ids, target_ids)) {
+      try(instrument_attr(target_symbol, "identifiers", merged_ids), silent = TRUE)
+    }
+
+    copy_numeric_attr <- function(name) {
+      src_val <- suppressWarnings(as.numeric(source_inst[[name]]))[1]
+      tgt_val <- suppressWarnings(as.numeric(target_inst[[name]]))[1]
+      if (is.finite(src_val) && (!is.finite(tgt_val) || is.na(tgt_val) || identical(tgt_val, 0))) {
+        try(instrument_attr(target_symbol, name, src_val), silent = TRUE)
+      }
+    }
+
+    copy_char_attr <- function(name) {
+      src_val <- source_inst[[name]]
+      tgt_val <- target_inst[[name]]
+      if (is.null(tgt_val) || !nzchar(as.character(tgt_val)[1])) {
+        if (!is.null(src_val) && nzchar(as.character(src_val)[1])) {
+          try(instrument_attr(target_symbol, name, src_val), silent = TRUE)
+        }
+      }
+    }
+
+    copy_numeric_attr("multiplier")
+    copy_numeric_attr("tick_size")
+    copy_char_attr("currency")
+    invisible(NULL)
+  }
+
+  merge_instrument_metadata(context$base_ticker, source_info)
 
   .register_future_from_data(bt_ticker, ticker_data)
-
-  if (!is.null(base_instrument)) {
-    base_ids <- base_instrument$identifiers
-    if (is.environment(base_ids)) base_ids <- as.list(base_ids)
-    if (!is.list(base_ids)) base_ids <- list()
-
-    new_instrument <- tryCatch(getInstrument(bt_ticker, silent = TRUE), error = function(e) NULL)
-    if (FinancialInstrument::is.instrument(new_instrument)) {
-      new_ids <- new_instrument$identifiers
-      if (is.environment(new_ids)) new_ids <- as.list(new_ids)
-      if (!is.list(new_ids)) new_ids <- list()
-      merged_ids <- utils::modifyList(base_ids, new_ids)
-      try(instrument_attr(bt_ticker, "identifiers", merged_ids), silent = TRUE)
-
-      if (is.null(new_instrument$multiplier) && !is.null(base_instrument$multiplier)) {
-        try(instrument_attr(bt_ticker, "multiplier", base_instrument$multiplier), silent = TRUE)
-      }
-      if (is.null(new_instrument$tick_size) && !is.null(base_instrument$tick_size)) {
-        try(instrument_attr(bt_ticker, "tick_size", base_instrument$tick_size), silent = TRUE)
-      }
-    }
-  }
+  merge_instrument_metadata(bt_ticker, source_info)
 
   ticker <- bt_ticker
   context$ticker <- ticker
