@@ -20,7 +20,7 @@
 #' @importFrom lubridate interval
 #' @importFrom TTR runMax runMin
 #' @importFrom magrittr %>%
-#' @importFrom rSenhorMercadoAPI sm_get_data
+#' @importFrom senhormercado sm_get_data
 #' @importFrom tradeplotr tplot
 #' @importFrom bizdays create.calendar
 ## usethis namespace: end

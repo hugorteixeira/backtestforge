@@ -21,7 +21,7 @@ Imports:
     jsonlite,
     FinancialInstrument,
     PerformanceAnalytics,
-    rSenhorMercadoAPI,
+    senhormercado,
     tradeplotr,
     quantmod,
     httr,
