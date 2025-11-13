@@ -21,6 +21,8 @@
 }
 
 .bt_clean_di_column <- function(xts_object, column_name, predicate) {
+  print(str(xts_object))
+  print(column_name)
   if (!inherits(xts_object, "xts")) stop("xts_object must be an xts object.")
   if (NROW(xts_object) == 0) {
     return(xts_object)
@@ -463,7 +465,9 @@
     source_inst <- source_entry$instrument
 
     normalize_ids <- function(ids) {
-      if (is.null(ids)) return(list())
+      if (is.null(ids)) {
+        return(list())
+      }
       if (is.environment(ids)) ids <- as.list(ids)
       if (!is.list(ids)) ids <- list()
       ids
