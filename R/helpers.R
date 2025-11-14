@@ -24,6 +24,95 @@
   x
 }
 
+# Turn an expression (from substitute) into a readable label
+.bt_expr_to_label <- function(expr) {
+  if (is.null(expr)) return(NULL)
+  if (is.symbol(expr)) return(as.character(expr))
+  if (is.character(expr) && length(expr)) return(expr[[1]])
+  NULL
+}
+
+# Coerce inputs to a non-empty scalar character when possible
+.bt_safe_scalar_chr <- function(x) {
+  if (is.null(x) || length(x) == 0) return(NULL)
+  if (is.list(x) || is.environment(x)) return(NULL)
+  val <- suppressWarnings(as.character(x)[1])
+  if (length(val) == 0 || is.na(val) || !nzchar(val)) return(NULL)
+  val
+}
+
+# Locate an xts object nested inside list-like inputs
+.bt_locate_xts_in_object <- function(obj, max_depth = 2) {
+  if (xts::is.xts(obj)) {
+    return(obj)
+  }
+  if (max_depth <= 0 || !is.list(obj) || length(obj) == 0) {
+    return(NULL)
+  }
+
+  preferred <- c("data", "xts", "mktdata", "prices")
+  for (nm in preferred) {
+    if (!is.null(obj[[nm]]) && xts::is.xts(obj[[nm]])) {
+      return(obj[[nm]])
+    }
+  }
+
+  for (item in obj) {
+    candidate <- .bt_locate_xts_in_object(item, max_depth - 1)
+    if (!is.null(candidate)) {
+      return(candidate)
+    }
+  }
+  NULL
+}
+
+# Resolve ticker input to a symbol label plus optional inline data
+.bt_resolve_ticker_input <- function(value, expr = NULL) {
+  expr_label <- .bt_safe_scalar_chr(.bt_expr_to_label(expr))
+  direct_label <- NULL
+  if (is.character(value) && length(value) > 0) {
+    direct_label <- .bt_safe_scalar_chr(value[1])
+  } else if (is.atomic(value) && length(value) == 1 && !is.list(value)) {
+    direct_label <- .bt_safe_scalar_chr(value)
+  }
+
+  pick_label <- function(...) {
+    for (candidate in list(...)) {
+      val <- .bt_safe_scalar_chr(candidate)
+      if (!is.null(val)) return(val)
+    }
+    NULL
+  }
+
+  xts_obj <- .bt_locate_xts_in_object(value, max_depth = 2)
+  if (!is.null(xts_obj)) {
+    attr_candidates <- list(
+      attr(xts_obj, "bt_requested_symbol", exact = TRUE),
+      attr(xts_obj, "bt_original_symbol", exact = TRUE),
+      attr(xts_obj, "symbol", exact = TRUE),
+      attr(xts_obj, "ticker", exact = TRUE),
+      attr(xts_obj, "bt_fetched_symbol", exact = TRUE),
+      direct_label,
+      expr_label
+    )
+    symbol <- NULL
+    for (candidate in attr_candidates) {
+      val <- .bt_safe_scalar_chr(candidate)
+      if (!is.null(val)) {
+        symbol <- val
+        break
+      }
+    }
+    if (is.null(symbol)) symbol <- "local_xts"
+    return(list(symbol = symbol, data = xts_obj))
+  }
+
+  symbol <- pick_label(direct_label, expr_label, "local_input")
+  if (is.null(symbol)) symbol <- "local_input"
+
+  list(symbol = symbol, data = NULL)
+}
+
 #' Extract a single finite numeric from mixed inputs
 #'
 #' Coerces the first finite numeric value from `x`, which may be a list or

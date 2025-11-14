@@ -27,8 +27,9 @@ bt_eldoc(
 )
 }
 \arguments{
-\item{ticker}{Character symbol or name of an object in the global environment
-with OHLC data. If not found, data is fetched via \code{sm_get_data()}.}
+\item{ticker}{Character symbol or an \code{xts} object (or the name of one in the
+global environment) with OHLC data. When an object is supplied, its data is
+used directly; otherwise it is fetched via \code{sm_get_data()}.}
 
 \item{up}{Integer Donchian window for the upper channel (default 40).}
 

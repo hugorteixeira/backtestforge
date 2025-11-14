@@ -21,8 +21,6 @@
 }
 
 .bt_clean_di_column <- function(xts_object, column_name, predicate) {
-  print(str(xts_object))
-  print(column_name)
   if (!inherits(xts_object, "xts")) stop("xts_object must be an xts object.")
   if (NROW(xts_object) == 0) {
     return(xts_object)
@@ -45,60 +43,74 @@
   .bt_clean_di_column(xts_object, column_name, predicate = function(x) x <= value_over)
 }
 
-.bt_fetch_ticker_data <- function(symbol, data_env, start_date, end_date, clean_di = TRUE) {
+.bt_fetch_ticker_data <- function(symbol, data_env, start_date, end_date, clean_di = TRUE, preloaded_xts = NULL) {
   symbol_chr <- if (length(symbol)) as.character(symbol)[1] else ""
-  candidate_symbols <- symbol_chr
-  daily_suffix <- "_1[dD]$"
-  if (nzchar(symbol_chr) && grepl(daily_suffix, symbol_chr)) {
-    base_symbol <- sub(daily_suffix, "", symbol_chr)
-    if (nzchar(base_symbol)) {
-      candidate_symbols <- unique(c(base_symbol, symbol_chr))
-    }
-  }
-  candidate_symbols <- as.character(candidate_symbols)
-  candidate_symbols <- candidate_symbols[nzchar(candidate_symbols)]
-  if (!length(candidate_symbols)) {
-    stop("No valid symbol provided to '.bt_fetch_ticker_data'.", call. = FALSE)
-  }
+  provided_xts <- !is.null(preloaded_xts)
 
-  last_error_msg <- NULL
-  ticker_data <- NULL
-  resolved_symbol <- NULL
-
-  fetch_candidate <- function(sym) {
-    if (exists(sym, envir = data_env, inherits = FALSE)) {
-      return(get(sym, envir = data_env))
-    }
-    if (exists(sym, envir = .GlobalEnv, inherits = FALSE)) {
-      return(get(sym, envir = .GlobalEnv))
-    }
-    tryCatch(
-      sm_get_data(sym,
-        start_date = start_date,
-        end_date = end_date,
-        future_history = FALSE,
-        single_xts = TRUE,
-        local_data = FALSE
-      ),
-      error = function(e) {
-        last_error_msg <<- conditionMessage(e)
-        NULL
+  if (provided_xts) {
+    ticker_data <- preloaded_xts
+    resolved_symbol <- if (nzchar(symbol_chr)) symbol_chr else "local_xts"
+  } else {
+    candidate_symbols <- symbol_chr
+    daily_suffix <- "_1[dD]$"
+    if (nzchar(symbol_chr) && grepl(daily_suffix, symbol_chr)) {
+      base_symbol <- sub(daily_suffix, "", symbol_chr)
+      if (nzchar(base_symbol)) {
+        candidate_symbols <- unique(c(base_symbol, symbol_chr))
       }
-    )
-  }
+    }
+    candidate_symbols <- as.character(candidate_symbols)
+    candidate_symbols <- candidate_symbols[nzchar(candidate_symbols)]
+    if (!length(candidate_symbols)) {
+      stop("No valid symbol provided to '.bt_fetch_ticker_data'.", call. = FALSE)
+    }
 
-  for (sym in candidate_symbols) {
-    tmp_data <- fetch_candidate(sym)
-    if (!is.null(tmp_data)) {
-      ticker_data <- tmp_data
-      resolved_symbol <- sym
-      break
+    last_error_msg <- NULL
+    ticker_data <- NULL
+    resolved_symbol <- NULL
+
+    fetch_candidate <- function(sym) {
+      if (exists(sym, envir = data_env, inherits = FALSE)) {
+        return(get(sym, envir = data_env))
+      }
+      if (exists(sym, envir = .GlobalEnv, inherits = FALSE)) {
+        return(get(sym, envir = .GlobalEnv))
+      }
+      tryCatch(
+        sm_get_data(sym,
+          start_date = start_date,
+          end_date = end_date,
+          future_history = FALSE,
+          single_xts = TRUE,
+          local_data = FALSE
+        ),
+        error = function(e) {
+          last_error_msg <<- conditionMessage(e)
+          NULL
+        }
+      )
+    }
+
+    for (sym in candidate_symbols) {
+      tmp_data <- fetch_candidate(sym)
+      if (!is.null(tmp_data)) {
+        ticker_data <- tmp_data
+        resolved_symbol <- sym
+        break
+      }
+    }
+
+    if (is.null(ticker_data) || is.null(resolved_symbol)) {
+      msg <- last_error_msg %||% sprintf("Could not locate market data for symbol '%s'.", symbol_chr)
+      stop(msg, call. = FALSE)
     }
   }
 
-  if (is.null(ticker_data) || is.null(resolved_symbol)) {
-    msg <- last_error_msg %||% sprintf("Could not locate market data for symbol '%s'.", symbol_chr)
-    stop(msg, call. = FALSE)
+  if (!xts::is.xts(ticker_data)) {
+    ticker_data <- tryCatch(xts::as.xts(ticker_data), error = function(e) NULL)
+  }
+  if (is.null(ticker_data) || !xts::is.xts(ticker_data)) {
+    stop("Provided market data must be an xts object.", call. = FALSE)
   }
 
   if (isTRUE(clean_di)) {
@@ -111,7 +123,7 @@
     attr(ticker_data, "bt_requested_symbol") <- symbol_chr
   }
 
-  if (!identical(resolved_symbol, symbol_chr) && nzchar(resolved_symbol)) {
+  if (!identical(resolved_symbol, symbol_chr) && nzchar(resolved_symbol) && !provided_xts) {
     if (!exists(resolved_symbol, envir = data_env, inherits = FALSE)) {
       try(assign(resolved_symbol, ticker_data, envir = data_env), silent = TRUE)
     }
@@ -348,6 +360,7 @@
 .bt_run_module <- function(
   type,
   ticker,
+  ticker_data_override = NULL,
   indicator_args = list(),
   ps_risk_value = 2,
   ps = "pct",
@@ -383,7 +396,14 @@
 
   data_env <- .get_bt_data_env()
 
-  ticker_data <- .bt_fetch_ticker_data(ticker, data_env, start_date, end_date, clean_di = clean_di)
+  ticker_data <- .bt_fetch_ticker_data(
+    ticker,
+    data_env,
+    start_date,
+    end_date,
+    clean_di = clean_di,
+    preloaded_xts = ticker_data_override
+  )
   ticker_data <- .use_close_only(ticker_data)
   attr(ticker_data, "bt_original_symbol") <- ticker
   attr(ticker_data, "bt_root_symbol") <- sub("_.*$", "", ticker)
@@ -793,8 +813,9 @@
 #' The function builds the strategy, runs the backtest, prints key summaries, and
 #' returns a list of results.
 #'
-#' @param ticker Character symbol or name of an object in the global environment
-#'   with OHLC data. If not found, data is fetched via `sm_get_data()`.
+#' @param ticker Character symbol or an `xts` object (or the name of one in the
+#'   global environment) with OHLC data. When an object is supplied, its data is
+#'   used directly; otherwise it is fetched via `sm_get_data()`.
 #' @param up Integer Donchian window for the upper channel (default 40).
 #' @param down Integer Donchian window for the lower channel (default 40).
 #' @param ps_risk_value Numeric risk percentage (e.g., 2 for 2%) used by the
@@ -829,9 +850,11 @@
 #' (multiplier, tick size, maturity) is propagated when available.
 #' @export
 bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", fee = "normal", start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, normalize_risk = NULL, geometric = TRUE, verbose = FALSE, only_returns = FALSE, hide_details = FALSE, stop_before_maturity = NULL, clean_di = TRUE, plot = FALSE) {
+  ticker_input <- .bt_resolve_ticker_input(ticker, substitute(ticker))
   .bt_run_module(
     type = "eldoc",
-    ticker = ticker,
+    ticker = ticker_input$symbol,
+    ticker_data_override = ticker_input$data,
     indicator_args = list(up = up, down = down),
     ps_risk_value = ps_risk_value,
     ps = ps,
@@ -864,9 +887,11 @@ bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", 
 #' @param slow Integer length of the slow EMA (default 50).
 #' @internal
 bt_ema <- function(ticker, fast = 20, slow = 50, ps_risk_value = 2, ps = "pct", fee = "normal", start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, normalize_risk = NULL, geometric = TRUE, verbose = FALSE, only_returns = FALSE, hide_details = FALSE, stop_before_maturity = NULL, clean_di = TRUE, plot = FALSE) {
+  ticker_input <- .bt_resolve_ticker_input(ticker, substitute(ticker))
   .bt_run_module(
     type = "ema",
-    ticker = ticker,
+    ticker = ticker_input$symbol,
+    ticker_data_override = ticker_input$data,
     indicator_args = list(fast = fast, slow = slow),
     ps_risk_value = ps_risk_value,
     ps = ps,
@@ -896,9 +921,11 @@ bt_ema <- function(ticker, fast = 20, slow = 50, ps_risk_value = 2, ps = "pct", 
 #' @inheritParams bt_ema
 #' @export
 bt_sma <- function(ticker, fast = 20, slow = 50, ps_risk_value = 2, ps = "pct", fee = "normal", start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, normalize_risk = NULL, geometric = TRUE, verbose = FALSE, only_returns = FALSE, hide_details = FALSE, stop_before_maturity = NULL, clean_di = TRUE, plot = FALSE) {
+  ticker_input <- .bt_resolve_ticker_input(ticker, substitute(ticker))
   .bt_run_module(
     type = "sma",
-    ticker = ticker,
+    ticker = ticker_input$symbol,
+    ticker_data_override = ticker_input$data,
     indicator_args = list(fast = fast, slow = slow),
     ps_risk_value = ps_risk_value,
     ps = ps,
