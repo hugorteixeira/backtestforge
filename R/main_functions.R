@@ -372,7 +372,7 @@
   invert_signals = FALSE,
   normalize_risk = NULL,
   geometric = TRUE,
-  verbose = FALSE,
+  verbose = TRUE,
   only_returns = FALSE,
   hide_details = FALSE,
   stop_before_maturity = NULL,
@@ -808,7 +808,7 @@
 #' opposite channel signal. Position sizing can be percentage-of-equity (Donchian)
 #' or DI-specific sizing, detected by the symbol prefix.
 #'
-#' Data is fetched from `rSenhorMercadoAPI::sm_get_data()` if the symbol is not
+#' Data is fetched from `senhormercado::sm_get_data()` if the symbol is not
 #' found in the global environment; otherwise the preloaded object is used.
 #'
 #' The function builds the strategy, runs the backtest, prints key summaries, and

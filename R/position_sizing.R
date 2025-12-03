@@ -27,7 +27,7 @@
     )
   }
   basis_date <- as.Date(basis_date)
-  print(basis_date)
+
   # 1) Business days (n) and months to maturity (mm)
   if (inherits(maturity_date, "Date")) {
     md <- maturity_date
@@ -83,6 +83,7 @@
   cal = NULL,
   rule_change_date = as.Date("2025-08-01")
 ) {
+  print(maturity_date)
   # 0) Calendar
   if (is.null(cal)) {
     cal <- bizdays::create.calendar(
@@ -145,7 +146,6 @@
     if (mm <= 3) 0.001 else 0.005
   }
 }
-
 
 
 #' Fixed contracts order-sizing function
@@ -405,7 +405,7 @@
                                            orderqty, ordertype, orderside,
                                            portfolio, symbol,
                                            tradeSize, maxSize,
-                                           integerQty = TRUE, prefer = "Close", risk, reinvest = FALSE, start_capital = 10000000, verbose = FALSE, ...) {
+                                           integerQty = TRUE, prefer = "Close", risk, reinvest = FALSE, start_capital = 10000000, verbose = TRUE, ...) {
   pos <- getPosQty(portfolio, symbol, timestamp)
   if ((orderside == "long" && pos > 0) ||
     (orderside == "short" && pos < 0)) {
