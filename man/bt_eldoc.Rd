@@ -84,7 +84,7 @@ opposite channel signal. Position sizing can be percentage-of-equity (Donchian)
 or DI-specific sizing, detected by the symbol prefix.
 }
 \details{
-Data is fetched from \code{rSenhorMercadoAPI::sm_get_data()} if the symbol is not
+Data is fetched from \code{senhormercado::sm_get_data()} if the symbol is not
 found in the global environment; otherwise the preloaded object is used.
 
 The function builds the strategy, runs the backtest, prints key summaries, and

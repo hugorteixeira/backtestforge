@@ -12,11 +12,11 @@
 #' @return A list with elements: `valid_days`, `pu`, `tick_size`, `tick_value`.
 #' @keywords internal
 .calculate_futures_di_notional <- function(
-    rates,
-    maturity_date,
-    basis_date = Sys.Date(),
-    cal = NULL,
-    rule_change_date = as.Date("2025-08-28")
+  rates,
+  maturity_date,
+  basis_date = Sys.Date(),
+  cal = NULL,
+  rule_change_date = as.Date("2025-08-28")
 ) {
   # 0) Calendar
   if (is.null(cal)) {
@@ -27,15 +27,15 @@
     )
   }
   basis_date <- as.Date(basis_date)
-
+  print(basis_date)
   # 1) Business days (n) and months to maturity (mm)
   if (inherits(maturity_date, "Date")) {
     md <- maturity_date
-    n  <- bizdays::bizdays(basis_date, md, cal)
+    n <- bizdays::bizdays(basis_date, md, cal)
     mm <- lubridate::interval(basis_date, md) %/% months(1)
   } else if (is.numeric(maturity_date)) {
     md <- NULL
-    n  <- as.integer(maturity_date)
+    n <- as.integer(maturity_date)
     mm <- n / 21
   } else {
     stop("'maturity_date' must be a number of business days or Date.")
@@ -49,17 +49,17 @@
   # 3) PU from rate
   rates <- as.numeric(rates)
   if (any(!is.finite(rates) | rates <= -100)) stop("'rates' must be finite and > -100%.")
-  pu <- 1e5 / (1 + rates/100)^(n/252)
+  pu <- 1e5 / (1 + rates / 100)^(n / 252)
 
   # 4) Tick-value (magnitude)
-  deriv_pp   <- -(n/252) * pu / (100 * (1 + rates/100))
+  deriv_pp <- -(n / 252) * pu / (100 * (1 + rates / 100))
   tick_value <- abs(deriv_pp) * tick_size
 
   # 5) Return (no rounding for precision)
   list(
     valid_days = n,
-    pu         = as.numeric(pu),        # PU
-    tick_size  = tick_size,             # percent points per tick
+    pu         = as.numeric(pu), # PU
+    tick_size  = tick_size, # percent points per tick
     tick_value = as.numeric(tick_value) # PU points per tick
   )
 }
@@ -77,11 +77,11 @@
 #' @return A list with elements: `valid_days`, `rates`, `tick_size`, `tick_value`.
 #' @keywords internal
 .calculate_futures_di_rates <- function(
-    pu,
-    maturity_date,
-    basis_date = Sys.Date(),
-    cal = NULL,
-    rule_change_date = as.Date("2025-08-01")
+  pu,
+  maturity_date,
+  basis_date = Sys.Date(),
+  cal = NULL,
+  rule_change_date = as.Date("2025-08-01")
 ) {
   # 0) Calendar
   if (is.null(cal)) {
@@ -96,18 +96,18 @@
   # 1) Business days (n) and months to maturity (mm)
   if (inherits(maturity_date, "Date")) {
     md <- maturity_date
-    n  <- bizdays::bizdays(basis_date, md, cal)
+    n <- bizdays::bizdays(basis_date, md, cal)
     mm <- lubridate::interval(basis_date, md) %/% months(1)
   } else if (is.numeric(maturity_date)) {
     md <- NULL
-    n  <- as.integer(maturity_date)
+    n <- as.integer(maturity_date)
     mm <- n / 21
   } else {
     md <- try(as.Date(maturity_date), silent = TRUE)
     if (inherits(md, "try-error") || is.na(md)) {
       stop("'maturity_date' must be Date, a number of business days, or coercible to Date.")
     }
-    n  <- bizdays::bizdays(basis_date, md, cal)
+    n <- bizdays::bizdays(basis_date, md, cal)
     mm <- lubridate::interval(basis_date, md) %/% months(1)
   }
 
@@ -120,18 +120,18 @@
   pu <- as.numeric(pu)
   if (any(!is.finite(pu) | pu <= 0)) stop("'pu' must be positive and finite.")
 
-  rates <- 100 * ((1e5 / pu)^(252 / n) - 1)  # percent
+  rates <- 100 * ((1e5 / pu)^(252 / n) - 1) # percent
 
   # 4) Tick-value (magnitude), using dPU/d(rate in percentage points)
   # dPU/d(r%) = -(n/252) * PU / (100 * (1 + r%/100))
-  deriv_pp   <- -(n/252) * pu / (100 * (1 + rates/100))
+  deriv_pp <- -(n / 252) * pu / (100 * (1 + rates / 100))
   tick_value <- abs(deriv_pp) * tick_size
 
   # 5) Return (no rounding for precision)
   list(
     valid_days = n,
-    rates      = as.numeric(rates),     # percent
-    tick_size  = tick_size,             # percent points per tick
+    rates      = as.numeric(rates), # percent
+    tick_size  = tick_size, # percent points per tick
     tick_value = as.numeric(tick_value) # PU points per tick
   )
 }
@@ -162,7 +162,7 @@
 #' @param ... Not used.
 #' @return Numeric order quantity (positive for long, negative for short) or 0.
 #' @keywords internal
-.psFixedContractsQty <- function(timestamp,buyorderqty,sellorderqty,orderside,portfolio,symbol,...) {
+.psFixedContractsQty <- function(timestamp, buyorderqty, sellorderqty, orderside, portfolio, symbol, ...) {
   pos <- getPosQty(portfolio, symbol, timestamp)
   if (orderside == "short" && pos < 0) {
     return(0)
@@ -197,7 +197,7 @@
 #' @param ... Additional arguments ignored by this function.
 #' @return Numeric order quantity (positive for long, negative for short) or 0.
 #' @keywords internal
-.psEquityPercentage <- function(data,timestamp,orderqty,ordertype,orderside,portfolio,symbol,tradeSize,maxSize,integerQty = TRUE,initEq=NULL,...) {
+.psEquityPercentage <- function(data, timestamp, orderqty, ordertype, orderside, portfolio, symbol, tradeSize, maxSize, integerQty = TRUE, initEq = NULL, ...) {
   pos <- getPosQty(portfolio, symbol, timestamp)
   datePos <- format(timestamp, "%Y-%m-%d")
   if (orderside == "short" && pos < 0) {
@@ -256,49 +256,58 @@
 .psEquityPercentageDonchian <- function(data, timestamp,
                                         orderqty, ordertype, orderside,
                                         portfolio, symbol,
-                                        tradeSize , maxSize,
+                                        tradeSize, maxSize,
                                         integerQty = TRUE, prefer = "Close", risk,
                                         reinvest = FALSE, start_capital = 10000000,
                                         maxQty = NA,
                                         maxQtyBySymbol = NULL,
                                         minRiskPct = 0.0005,
-                                        ...){
-
+                                        ...) {
   # -------- current pos
   pos <- getPosQty(portfolio, symbol, timestamp)
-  if ((orderside=="long"  && pos>0) ||
-      (orderside=="short" && pos<0))
+  if ((orderside == "long" && pos > 0) ||
+    (orderside == "short" && pos < 0)) {
     return(0)
+  }
 
   # -------- prefer
   prc <- tryCatch(as.numeric(data[timestamp, prefer]),
-                  error = function(e) NA)
+    error = function(e) NA
+  )
   if (is.na(prc)) prc <- as.numeric(Cl(data[timestamp, ]))
 
   # -------- donchian upper/lower
-  upper <- tryCatch(as.numeric(data[timestamp,"X.el"]), error=function(e) NA)
-  lower <- tryCatch(as.numeric(data[timestamp,"Y.el"]), error=function(e) NA)
-  if (anyNA(c(prc, upper, lower))) return(0)
+  upper <- tryCatch(as.numeric(data[timestamp, "X.el"]), error = function(e) NA)
+  lower <- tryCatch(as.numeric(data[timestamp, "Y.el"]), error = function(e) NA)
+  if (anyNA(c(prc, upper, lower))) {
+    return(0)
+  }
 
   # -------- high/low bar (to detect when both are touched)
-  hi <- suppressWarnings(tryCatch(as.numeric(Hi(data[timestamp, ])), error=function(e) NA))
-  lo <- suppressWarnings(tryCatch(as.numeric(Lo(data[timestamp, ])), error=function(e) NA))
+  hi <- suppressWarnings(tryCatch(as.numeric(Hi(data[timestamp, ])), error = function(e) NA))
+  lo <- suppressWarnings(tryCatch(as.numeric(Lo(data[timestamp, ])), error = function(e) NA))
   bothTouched <- (!is.na(hi) && !is.na(lo) && hi >= upper && lo <= lower)
 
   # -------- stoploss and multiplier
-  stopPrice <- if (orderside=="long") lower else upper
-  mult <- tryCatch({
-    instr <- getInstrument(symbol)
-    if (!is.null(instr$multiplier)) instr$multiplier else 1
-  }, error = function(e) 1)
+  stopPrice <- if (orderside == "long") lower else upper
+  mult <- tryCatch(
+    {
+      instr <- getInstrument(symbol)
+      if (!is.null(instr$multiplier)) instr$multiplier else 1
+    },
+    error = function(e) 1
+  )
 
   # -------- floor to min number of contracts
   riscoContr <- abs(prc - stopPrice) * mult
 
-  tick <- tryCatch({
-    instr <- getInstrument(symbol)
-    if (!is.null(instr$tick_size)) instr$tick_size else NA_real_
-  }, error = function(e) NA_real_)
+  tick <- tryCatch(
+    {
+      instr <- getInstrument(symbol)
+      if (!is.null(instr$tick_size)) instr$tick_size else NA_real_
+    },
+    error = function(e) NA_real_
+  )
 
   minRiskAbs <- if (is.finite(tick) && !is.na(tick) && tick > 0) {
     tick * mult
@@ -307,7 +316,9 @@
   }
 
   riscoContrEff <- max(riscoContr, minRiskAbs, na.rm = TRUE)
-  if (!is.finite(riscoContrEff) || riscoContrEff <= 0) return(0)
+  if (!is.finite(riscoContrEff) || riscoContrEff <= 0) {
+    return(0)
+  }
 
   # -------- equity and allowed risk
   if (isTRUE(reinvest)) {
@@ -316,15 +327,17 @@
     updateEndEq(portfolio)
     datePos <- format(timestamp, "%Y-%m-%d")
     eqty <- getEndEq(portfolio, datePos)
-    allowedRisk  <- (risk/100) * eqty
+    allowedRisk <- (risk / 100) * eqty
   } else {
-    allowedRisk  <- (risk/100) * start_capital
+    allowedRisk <- (risk / 100) * start_capital
   }
 
   # -------- raw qty
   qtyRaw <- allowedRisk / riscoContrEff
   qtyAbs <- if (isTRUE(integerQty)) floor(qtyRaw) else as.numeric(qtyRaw)
-  if (qtyAbs <= 0) return(0)
+  if (qtyAbs <= 0) {
+    return(0)
+  }
 
   # -------- actual max qty
   effMaxQty <- {
@@ -349,13 +362,17 @@
   # -------- max size cap
   if (is.finite(maxSize) && !is.na(maxSize) && maxSize > 0) {
     allowed <- max(0, maxSize - abs(pos))
-    if (allowed <= 0) return(0)
+    if (allowed <= 0) {
+      return(0)
+    }
     qtyAbs <- min(qtyAbs, allowed)
   }
 
-  if (qtyAbs <= 0) return(0)
+  if (qtyAbs <= 0) {
+    return(0)
+  }
 
-  qty <- if (orderside=="short") -qtyAbs else qtyAbs
+  qty <- if (orderside == "short") -qtyAbs else qtyAbs
   return(qty)
 }
 
@@ -387,51 +404,57 @@
 .psEquityPercentageDonchian_DI <- function(data, timestamp,
                                            orderqty, ordertype, orderside,
                                            portfolio, symbol,
-                                           tradeSize , maxSize,
-                                           integerQty = TRUE, prefer = "Close", risk, reinvest = FALSE, start_capital = 10000000,verbose=FALSE,...){
+                                           tradeSize, maxSize,
+                                           integerQty = TRUE, prefer = "Close", risk, reinvest = FALSE, start_capital = 10000000, verbose = FALSE, ...) {
   pos <- getPosQty(portfolio, symbol, timestamp)
-  if ((orderside=="long"  && pos>0) ||
-      (orderside=="short" && pos<0))
+  if ((orderside == "long" && pos > 0) ||
+    (orderside == "short" && pos < 0)) {
     return(0)
+  }
 
   # -------- entry and loss rates
-  taxaEnt <- as.numeric(data[timestamp,prefer])
-  upper   <- as.numeric(data[timestamp,"X.el"])
-  lower   <- as.numeric(data[timestamp,"Y.el"])
-  if(verbose) {
+  taxaEnt <- as.numeric(data[timestamp, prefer])
+  upper <- as.numeric(data[timestamp, "X.el"])
+  lower <- as.numeric(data[timestamp, "Y.el"])
+  if (verbose) {
     print(paste("entry rates:", taxaEnt))
     print(paste("upper:", upper))
     print(paste("lower:", lower))
   }
-  if (anyNA(c(taxaEnt, upper, lower))) return(0)
+  if (anyNA(c(taxaEnt, upper, lower))) {
+    return(0)
+  }
 
-  type_of_entry <- if (orderside=="long") lower else upper
-  if(verbose) print(type_of_entry)
+  type_of_entry <- if (orderside == "long") lower else upper
+  if (verbose) print(type_of_entry)
 
   # -------- valid days till maturity
   vencimento_di <- attr(data, "maturity")
   cal_b3 <- .generate_calendar()
   dados_di <- .calculate_futures_di_notional(type_of_entry,
-                                             maturity_date = as.Date(vencimento_di),
-                                             basis_date = timestamp,
-                                             cal       = cal_b3)
+    maturity_date = as.Date(vencimento_di),
+    basis_date = timestamp,
+    cal = cal_b3
+  )
   days_till_mat <- dados_di$valid_days
-  pu_entrada <- round(dados_di$pu,2)
+  pu_entrada <- round(dados_di$pu, 2)
   ticksize <- dados_di$tick_size
-  tickvalue <- round(dados_di$tick_value,2)
+  tickvalue <- round(dados_di$tick_value, 2)
 
-  if(verbose) {
+  if (verbose) {
     print(paste("Entry notional:", pu_entrada))
     print(paste("Days to Maturity:", days_till_mat))
     print(paste("Tick Size:", ticksize))
     print(paste("Tick Value:", tickvalue))
   }
 
-  qty <- (((start_capital*(risk/100))/(upper-lower)/100)/tickvalue)/2
+  qty <- (((start_capital * (risk / 100)) / (upper - lower) / 100) / tickvalue) / 2
   qty <- floor(qty)
-  if (qty <= 0) return(0)
-  if (orderside=="short") qty <- -qty
-  if(verbose)     print(paste("Contracts:", qty))
+  if (qty <= 0) {
+    return(0)
+  }
+  if (orderside == "short") qty <- -qty
+  if (verbose) print(paste("Contracts:", qty))
   return(qty)
 }
 
@@ -465,9 +488,13 @@
   }
 
   drop_suffixes <- function(sym) {
-    if (is.null(sym) || length(sym) == 0 || !nzchar(sym[1])) return(character())
+    if (is.null(sym) || length(sym) == 0 || !nzchar(sym[1])) {
+      return(character())
+    }
     parts <- strsplit(sym[1], "_", fixed = TRUE)[[1]]
-    if (length(parts) <= 1) return(character())
+    if (length(parts) <= 1) {
+      return(character())
+    }
     vapply(seq_along(parts[-length(parts)]), function(i) {
       paste(parts[seq_len(length(parts) - i)], collapse = "_")
     }, character(1L))
@@ -476,11 +503,13 @@
   gather_candidates <- function(sym, data_xts) {
     attrs <- character()
     if (!is.null(data_xts)) {
-      attrs <- c(attrs,
-                 attr(data_xts, "bt_original_symbol"),
-                 attr(data_xts, "bt_root_symbol"),
-                 attr(data_xts, "bt_fetched_symbol"),
-                 attr(data_xts, "bt_requested_symbol"))
+      attrs <- c(
+        attrs,
+        attr(data_xts, "bt_original_symbol"),
+        attr(data_xts, "bt_root_symbol"),
+        attr(data_xts, "bt_fetched_symbol"),
+        attr(data_xts, "bt_requested_symbol")
+      )
     }
     cand <- c(sym, attrs)
     extras <- unlist(lapply(unique(c(sym, attrs)), drop_suffixes), use.names = FALSE)
@@ -639,9 +668,13 @@
   fees <- if (is.na(fees)) 0 else fees
 
   startsWith_any <- function(string, patterns) {
-    if (!is.character(string) || length(string) == 0) return(NULL)
+    if (!is.character(string) || length(string) == 0) {
+      return(NULL)
+    }
     for (pattern in patterns) {
-      if (startsWith(string, pattern)) return(pattern)
+      if (startsWith(string, pattern)) {
+        return(pattern)
+      }
     }
     NULL
   }
@@ -656,23 +689,22 @@
   price <- as.numeric(TxnPrice)
 
   if (!is.null(matched_pattern_a) && matched_pattern_a %in% c("BGI")) {
-    #print("BGI detected.")
+    # print("BGI detected.")
     return(-1 * (((0.1 * price) * (multiplier / 100)) + fees) * qty)
   } else if (!is.null(matched_pattern_a) && matched_pattern_a %in% c("CCM")) {
-      #print("CCM detected.")
-      return(-1 * (((0.07 * price) * (multiplier / 100)) + fees) * qty)
+    # print("CCM detected.")
+    return(-1 * (((0.07 * price) * (multiplier / 100)) + fees) * qty)
   } else if (!is.null(matched_pattern_a) && matched_pattern_a %in% c("WDO")) {
-    #print("WDO detected.")
-    return(-1 * (((fees * 3)+10)*qty))
+    # print("WDO detected.")
+    return(-1 * (((fees * 3) + 10) * qty))
   } else if (!is.null(matched_pattern_a) && matched_pattern_a %in% c("WIN")) {
-    #print("WIN detected.")
-    return(-1 * (((fees * 3)+10)*qty))
+    # print("WIN detected.")
+    return(-1 * (((fees * 3) + 10) * qty))
   } else if (!is.null(matched_pattern_b) && matched_pattern_b %in% c("DI1")) {
-    #print("DI1 futures detected.")
+    # print("DI1 futures detected.")
     return(-1 * (qty * fees * 2))
-
   }
-  #print("Other detected.")
+  # print("Other detected.")
   -1 * (slippage * price * qty)
 }
 

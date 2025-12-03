@@ -19,7 +19,7 @@
   risk,
   reinvest = FALSE,
   start_capital = 1e+07,
-  verbose = FALSE,
+  verbose = TRUE,
   ...
 )
 }

@@ -577,8 +577,9 @@
 
   HighCol <- "High"
   LowCol <- "Low"
-  if ("PU_o" %in% colnames(ticker_data)) Preference <- "PU_o" else Preference <- "Open"
-
+  # if ("PU_o" %in% colnames(ticker_data)) Preference <- "PU_o" else Preference <- "Open"
+  pu_col <- grep("^PU_o(pen)?$", colnames(ticker_data), ignore.case = TRUE, value = TRUE)
+  Preference <- if (length(pu_col) > 0) pu_col[1] else "Open"
   assign(bt_ticker, ticker_data, envir = data_env)
   assign(bt_ticker, ticker_data, envir = .GlobalEnv)
   ReplaceBuy <- FALSE
