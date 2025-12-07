@@ -1035,14 +1035,28 @@ bt_normalize_risk <- function(xts, risk = 10, type = c("Discrete", "Log")) {
 
   periods_per_year <- function(x) {
     # Robust estimator of periods per year.
-    # - Daily: choose 252 if mostly weekdays, else 365.25
-    # - Weekly, Monthly, Quarterly, Yearly: fixed
-    # - Other/intraday/irregular: use median spacing over Gregorian year seconds
+    # - Count how many observations actually occur in each calendar year and
+    #   use the median of those counts (resilient to partial years).
+    # - Fallback: Daily = 252/365.25 heuristic, otherwise median spacing.
     if (!xts::is.xts(x)) stop("periods_per_year requires an xts object.")
     idx <- index(x)
     if (length(idx) < 2) {
       return(NA_real_)
     }
+
+    # Use observed counts per calendar year; drop duplicated timestamps to
+    # avoid inflating counts when xts had to make indices unique.
+    idx_unique <- sort(unique(as.numeric(idx)))
+    yrs <- format(as.POSIXct(idx_unique, origin = "1970-01-01", tz = "UTC"), "%Y")
+    counts_per_year <- as.integer(table(yrs))
+    counts_per_year <- counts_per_year[counts_per_year > 0]
+    if (length(counts_per_year)) {
+      ppy_obs <- stats::median(counts_per_year)
+      if (is.finite(ppy_obs) && ppy_obs > 0) {
+        return(as.numeric(ppy_obs))
+      }
+    }
+
     p <- tryCatch(xts::periodicity(x)$scale, error = function(e) NA_character_)
     if (!is.na(p)) {
       p <- tolower(p)
@@ -1075,13 +1089,30 @@ bt_normalize_risk <- function(xts, risk = 10, type = c("Discrete", "Log")) {
     as.numeric((365.25 * 24 * 3600) / secs_per_period)
   }
 
-  annualized_vol <- function(r, ppy) {
+  annualized_vol <- function(r) {
     rnum <- as.numeric(r)
     rnum <- rnum[is.finite(rnum)]
     if (length(rnum) < 2) {
       return(NA_real_)
     }
-    stats::sd(rnum) * sqrt(ppy)
+    idx <- index(r)
+    yrs <- format(idx, "%Y")
+    vol_by_year <- tapply(seq_along(rnum), yrs, function(ids) {
+      vals <- rnum[ids]
+      vals <- vals[is.finite(vals)]
+      n <- length(vals)
+      if (n < 2) {
+        return(NA_real_)
+      }
+      stats::sd(vals) * sqrt(n)
+    })
+    vol_by_year <- unlist(vol_by_year, use.names = FALSE)
+    vol_by_year <- vol_by_year[is.finite(vol_by_year)]
+    if (length(vol_by_year) == 0) {
+      return(NA_real_)
+    }
+    # Average the per-year vols to respect partial/holiday-heavy years.
+    mean(vol_by_year)
   }
 
   # ---- locate returns ----
@@ -1107,14 +1138,8 @@ bt_normalize_risk <- function(xts, risk = 10, type = c("Discrete", "Log")) {
     stop("Internal error: neither 'Log' nor 'Discrete' returns found after search.")
   }
 
-  # Determine annualization factor
-  ppy <- periods_per_year(r_log)
-  if (!is.finite(ppy) || ppy <= 0) {
-    stop("Could not determine periods-per-year (annualization factor).")
-  }
-
   # Compute realized annualized vol on log returns
-  vol_ann <- annualized_vol(r_log, ppy)
+  vol_ann <- annualized_vol(r_log)
   if (!is.finite(vol_ann) || vol_ann <= 0) {
     stop("Realized volatility is zero or undefined; cannot normalize risk.")
   }

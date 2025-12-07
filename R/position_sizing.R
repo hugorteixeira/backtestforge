@@ -407,6 +407,7 @@
                                            tradeSize, maxSize,
                                            integerQty = TRUE, prefer = "Close", risk, reinvest = FALSE, start_capital = 10000000, verbose = TRUE, ...) {
   pos <- getPosQty(portfolio, symbol, timestamp)
+  print(0)
   if ((orderside == "long" && pos > 0) ||
     (orderside == "short" && pos < 0)) {
     return(0)
@@ -683,14 +684,14 @@
   patterns2 <- c("DI1")
 
   matched_pattern_a <- startsWith_any(symbol_id, patterns1)
-  matched_pattern_b <- startsWith_any(symbol_id, patterns2)
-
+  matched_pattern_b <- startsWith_any(symbol_id, patterns2) | (tolower(attr(x, "subcategoria")) %in% c("juros", "juros brasil"))
+  print(matched_pattern_b)
   qty <- abs(as.numeric(TxnQty))
   price <- as.numeric(TxnPrice)
 
   if (!is.null(matched_pattern_a) && matched_pattern_a %in% c("BGI")) {
     # print("BGI detected.")
-    return(-1 * (((0.1 * price) * (multiplier / 100)) + fees) * qty)
+    return(-1 * (((0.08 * price) * (multiplier / 100)) + fees) * qty)
   } else if (!is.null(matched_pattern_a) && matched_pattern_a %in% c("CCM")) {
     # print("CCM detected.")
     return(-1 * (((0.07 * price) * (multiplier / 100)) + fees) * qty)
