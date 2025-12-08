@@ -550,7 +550,7 @@
 
   isDI <- startsWith(ticker, "DI1") |
     (!is.null(attr(ticker_data, "subcategoria")) &&
-      grepl("juros||Juros||Juros Brasil||juros brasil", attr(ticker_data, "subcategoria"), ignore.case = TRUE))
+      grepl("juros brasil", attr(ticker_data, "subcategoria"), ignore.case = TRUE))
   .dbg("Is it DI?", isDI)
 
   PositionSizing <- if (isDI) {

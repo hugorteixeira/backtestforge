@@ -693,7 +693,7 @@
   patterns2 <- c("DI1")
 
   matched_pattern_a <- startsWith_any(symbol_id, patterns1)
-  matched_pattern_b <- startsWith_any(symbol_id, patterns2) | (tolower(attr(x, "subcategoria")) %in% c("juros", "juros brasil"))
+  matched_pattern_b <- startsWith_any(symbol_id, patterns2)
   print("is di?")
   print(matched_pattern_b)
   qty <- abs(as.numeric(TxnQty))
