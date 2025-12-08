@@ -550,7 +550,7 @@
 
   isDI <- startsWith(ticker, "DI1") |
     (!is.null(attr(ticker_data, "subcategoria")) &&
-      grepl("juros", attr(ticker_data, "subcategoria"), ignore.case = TRUE))
+      grepl("juros||Juros||Juros Brasil||juros brasil", attr(ticker_data, "subcategoria"), ignore.case = TRUE))
   .dbg("Is it DI?", isDI)
 
   PositionSizing <- if (isDI) {
@@ -716,7 +716,7 @@
   applyStrategy(strategy = my_strategy, portfolios = portfolio.st, verbose = FALSE, initEq = initEq, mdenv = data_env)
 
   tx <- getTxns(portfolio.st, ticker)
-  .dbg("generated orders:", nrow(tx))
+  .dbg("Generated orders:", nrow(tx))
   if (nrow(tx) == 0) {
     warning("No generated order. Check column passed to 'prefer' and if the instrument has a multiplier/tick_size defined.")
     return(invisible(NULL))

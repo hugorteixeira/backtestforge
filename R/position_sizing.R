@@ -407,9 +407,13 @@
                                            tradeSize, maxSize,
                                            integerQty = TRUE, prefer = "Close", risk, reinvest = FALSE, start_capital = 10000000, verbose = TRUE, ...) {
   pos <- getPosQty(portfolio, symbol, timestamp)
-  print(0)
-  if ((orderside == "long" && pos > 0) ||
-    (orderside == "short" && pos < 0)) {
+
+  if (orderside == "long" && pos > 0) {
+    print("orderside long > 0")
+    return(0)
+  }
+  if (orderside == "short" && pos < 0) {
+    print("orderside short < 0")
     return(0)
   }
 
@@ -475,7 +479,11 @@
 #' @keywords internal
 .calculate_fees <- function(TxnQty, TxnPrice, Symbol) {
   # Return zero when price or quantity are missing.
+  print(TxnQty)
+  print(Symbol)
+  print(TxnPrice)
   if (is.na(TxnPrice) || is.na(TxnQty)) {
+    print("TxnPrice or TxnQty is NA, returning 0.")
     return(0)
   }
 
@@ -561,6 +569,7 @@
   if (!is.null(inst_lookup) && !identical(inst_lookup$symbol, Symbol)) {
     inst <- inst_lookup$instrument
     ids_copy <- inst$identifiers
+    print(ids_copy)
     if (is.environment(ids_copy)) ids_copy <- as.list(ids_copy)
     tick_copy <- .sanitize_scalar_numeric(inst$tick_size, default = 0.01)
     mult_copy <- .sanitize_scalar_numeric(inst$multiplier, default = 1)
@@ -656,12 +665,12 @@
   multiplier <- first_numeric(c(multiplier, data_multiplier, donor_multiplier))
 
   if (is.na(slippage) && is.na(fees)) {
-    warning(sprintf("Transaction cost identifiers not found for symbol: %s. Returning fees 0.", Symbol))
+    stop(sprintf("Transaction cost identifiers not found for symbol: %s. Returning fees 0.", Symbol))
     return(0)
   }
 
   if (is.na(multiplier)) {
-    warning(sprintf("Multiplier not found for symbol: %s. Returning fees 0.", Symbol))
+    stop(sprintf("Multiplier not found for symbol: %s. Returning fees 0.", Symbol))
     return(0)
   }
 
@@ -679,12 +688,13 @@
     }
     NULL
   }
-
+  print("tentando detectar ticker para calcular fees")
   patterns1 <- c("CCM", "BGI", "DOL", "GOLD", "WDO", "WIN", "IND", "COCOA", "CORN", "NATURAL_GAS")
   patterns2 <- c("DI1")
 
   matched_pattern_a <- startsWith_any(symbol_id, patterns1)
   matched_pattern_b <- startsWith_any(symbol_id, patterns2) | (tolower(attr(x, "subcategoria")) %in% c("juros", "juros brasil"))
+  print("is di?")
   print(matched_pattern_b)
   qty <- abs(as.numeric(TxnQty))
   price <- as.numeric(TxnPrice)
