@@ -19,25 +19,41 @@
 # Returns `y` when `x` is `NULL`, zero-length, or entirely `NA`; otherwise
 # returns `x` unchanged. Useful for filling metadata defaults.
 `%||%` <- function(x, y) {
-  if (is.null(x) || length(x) == 0) return(y)
-  if (is.atomic(x) && all(is.na(x))) return(y)
+  if (is.null(x) || length(x) == 0) {
+    return(y)
+  }
+  if (is.atomic(x) && all(is.na(x))) {
+    return(y)
+  }
   x
 }
 
 # Turn an expression (from substitute) into a readable label
 .bt_expr_to_label <- function(expr) {
-  if (is.null(expr)) return(NULL)
-  if (is.symbol(expr)) return(as.character(expr))
-  if (is.character(expr) && length(expr)) return(expr[[1]])
+  if (is.null(expr)) {
+    return(NULL)
+  }
+  if (is.symbol(expr)) {
+    return(as.character(expr))
+  }
+  if (is.character(expr) && length(expr)) {
+    return(expr[[1]])
+  }
   NULL
 }
 
 # Coerce inputs to a non-empty scalar character when possible
 .bt_safe_scalar_chr <- function(x) {
-  if (is.null(x) || length(x) == 0) return(NULL)
-  if (is.list(x) || is.environment(x)) return(NULL)
+  if (is.null(x) || length(x) == 0) {
+    return(NULL)
+  }
+  if (is.list(x) || is.environment(x)) {
+    return(NULL)
+  }
   val <- suppressWarnings(as.character(x)[1])
-  if (length(val) == 0 || is.na(val) || !nzchar(val)) return(NULL)
+  if (length(val) == 0 || is.na(val) || !nzchar(val)) {
+    return(NULL)
+  }
   val
 }
 
@@ -79,7 +95,9 @@
   pick_label <- function(...) {
     for (candidate in list(...)) {
       val <- .bt_safe_scalar_chr(candidate)
-      if (!is.null(val)) return(val)
+      if (!is.null(val)) {
+        return(val)
+      }
     }
     NULL
   }
@@ -122,7 +140,9 @@
 #' @param default Numeric scalar returned when no finite number is located.
 #' @keywords internal
 .sanitize_scalar_numeric <- function(x, default = NA_real_) {
-  if (is.null(x) || length(x) == 0) return(default)
+  if (is.null(x) || length(x) == 0) {
+    return(default)
+  }
   if (is.list(x)) x <- unlist(x, recursive = TRUE, use.names = FALSE)
   x <- suppressWarnings(as.numeric(x))
   x <- x[is.finite(x)]
@@ -147,7 +167,9 @@
     currency = NULL,
     identifiers = list()
   )
-  if (is.null(object)) return(meta)
+  if (is.null(object)) {
+    return(meta)
+  }
 
   fetch_attr <- function(name) attr(object, name, exact = TRUE)
 
@@ -203,8 +225,12 @@
 #' @return Invisibly returns TRUE on successful registration, NULL otherwise.
 #' @keywords internal
 .register_future_from_data <- function(symbol, data_xts, overwrite = TRUE) {
-  if (!requireNamespace("FinancialInstrument", quietly = TRUE)) return(invisible(NULL))
-  if (missing(symbol) || is.null(symbol) || !nzchar(symbol[1])) return(invisible(NULL))
+  if (!requireNamespace("FinancialInstrument", quietly = TRUE)) {
+    return(invisible(NULL))
+  }
+  if (missing(symbol) || is.null(symbol) || !nzchar(symbol[1])) {
+    return(invisible(NULL))
+  }
 
   meta <- .collect_instrument_metadata(data_xts)
 
@@ -262,12 +288,11 @@
 #' @return The same object class with guaranteed OHLC columns present.
 #' @keywords internal
 .use_close_only <- function(object) {
-
   data_columns <- tolower(colnames(object))
 
-  has_open  <- "open"  %in% data_columns
-  has_high  <- "high"  %in% data_columns
-  has_low   <- "low"   %in% data_columns
+  has_open <- "open" %in% data_columns
+  has_high <- "high" %in% data_columns
+  has_low <- "low" %in% data_columns
   has_close <- "close" %in% data_columns
 
   if (has_open && has_high && has_low && has_close) {
@@ -276,13 +301,13 @@
 
   if (has_close) {
     col_close <- which(data_columns == "close")
-    if(!has_open) {
+    if (!has_open) {
       object$Open <- object[, col_close]
     }
-    if(!has_high) {
+    if (!has_high) {
       object$High <- object[, col_close]
     }
-    if(!has_low) {
+    if (!has_low) {
       object$Low <- object[, col_close]
     }
 
@@ -308,12 +333,13 @@
 #' @return A `POSIXct` vector aligned to midnight in the chosen timezone.
 #' @keywords internal
 .convert_posixct <- function(xts_object, tz = NULL) {
-  if(is.null(tz)){
-    tz = "America/Sao_Paulo"
+  if (is.null(tz)) {
+    tz <- "America/Sao_Paulo"
   }
-  if(inherits(xts_object, "xts")) {
+  if (inherits(xts_object, "xts")) {
     dados <- as.POSIXct(format(index(xts_object), "%Y-%m-%d 00:00:00"),
-                        tz = tz)
+      tz = tz
+    )
     return(dados)
   } else {
     stop("This is not an xts object.")
@@ -328,9 +354,7 @@
 #' @return A single numeric value: annualized volatility.
 #' @keywords internal
 .annualize_vol <- function(r) {
-
   sd(r, na.rm = TRUE) * sqrt(252)
-
 }
 #' Create a business day calendar (bizdays)
 #'
@@ -341,11 +365,11 @@
 #' @param name Character scalar, calendar name to load from `bizdays::holidays`.
 #' @return Invisibly returns the created bizdays calendar object.
 #' @keywords internal
-.generate_calendar <- function(name = "Brazil/ANBIMA"){
+.generate_calendar <- function(name = "Brazil/ANBIMA") {
   cal_b3 <- create.calendar(
     name      = name,
     holidays  = holidays(name),
-    weekdays  = c("saturday","sunday")
+    weekdays  = c("saturday", "sunday")
   )
   return(invisible(cal_b3))
 }
@@ -387,18 +411,32 @@
   attr(out, "risk_target") <- risk_target
   attr(out, "risk_original") <- risk_original
 
-  cat(paste0("\nAnnualized Returns Discrete",
-             if (geometric) " (Geometric): " else ": ",
-             sprintf("%.4f%%", Return.annualized(out$Discrete, geometric = geometric) * 100), "\n"))
-  cat(paste0("Annualized Returns Log",
-             if (geometric) " (Geometric): " else ": ",
-             sprintf("%.4f%%", Return.annualized(out$Log, geometric = geometric) * 100), "\n"))
-  cat(paste0("Cumulative Returns Discrete",
-             if (geometric) " (Geometric): " else ": ",
-             sprintf("%.4f%%", Return.cumulative(out$Discrete, geometric = geometric) * 100), "\n"))
-  cat(paste0("Cumulative Returns Log",
-             if (geometric) " (Geometric): " else ": ",
-             sprintf("%.4f%%", Return.cumulative(out$Log, geometric = geometric) * 100), "\n\n"))
+  # cat(paste0("\nAnnualized Returns Discrete",
+  #            if (geometric) " (Geometric): " else ": ",
+  #            sprintf("%.4f%%", Return.annualized(out$Discrete, geometric = geometric) * 100), "\n"))
+  # cat(paste0("Annualized Returns Log",
+  #            if (geometric) " (Geometric): " else ": ",
+  #            sprintf("%.4f%%", Return.annualized(out$Log, geometric = geometric) * 100), "\n"))
+  # cat(paste0("Cumulative Returns Discrete",
+  #            if (geometric) " (Geometric): " else ": ",
+  #            sprintf("%.4f%%", Return.cumulative(out$Discrete, geometric = geometric) * 100), "\n"))
+  # cat(paste0("Cumulative Returns Log",
+  #            if (geometric) " (Geometric): " else ": ",
+  #            sprintf("%.4f%%", Return.cumulative(out$Log, geometric = geometric) * 100), "\n\n"))
+  ann_disc <- as.numeric(Return.annualized(out$Discrete, geometric = geometric))
+  ann_log <- as.numeric(Return.annualized(out$Log, geometric = geometric))
+  cum_disc <- as.numeric(Return.cumulative(out$Discrete, geometric = geometric))
+  cum_log <- as.numeric(Return.cumulative(out$Log, geometric = geometric))
+
+  res_table <- matrix(
+    sprintf("%.4f%%", c(ann_disc, ann_log, cum_disc, cum_log) * 100),
+    nrow = 2,
+    dimnames = list(c("Discrete", "Log"), c("Annual", "Total"))
+  )
+
+  cat(paste0("\n--- Returns Summary ", if (geometric) "(Geometric)" else "(Simple)", " ---\n"))
+  print(res_table, quote = FALSE, right = TRUE)
+  cat("\n")
 
   out
 }

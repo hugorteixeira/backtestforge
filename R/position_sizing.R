@@ -688,14 +688,11 @@
     }
     NULL
   }
-  print("tentando detectar ticker para calcular fees")
   patterns1 <- c("CCM", "BGI", "DOL", "GOLD", "WDO", "WIN", "IND", "COCOA", "CORN", "NATURAL_GAS")
   patterns2 <- c("DI1")
 
   matched_pattern_a <- startsWith_any(symbol_id, patterns1)
   matched_pattern_b <- startsWith_any(symbol_id, patterns2)
-  print("is di?")
-  print(matched_pattern_b)
   qty <- abs(as.numeric(TxnQty))
   price <- as.numeric(TxnPrice)
 

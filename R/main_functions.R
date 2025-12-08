@@ -737,7 +737,7 @@
   Fee.n.Slip <- sum(txns$Txn.Fees)
   stats$Fee.n.Slip <- Fee.n.Slip
 
-  cat(paste0(.dbg("Results for ", ticker, " - ", toupper(type), "\n\n")))
+  cat(paste0(.dbg("Results for ", ticker, " - ", toupper(type), "\n")))
   if (verbose_flag) {
     print(stats)
     cat("\n")
@@ -746,8 +746,10 @@
   }
   tab <- .table_monthly_returns(ptrets, return_data = TRUE, geometric = geometric)
   print(tab)
+  quart <- .table_quarterly_returns(ptrets, return_data = TRUE, geometric = geometric)
+
   tab_rs <- .table_monthly_profit(port)
-  print(tab_rs)
+  tab_rss <- .table_quarterly_profit(port)
 
   index(ptrets) <- .convert_posixct(ptrets)
   index(txns) <- .convert_posixct(txns)
@@ -756,8 +758,19 @@
   ptrets <- .print_returns(ptrets, normalize_risk, geometric = geometric)
 
   stop_t <- Sys.time()
-  cat(paste("\nRuntime:", stop_t - start_t))
-  cat("\n----------------------------------------\n\n")
+
+  # Calculate total seconds (rounded to nearest integer)
+  total_secs <- round(as.numeric(difftime(stop_t, start_t, units = "secs")))
+
+  # Calculate hours, minutes, and seconds
+  hrs <- total_secs %/% 3600
+  mins <- (total_secs %% 3600) %/% 60
+  secs <- total_secs %% 60
+
+  # Print with a nice visual border
+  cat("\n-----------------------------------\n")
+  cat(sprintf("Runtime: %02dh %02dm %02ds", hrs, mins, secs))
+  cat("\n-----------------------------------\n\n")
 
   if (only_returns) {
     attr(ptrets, "backtest") <- TRUE
@@ -886,7 +899,6 @@ bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", 
 #' @inheritParams bt_eldoc
 #' @param fast Integer length of the fast EMA (default 20).
 #' @param slow Integer length of the slow EMA (default 50).
-#' @internal
 bt_ema <- function(ticker, fast = 20, slow = 50, ps_risk_value = 2, ps = "pct", fee = "normal", start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, normalize_risk = NULL, geometric = TRUE, verbose = FALSE, only_returns = FALSE, hide_details = FALSE, stop_before_maturity = NULL, clean_di = TRUE, plot = FALSE) {
   ticker_input <- .bt_resolve_ticker_input(ticker, substitute(ticker))
   .bt_run_module(
