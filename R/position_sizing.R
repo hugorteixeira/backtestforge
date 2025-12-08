@@ -409,11 +409,11 @@
   pos <- getPosQty(portfolio, symbol, timestamp)
 
   if (orderside == "long" && pos > 0) {
-    print("orderside long > 0")
+    # print("orderside long > 0")
     return(0)
   }
   if (orderside == "short" && pos < 0) {
-    print("orderside short < 0")
+    # print("orderside short < 0")
     return(0)
   }
 
@@ -479,9 +479,9 @@
 #' @keywords internal
 .calculate_fees <- function(TxnQty, TxnPrice, Symbol) {
   # Return zero when price or quantity are missing.
-  print(TxnQty)
-  print(Symbol)
-  print(TxnPrice)
+  # print(TxnQty)
+  # print(Symbol)
+  # print(TxnPrice)
   if (is.na(TxnPrice) || is.na(TxnQty)) {
     print("TxnPrice or TxnQty is NA, returning 0.")
     return(0)
@@ -569,7 +569,7 @@
   if (!is.null(inst_lookup) && !identical(inst_lookup$symbol, Symbol)) {
     inst <- inst_lookup$instrument
     ids_copy <- inst$identifiers
-    print(ids_copy)
+    # print(ids_copy)
     if (is.environment(ids_copy)) ids_copy <- as.list(ids_copy)
     tick_copy <- .sanitize_scalar_numeric(inst$tick_size, default = 0.01)
     mult_copy <- .sanitize_scalar_numeric(inst$multiplier, default = 1)
