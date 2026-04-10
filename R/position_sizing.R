@@ -698,7 +698,7 @@
 
   if (!is.null(matched_pattern_a) && matched_pattern_a %in% c("BGI")) {
     # print("BGI detected.")
-    return(-1 * (((0.08 * price) * (multiplier / 100)) + fees) * qty)
+    return(-1 * (((0.07 * price) * (multiplier / 100)) + fees) * qty)
   } else if (!is.null(matched_pattern_a) && matched_pattern_a %in% c("CCM")) {
     # print("CCM detected.")
     return(-1 * (((0.07 * price) * (multiplier / 100)) + fees) * qty)
