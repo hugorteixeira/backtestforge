@@ -29,7 +29,7 @@ bt_eldoc(
 \arguments{
 \item{ticker}{Character symbol or an \code{xts} object (or the name of one in the
 global environment) with OHLC data. When an object is supplied, its data is
-used directly; otherwise it is fetched via \code{sm_get_data()}.}
+used directly; otherwise it is fetched via \code{finharvest::finget()}.}
 
 \item{up}{Integer Donchian window for the upper channel (default 40).}
 
@@ -84,7 +84,7 @@ opposite channel signal. Position sizing can be percentage-of-equity (Donchian)
 or DI-specific sizing, detected by the symbol prefix.
 }
 \details{
-Data is fetched from \code{senhormercado::sm_get_data()} if the symbol is not
+Data is fetched from \code{finharvest::finget()} if the symbol is not
 found in the global environment; otherwise the preloaded object is used.
 
 The function builds the strategy, runs the backtest, prints key summaries, and

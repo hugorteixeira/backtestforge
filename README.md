@@ -134,7 +134,7 @@ This library builds on top of these excellent R packages:
 - `xts`/`zoo` - Time series handling
 - `FinancialInstrument` - Instrument modeling
 - `PerformanceAnalytics` - Performance metrics
-- `rSenhorMercadoAPI` - Data fetching (custom)
+- `finharvest` - Data fetching (custom)
 - `tplotforge` - Visualization (custom)
 
 ## 🤝 Contributing

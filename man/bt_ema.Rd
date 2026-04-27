@@ -29,7 +29,7 @@ bt_ema(
 \arguments{
 \item{ticker}{Character symbol or an \code{xts} object (or the name of one in the
 global environment) with OHLC data. When an object is supplied, its data is
-used directly; otherwise it is fetched via \code{sm_get_data()}.}
+used directly; otherwise it is fetched via \code{finharvest::finget()}.}
 
 \item{fast}{Integer length of the fast EMA (default 20).}
 

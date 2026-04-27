@@ -43,6 +43,25 @@
   .bt_clean_di_column(xts_object, column_name, predicate = function(x) x <= value_over)
 }
 
+.bt_fetch_finharvest_data <- function(symbol, start_date, end_date) {
+  if (!requireNamespace("finharvest", quietly = TRUE)) {
+    stop("Package 'finharvest' is required to fetch market data.", call. = FALSE)
+  }
+
+  finharvest::finget(
+    tickers = symbol,
+    start_date = start_date,
+    end_date = end_date,
+    source = "auto",
+    price_base = 1,
+    assign = FALSE,
+    single_xts = TRUE,
+    consolidate = FALSE,
+    mode = "raw",
+    verbose = FALSE
+  )
+}
+
 .bt_fetch_ticker_data <- function(symbol, data_env, start_date, end_date, clean_di = TRUE, preloaded_xts = NULL) {
   symbol_chr <- if (length(symbol)) as.character(symbol)[1] else ""
   provided_xts <- !is.null(preloaded_xts)
@@ -77,12 +96,9 @@
         return(get(sym, envir = .GlobalEnv))
       }
       tryCatch(
-        sm_get_data(sym,
+        .bt_fetch_finharvest_data(sym,
           start_date = start_date,
-          end_date = end_date,
-          future_history = FALSE,
-          single_xts = TRUE,
-          local_data = FALSE
+          end_date = end_date
         ),
         error = function(e) {
           last_error_msg <<- conditionMessage(e)
@@ -821,7 +837,7 @@
 #' opposite channel signal. Position sizing can be percentage-of-equity (Donchian)
 #' or DI-specific sizing, detected by the symbol prefix.
 #'
-#' Data is fetched from `senhormercado::sm_get_data()` if the symbol is not
+#' Data is fetched from `finharvest::finget()` if the symbol is not
 #' found in the global environment; otherwise the preloaded object is used.
 #'
 #' The function builds the strategy, runs the backtest, prints key summaries, and
@@ -829,7 +845,7 @@
 #'
 #' @param ticker Character symbol or an `xts` object (or the name of one in the
 #'   global environment) with OHLC data. When an object is supplied, its data is
-#'   used directly; otherwise it is fetched via `sm_get_data()`.
+#'   used directly; otherwise it is fetched via `finharvest::finget()`.
 #' @param up Integer Donchian window for the upper channel (default 40).
 #' @param down Integer Donchian window for the lower channel (default 40).
 #' @param ps_risk_value Numeric risk percentage (e.g., 2 for 2%) used by the
@@ -2311,10 +2327,9 @@ bt_batch <- function(
 
     if (is.null(data)) {
       data <- try(
-        sm_get_data(symbol,
-          future_history = FALSE,
-          single_xts = TRUE,
-          local_data = FALSE
+        .bt_fetch_finharvest_data(symbol,
+          start_date = default_start_chr,
+          end_date = default_end_chr
         ),
         silent = TRUE
       )
