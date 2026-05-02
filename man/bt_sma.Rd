@@ -23,6 +23,7 @@ bt_sma(
   hide_details = FALSE,
   stop_before_maturity = NULL,
   clean_di = TRUE,
+  engine = c("native", "quantstrat"),
   plot = FALSE
 )
 }
@@ -63,6 +64,15 @@ normalized return columns to the output.}
 \item{only_returns}{Logical; if \code{TRUE}, returns only the portfolio returns \code{xts}.}
 
 \item{hide_details}{Logical; if \code{TRUE}, simplifies internal object names.}
+
+\item{stop_before_maturity}{Optional compatibility argument reserved for
+futures workflows that should stop before contract maturity.}
+
+\item{clean_di}{Logical; if \code{TRUE}, applies DI-specific row cleaning to DI
+symbols only.}
+
+\item{engine}{Execution engine. \code{"native"} is the fast stateless engine;
+\code{"quantstrat"} runs the legacy path.}
 
 \item{plot}{Logical; if \code{TRUE}, plots the portfolio using \code{rTradingPlots::tplot}.}
 }

@@ -43,6 +43,55 @@
   .bt_clean_di_column(xts_object, column_name, predicate = function(x) x <= value_over)
 }
 
+.bt_base_contract_symbol <- function(symbol) {
+  if (is.null(symbol) || length(symbol) == 0) {
+    return("")
+  }
+  symbol <- as.character(symbol)[1]
+  if (!nzchar(symbol)) {
+    return("")
+  }
+  strsplit(symbol, "_", fixed = TRUE)[[1]][1]
+}
+
+.bt_is_di_symbol <- function(symbol) {
+  startsWith(.bt_base_contract_symbol(symbol), "DI1")
+}
+
+.bt_fill_di_maturity <- function(xts_object, symbol) {
+  if (!xts::is.xts(xts_object) || !.bt_is_di_symbol(symbol)) {
+    return(xts_object)
+  }
+  current <- attr(xts_object, "maturity", exact = TRUE)
+  current_chr <- if (is.null(current)) character() else trimws(as.character(current))
+  if (length(current_chr) > 0 && any(!is.na(current_chr) & nzchar(current_chr))) {
+    return(xts_object)
+  }
+  if (!requireNamespace("finharvest", quietly = TRUE) ||
+      !exists("finget_maturities", envir = asNamespace("finharvest"), inherits = FALSE)) {
+    return(xts_object)
+  }
+
+  contract <- .bt_base_contract_symbol(symbol)
+  root <- sub("^([A-Z]+[0-9]*).*", "\\1", contract)
+  maturities <- tryCatch(
+    finharvest::finget_maturities(tickers = unique(c(contract, root)), next_months = 120),
+    error = function(e) NULL
+  )
+  if (is.null(maturities) || !NROW(maturities) || !"symbol" %in% names(maturities) || !"maturity_date" %in% names(maturities)) {
+    return(xts_object)
+  }
+  idx <- which(as.character(maturities$symbol) == contract)
+  if (!length(idx)) {
+    return(xts_object)
+  }
+  maturity <- as.Date(maturities$maturity_date[idx[1]])
+  if (!is.na(maturity)) {
+    attr(xts_object, "maturity") <- maturity
+  }
+  xts_object
+}
+
 .bt_fetch_finharvest_data <- function(symbol, start_date, end_date) {
   if (!requireNamespace("finharvest", quietly = TRUE)) {
     stop("Package 'finharvest' is required to fetch market data.", call. = FALSE)
@@ -129,7 +178,9 @@
     stop("Provided market data must be an xts object.", call. = FALSE)
   }
 
-  if (isTRUE(clean_di)) {
+  ticker_data <- .bt_fill_di_maturity(ticker_data, resolved_symbol %||% symbol_chr)
+
+  if (isTRUE(clean_di) && .bt_is_di_symbol(resolved_symbol %||% symbol_chr)) {
     ticker_data <- .bt_clean_di(ticker_data, "TickSize", value = 0.001)
     ticker_data <- .bt_clean_di_tick(ticker_data, "TickValue", value_over = -5)
   }
@@ -825,17 +876,17 @@
     elements_names
   )
 
-  if (plot) tplot(portfolio.st, original_ticker)
+  if (plot) .bt_tplot(portfolio.st, original_ticker)
 
   results
 }
 
-#' Run an ElDoc (Donchian) backtest with quantstrat
+#' Run an ElDoc (Donchian) backtest
 #'
-#' Configures a simple Donchian breakout system using `quantstrat` where entries
-#' occur on price crossing the upper/lower channel and exits occur on the
-#' opposite channel signal. Position sizing can be percentage-of-equity (Donchian)
-#' or DI-specific sizing, detected by the symbol prefix.
+#' Configures a simple Donchian breakout system. The default native engine is a
+#' pure in-memory simulator that does not mutate `.GlobalEnv`, `.blotter`, or
+#' `.strategy`. The legacy `quantstrat` implementation remains available with
+#' `engine = "quantstrat"`.
 #'
 #' Data is fetched from `finharvest::finget()` if the symbol is not
 #' found in the global environment; otherwise the preloaded object is used.
@@ -864,6 +915,12 @@
 #' @param verbose Logical, print detailed summaries to the console.
 #' @param only_returns Logical; if `TRUE`, returns only the portfolio returns `xts`.
 #' @param hide_details Logical; if `TRUE`, simplifies internal object names.
+#' @param stop_before_maturity Optional compatibility argument reserved for
+#'   futures workflows that should stop before contract maturity.
+#' @param clean_di Logical; if `TRUE`, applies DI-specific row cleaning to DI
+#'   symbols only.
+#' @param engine Execution engine. `"native"` is the fast stateless engine;
+#'   `"quantstrat"` runs the legacy path.
 #' @param plot Logical; if `TRUE`, plots the portfolio using `rTradingPlots::tplot`.
 #'
 #' @return If `only_returns = TRUE`, returns an `xts` with discrete and log
@@ -875,12 +932,37 @@
 #'   - `mktdata`: market data with indicator columns
 #'
 #' @details
-#' If the symbol starts with `"DI1"`, DI-specific position sizing is used,
-#' otherwise a Donchian risk-based sizing is applied. Instrument metadata
-#' (multiplier, tick size, maturity) is propagated when available.
+#' If the symbol starts with `"DI1"`, the native engine uses PU columns when
+#' available and can enrich rate OHLC data through `brfutures` when installed.
+#' Instrument metadata (multiplier, tick size, maturity) is propagated when
+#' available.
 #' @export
-bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", fee = "normal", start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, normalize_risk = NULL, geometric = TRUE, verbose = FALSE, only_returns = FALSE, hide_details = FALSE, stop_before_maturity = NULL, clean_di = TRUE, plot = FALSE) {
+bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", fee = "normal", start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, normalize_risk = NULL, geometric = TRUE, verbose = FALSE, only_returns = FALSE, hide_details = FALSE, stop_before_maturity = NULL, clean_di = TRUE, engine = c("native", "quantstrat"), plot = FALSE) {
+  engine <- match.arg(engine)
   ticker_input <- .bt_resolve_ticker_input(ticker, substitute(ticker))
+  if (identical(engine, "native")) {
+    return(bt_run_native(
+      ticker = ticker_input$symbol,
+      data = ticker_input$data,
+      strategy = bt_strategy_spec(
+        "donchian",
+        up = up,
+        down = down,
+        long = long,
+        short = short,
+        invert_signals = invert_signals
+      ),
+      risk = bt_risk_spec(mode = "risk", risk_pct = ps_risk_value),
+      execution = bt_execution_spec(fee = fee),
+      start_date = start_date,
+      end_date = end_date,
+      normalize_risk = normalize_risk,
+      geometric = geometric,
+      only_returns = only_returns,
+      verbose = verbose,
+      clean_di = clean_di
+    ))
+  }
   .bt_run_module(
     type = "eldoc",
     ticker = ticker_input$symbol,
@@ -915,8 +997,33 @@ bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", 
 #' @inheritParams bt_eldoc
 #' @param fast Integer length of the fast EMA (default 20).
 #' @param slow Integer length of the slow EMA (default 50).
-bt_ema <- function(ticker, fast = 20, slow = 50, ps_risk_value = 2, ps = "pct", fee = "normal", start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, normalize_risk = NULL, geometric = TRUE, verbose = FALSE, only_returns = FALSE, hide_details = FALSE, stop_before_maturity = NULL, clean_di = TRUE, plot = FALSE) {
+#' @export
+bt_ema <- function(ticker, fast = 20, slow = 50, ps_risk_value = 2, ps = "pct", fee = "normal", start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, normalize_risk = NULL, geometric = TRUE, verbose = FALSE, only_returns = FALSE, hide_details = FALSE, stop_before_maturity = NULL, clean_di = TRUE, engine = c("native", "quantstrat"), plot = FALSE) {
+  engine <- match.arg(engine)
   ticker_input <- .bt_resolve_ticker_input(ticker, substitute(ticker))
+  if (identical(engine, "native")) {
+    return(bt_run_native(
+      ticker = ticker_input$symbol,
+      data = ticker_input$data,
+      strategy = bt_strategy_spec(
+        "ema",
+        fast = fast,
+        slow = slow,
+        long = long,
+        short = short,
+        invert_signals = invert_signals
+      ),
+      risk = bt_risk_spec(mode = "risk", risk_pct = ps_risk_value),
+      execution = bt_execution_spec(fee = fee),
+      start_date = start_date,
+      end_date = end_date,
+      normalize_risk = normalize_risk,
+      geometric = geometric,
+      only_returns = only_returns,
+      verbose = verbose,
+      clean_di = clean_di
+    ))
+  }
   .bt_run_module(
     type = "ema",
     ticker = ticker_input$symbol,
@@ -949,8 +1056,32 @@ bt_ema <- function(ticker, fast = 20, slow = 50, ps_risk_value = 2, ps = "pct", 
 #'
 #' @inheritParams bt_ema
 #' @export
-bt_sma <- function(ticker, fast = 20, slow = 50, ps_risk_value = 2, ps = "pct", fee = "normal", start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, normalize_risk = NULL, geometric = TRUE, verbose = FALSE, only_returns = FALSE, hide_details = FALSE, stop_before_maturity = NULL, clean_di = TRUE, plot = FALSE) {
+bt_sma <- function(ticker, fast = 20, slow = 50, ps_risk_value = 2, ps = "pct", fee = "normal", start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, normalize_risk = NULL, geometric = TRUE, verbose = FALSE, only_returns = FALSE, hide_details = FALSE, stop_before_maturity = NULL, clean_di = TRUE, engine = c("native", "quantstrat"), plot = FALSE) {
+  engine <- match.arg(engine)
   ticker_input <- .bt_resolve_ticker_input(ticker, substitute(ticker))
+  if (identical(engine, "native")) {
+    return(bt_run_native(
+      ticker = ticker_input$symbol,
+      data = ticker_input$data,
+      strategy = bt_strategy_spec(
+        "sma",
+        fast = fast,
+        slow = slow,
+        long = long,
+        short = short,
+        invert_signals = invert_signals
+      ),
+      risk = bt_risk_spec(mode = "risk", risk_pct = ps_risk_value),
+      execution = bt_execution_spec(fee = fee),
+      start_date = start_date,
+      end_date = end_date,
+      normalize_risk = normalize_risk,
+      geometric = geometric,
+      only_returns = only_returns,
+      verbose = verbose,
+      clean_di = clean_di
+    ))
+  }
   .bt_run_module(
     type = "sma",
     ticker = ticker_input$symbol,
@@ -1243,6 +1374,8 @@ normalize_fee_mode <- function(val, default = "normal") {
 #'   parameter grid.
 #' @param timeframes Character vector of timeframe suffixes appended to each
 #'   ticker (e.g. `"4H"`).
+#' @param exact_match Logical; if `TRUE`, use each ticker exactly as supplied
+#'   instead of appending `timeframes`.
 #' @param mup,mdown Numeric vectors used as Donchian window lengths and also as
 #'   fallbacks for moving-average speeds.
 #' @param mps_risk_value Numeric risk percentage passed to the position-sizing
@@ -1258,8 +1391,11 @@ normalize_fee_mode <- function(val, default = "normal") {
 #' @param only_returns Logical; if `TRUE`, returns an `xts` matrix of returns
 #'   instead of the full backtest objects.
 #' @param hide_details Logical flag propagated to the underlying backtest.
+#' @param clean_di Logical flag propagated to the underlying backtest.
 #' @param returns_type Desired returns column (`"Log"`, `"Discrete"`,
 #'   `"LogAdj"`, or `"DiscreteAdj"`).
+#' @param engine Execution engine propagated to each wrapper. `"native"` is the
+#'   stateless engine; `"quantstrat"` runs the legacy implementation.
 #' @param plot_mult Logical flag; if `TRUE`, plots combined results via `tplot()`.
 #' @param gen_portfolio Optional vector or list describing which backtest
 #'   outputs to aggregate into synthetic portfolios. Each element (or the entire
@@ -1286,6 +1422,7 @@ bt_batch <- function(
   type = c("eldoc", "ema", "sma"),
   tickers,
   timeframes = "1D",
+  exact_match = FALSE,
   mup = 40,
   mdown = 40,
   mps_risk_value = 2,
@@ -1301,7 +1438,9 @@ bt_batch <- function(
   verbose = FALSE,
   only_returns = FALSE,
   hide_details = FALSE,
+  clean_di = TRUE,
   returns_type = "Log",
+  engine = c("native", "quantstrat"),
   plot_mult = FALSE,
   gen_portfolio = NULL,
   gen_portfolio_weights = NULL,
@@ -1309,6 +1448,7 @@ bt_batch <- function(
   ...
 ) {
   if (!requireNamespace("xts", quietly = TRUE)) stop("Package 'xts' is required.")
+  engine <- match.arg(engine)
 
   spec_list_input <- NULL
   using_spec_list <- FALSE
@@ -1378,6 +1518,14 @@ bt_batch <- function(
       return("DiscreteAdj")
     }
     "Log"
+  }
+
+  normalize_engine <- function(x) {
+    val <- if (is.null(x) || length(x) == 0) "native" else tolower(as.character(x)[1])
+    if (!val %in% c("native", "quantstrat")) {
+      stop(sprintf("Unsupported engine '%s'.", val), call. = FALSE)
+    }
+    val
   }
 
   build_label <- function(tk, tf, type_name, indicator_suffix, ps, riskv, L, S, fee_mode, inv, geom, nrisk, rtype) {
@@ -1643,7 +1791,7 @@ bt_batch <- function(
     if (!xts::is.xts(dt)) {
       return(NULL)
     }
-    tsz <- .sanitize_scalar_numeric(attr(dt, "fut_tick_size"), default = 0.01)
+    tsz <- .sanitize_scalar_numeric(attr(dt, "fut_tick_size"), default = 1)
     mult <- .sanitize_scalar_numeric(attr(dt, "fut_multiplier"), default = 1)
     mat <- attr(dt, "maturity")
     cur <- attr(dt, "currency")
@@ -1928,7 +2076,7 @@ bt_batch <- function(
       if (!requireNamespace("FinancialInstrument", quietly = TRUE)) {
         stop("Package 'FinancialInstrument' is required for instrument definition.")
       }
-      tsz <- .sanitize_scalar_numeric(tick_size, default = 0.01)
+      tsz <- .sanitize_scalar_numeric(tick_size, default = 1)
       mult <- .sanitize_scalar_numeric(multiplier, default = 1)
       cur <- if (is.null(currency)) "USD" else as.character(currency)[1]
       suppressWarnings(
@@ -1958,6 +2106,9 @@ bt_batch <- function(
     geometric = geometric,
     verbose = FALSE,
     hide_details = FALSE,
+    clean_di = TRUE,
+    exact_match = FALSE,
+    engine = engine,
     returns_type = "Log"
   )
 
@@ -1965,6 +2116,7 @@ bt_batch <- function(
 
   base_param_sources <- list(
     timeframes = timeframes,
+    exact_match = exact_match,
     mps_risk_value = mps_risk_value,
     mps = mps,
     fee = fee,
@@ -1975,6 +2127,8 @@ bt_batch <- function(
     geometric = geometric,
     verbose = verbose,
     hide_details = hide_details,
+    clean_di = clean_di,
+    engine = engine,
     returns_type = returns_type
   )
   recognized_override_fields <- names(base_param_sources)
@@ -2029,7 +2183,9 @@ bt_batch <- function(
       length(per_params$fee), length(per_params$long), length(per_params$short),
       length(per_params$invert_signals), length(per_params$normalize_risk),
       length(per_params$geometric), length(per_params$verbose),
-      length(per_params$hide_details), length(per_params$returns_type),
+      length(per_params$hide_details), length(per_params$clean_di),
+      length(per_params$exact_match), length(per_params$engine),
+      length(per_params$returns_type),
       if (length(indicator_vectors_local)) vapply(indicator_vectors_local, length, integer(1)) else integer(0)
     )
     n_tests <- max(c(1, lens))
@@ -2068,10 +2224,14 @@ bt_batch <- function(
       geom <- isTRUE(.bt_value_at(per_params$geometric, i, defaults$geometric))
       verb <- isTRUE(.bt_value_at(per_params$verbose, i, defaults$verbose))
       hide <- isTRUE(.bt_value_at(per_params$hide_details, i, defaults$hide_details))
+      clean <- isTRUE(.bt_value_at(per_params$clean_di, i, defaults$clean_di))
+      exact <- isTRUE(.bt_value_at(per_params$exact_match, i, defaults$exact_match))
+      eng <- normalize_engine(.bt_value_at(per_params$engine, i, defaults$engine))
       rtyp <- normalize_rtype(.bt_value_at(per_params$returns_type, i, defaults$returns_type))
 
-      data_symbol <- paste0(spec_ticker, "_", tf)
-      label <- build_label(spec_label, tf, type_name, indicator_suffix, psV, rV, L, S, feeV, inv, geom, nr, rtyp)
+      data_symbol <- if (exact) spec_ticker else paste0(spec_ticker, "_", tf)
+      label_tf <- if (exact) "exact" else tf
+      label <- build_label(spec_label, label_tf, type_name, indicator_suffix, psV, rV, L, S, feeV, inv, geom, nr, rtyp)
       if (isTRUE(verbose) || verb) message(sprintf("Running %s ...", label))
 
       ensure_xts_or_remove(data_symbol)
@@ -2093,6 +2253,8 @@ bt_batch <- function(
           verbose = isTRUE(verbose) || verb,
           only_returns = only_returns,
           hide_details = hide,
+          clean_di = clean,
+          engine = eng,
           plot = FALSE
         ),
         indicator_args_i
@@ -2647,7 +2809,7 @@ bt_batch <- function(
   if (isTRUE(plot_mult) && length(plot_list) > 0) {
     tryCatch(
       {
-        do.call(tplot, plot_list)
+            do.call(.bt_tplot, plot_list)
       },
       error = function(e) warning(sprintf("plot_mult failed: %s", conditionMessage(e)))
     )

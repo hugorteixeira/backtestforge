@@ -2,7 +2,7 @@
 % Please edit documentation in R/main_functions.R
 \name{bt_eldoc}
 \alias{bt_eldoc}
-\title{Run an ElDoc (Donchian) backtest with quantstrat}
+\title{Run an ElDoc (Donchian) backtest}
 \usage{
 bt_eldoc(
   ticker,
@@ -23,6 +23,7 @@ bt_eldoc(
   hide_details = FALSE,
   stop_before_maturity = NULL,
   clean_di = TRUE,
+  engine = c("native", "quantstrat"),
   plot = FALSE
 )
 }
@@ -64,6 +65,15 @@ normalized return columns to the output.}
 
 \item{hide_details}{Logical; if \code{TRUE}, simplifies internal object names.}
 
+\item{stop_before_maturity}{Optional compatibility argument reserved for
+futures workflows that should stop before contract maturity.}
+
+\item{clean_di}{Logical; if \code{TRUE}, applies DI-specific row cleaning to DI
+symbols only.}
+
+\item{engine}{Execution engine. \code{"native"} is the fast stateless engine;
+\code{"quantstrat"} runs the legacy path.}
+
 \item{plot}{Logical; if \code{TRUE}, plots the portfolio using \code{rTradingPlots::tplot}.}
 }
 \value{
@@ -78,10 +88,10 @@ returns. Otherwise, returns a named list with elements:
 }
 }
 \description{
-Configures a simple Donchian breakout system using \code{quantstrat} where entries
-occur on price crossing the upper/lower channel and exits occur on the
-opposite channel signal. Position sizing can be percentage-of-equity (Donchian)
-or DI-specific sizing, detected by the symbol prefix.
+Configures a simple Donchian breakout system. The default native engine is a
+pure in-memory simulator that does not mutate \code{.GlobalEnv}, \code{.blotter}, or
+\code{.strategy}. The legacy \code{quantstrat} implementation remains available with
+\code{engine = "quantstrat"}.
 }
 \details{
 Data is fetched from \code{finharvest::finget()} if the symbol is not
@@ -90,7 +100,8 @@ found in the global environment; otherwise the preloaded object is used.
 The function builds the strategy, runs the backtest, prints key summaries, and
 returns a list of results.
 
-If the symbol starts with \code{"DI1"}, DI-specific position sizing is used,
-otherwise a Donchian risk-based sizing is applied. Instrument metadata
-(multiplier, tick size, maturity) is propagated when available.
+If the symbol starts with \code{"DI1"}, the native engine uses PU columns when
+available and can enrich rate OHLC data through \code{brfutures} when installed.
+Instrument metadata (multiplier, tick size, maturity) is propagated when
+available.
 }

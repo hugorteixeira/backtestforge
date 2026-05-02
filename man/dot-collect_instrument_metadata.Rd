@@ -10,8 +10,8 @@
 \item{object}{xts object containing market data plus metadata attributes.}
 }
 \value{
-A list with \code{tick_size}, \code{multiplier}, \code{maturity}, \code{currency}, and
-\code{identifiers} entries.
+A list with \code{tick_size}, \code{tick_value}, \code{multiplier}, \code{maturity},
+\code{currency}, and \code{identifiers} entries.
 }
 \description{
 Inspects the attributes of an xts time series to collect futures-specific

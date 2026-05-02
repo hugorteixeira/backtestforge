@@ -17,10 +17,8 @@
 #' @importFrom blotter .getPortfolio initAcct initPortf getPortfolio updatePortf perTradeStats getEndEq updateEndEq AcctReturns PortfReturns updateAcct getTxns tradeStats perTradeStats getPosQty
 #' @importFrom quantstrat applyIndicators applySignals add.rule add.signal add.indicator addPosLimit strategy applyRules getOrderBook applyStrategy initOrders initStrategy
 #' @importFrom bizdays create.calendar holidays bizdays
-#' @importFrom lubridate interval
 #' @importFrom TTR runMax runMin
 #' @importFrom magrittr %>%
-#' @importFrom tradeplotr tplot
 #' @importFrom bizdays create.calendar
 ## usethis namespace: end
 NULL

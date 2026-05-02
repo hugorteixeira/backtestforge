@@ -8,6 +8,7 @@ bt_batch(
   type = c("eldoc", "ema", "sma"),
   tickers,
   timeframes = "1D",
+  exact_match = FALSE,
   mup = 40,
   mdown = 40,
   mps_risk_value = 2,
@@ -23,7 +24,9 @@ bt_batch(
   verbose = FALSE,
   only_returns = FALSE,
   hide_details = FALSE,
+  clean_di = TRUE,
   returns_type = "Log",
+  engine = c("native", "quantstrat"),
   plot_mult = FALSE,
   gen_portfolio = NULL,
   gen_portfolio_weights = NULL,
@@ -45,6 +48,9 @@ parameter grid.}
 
 \item{timeframes}{Character vector of timeframe suffixes appended to each
 ticker (e.g. \code{"4H"}).}
+
+\item{exact_match}{Logical; if \code{TRUE}, use each ticker exactly as supplied
+instead of appending \code{timeframes}.}
 
 \item{mup, mdown}{Numeric vectors used as Donchian window lengths and also as
 fallbacks for moving-average speeds.}
@@ -73,8 +79,13 @@ instead of the full backtest objects.}
 
 \item{hide_details}{Logical flag propagated to the underlying backtest.}
 
+\item{clean_di}{Logical flag propagated to the underlying backtest.}
+
 \item{returns_type}{Desired returns column (\code{"Log"}, \code{"Discrete"},
 \code{"LogAdj"}, or \code{"DiscreteAdj"}).}
+
+\item{engine}{Execution engine propagated to each wrapper. \code{"native"} is the
+stateless engine; \code{"quantstrat"} runs the legacy implementation.}
 
 \item{plot_mult}{Logical flag; if \code{TRUE}, plots combined results via \code{tplot()}.}
 

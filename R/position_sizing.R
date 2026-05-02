@@ -32,7 +32,7 @@
   if (inherits(maturity_date, "Date")) {
     md <- maturity_date
     n <- bizdays::bizdays(basis_date, md, cal)
-    mm <- lubridate::interval(basis_date, md) %/% months(1)
+    mm <- .bt_months_between_floor(basis_date, md)
   } else if (is.numeric(maturity_date)) {
     md <- NULL
     n <- as.integer(maturity_date)
@@ -98,7 +98,7 @@
   if (inherits(maturity_date, "Date")) {
     md <- maturity_date
     n <- bizdays::bizdays(basis_date, md, cal)
-    mm <- lubridate::interval(basis_date, md) %/% months(1)
+    mm <- .bt_months_between_floor(basis_date, md)
   } else if (is.numeric(maturity_date)) {
     md <- NULL
     n <- as.integer(maturity_date)
@@ -109,7 +109,7 @@
       stop("'maturity_date' must be Date, a number of business days, or coercible to Date.")
     }
     n <- bizdays::bizdays(basis_date, md, cal)
-    mm <- lubridate::interval(basis_date, md) %/% months(1)
+    mm <- .bt_months_between_floor(basis_date, md)
   }
 
   if (n <= 0) stop("Number of business days to maturity (n) must be positive.")
@@ -145,6 +145,31 @@
     # New rule (post-change): 0–3m: 0.001; >3m: 0.005 (no 0.010 tier)
     if (mm <= 3) 0.001 else 0.005
   }
+}
+
+.bt_months_between_floor <- function(basis_date, maturity_date) {
+  basis_date <- as.Date(basis_date)
+  maturity_date <- as.Date(maturity_date)
+  len <- max(length(basis_date), length(maturity_date))
+  if (len == 0L) {
+    return(integer())
+  }
+  basis_date <- rep_len(basis_date, len)
+  maturity_date <- rep_len(maturity_date, len)
+  out <- rep(NA_integer_, len)
+  valid <- !is.na(basis_date) & !is.na(maturity_date)
+  if (!any(valid)) {
+    return(out)
+  }
+  bd <- basis_date[valid]
+  md <- maturity_date[valid]
+  year_diff <- as.integer(format(md, "%Y")) - as.integer(format(bd, "%Y"))
+  month_diff <- as.integer(format(md, "%m")) - as.integer(format(bd, "%m"))
+  diff <- year_diff * 12L + month_diff
+  diff <- diff - as.integer(as.integer(format(md, "%d")) < as.integer(format(bd, "%d")))
+  diff[diff < 0L] <- 0L
+  out[valid] <- diff
+  out
 }
 
 

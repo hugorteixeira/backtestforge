@@ -7,7 +7,11 @@ Authors@R: person(
     family = "Rzepian Teixeira",
     email = "hugorteixeira@senhormercado.com.br",
     role = c("aut", "cre"))
-Description: R library for making it easier to do simple backtests using blotter/quantstrat with trend following strategies on stocks, futures and crypto. 
+Author: Hugo Rzepian Teixeira [aut, cre]
+Maintainer: Hugo Rzepian Teixeira <hugorteixeira@senhormercado.com.br>
+Description: Fast native trend-following backtesting tools for stocks, futures,
+    and crypto, with legacy blotter/quantstrat compatibility available for
+    regression checks.
 Encoding: UTF-8
 LazyData: true
 RoxygenNote: 7.3.3
@@ -21,15 +25,17 @@ Imports:
     jsonlite,
     FinancialInstrument,
     PerformanceAnalytics,
-    finharvest,
-    tradeplotr,
     quantmod,
     httr,
     TTR,
     tidyr,
     dplyr,
     bizdays,
-    lubridate,
     magrittr
 Suggests: 
-    base64enc
+    base64enc,
+    brfutures,
+    finharvest,
+    tradeplotr,
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3

@@ -14,6 +14,13 @@
 # Accessor for the internal market data environment
 .get_bt_data_env <- function() .bt_data_env
 
+.bt_tplot <- function(...) {
+  if (!requireNamespace("tradeplotr", quietly = TRUE)) {
+    stop("Package 'tradeplotr' is required for plotting.", call. = FALSE)
+  }
+  tradeplotr::tplot(...)
+}
+
 # Null-coalescing helper
 #
 # Returns `y` when `x` is `NULL`, zero-length, or entirely `NA`; otherwise
@@ -156,12 +163,13 @@
 #' fields (fees/slippage). Missing pieces fall back to `NULL`.
 #'
 #' @param object xts object containing market data plus metadata attributes.
-#' @return A list with `tick_size`, `multiplier`, `maturity`, `currency`, and
-#'   `identifiers` entries.
+#' @return A list with `tick_size`, `tick_value`, `multiplier`, `maturity`,
+#'   `currency`, and `identifiers` entries.
 #' @keywords internal
 .collect_instrument_metadata <- function(object) {
   meta <- list(
     tick_size = NULL,
+    tick_value = NULL,
     multiplier = NULL,
     maturity = NULL,
     currency = NULL,
@@ -174,6 +182,7 @@
   fetch_attr <- function(name) attr(object, name, exact = TRUE)
 
   meta$tick_size <- fetch_attr("fut_tick_size") %||% fetch_attr("tick_size") %||% fetch_attr("TickSize")
+  meta$tick_value <- fetch_attr("fut_tick_value") %||% fetch_attr("tick_value") %||% fetch_attr("TickValue")
   meta$multiplier <- fetch_attr("fut_multiplier") %||% fetch_attr("multiplier") %||% fetch_attr("Multiplier")
   meta$maturity <- fetch_attr("maturity") %||% fetch_attr("expiry") %||% fetch_attr("expiration")
   meta$currency <- fetch_attr("currency") %||% fetch_attr("Currency") %||% fetch_attr("currency_id")
@@ -202,6 +211,11 @@
   meta_attr <- fetch_attr("metadata")
   if (is.environment(meta_attr)) meta_attr <- as.list(meta_attr)
   if (is.list(meta_attr)) {
+    meta$tick_size <- meta$tick_size %||% meta_attr$fut_tick_size %||% meta_attr$tick_size %||% meta_attr$TickSize
+    meta$tick_value <- meta$tick_value %||% meta_attr$fut_tick_value %||% meta_attr$tick_value %||% meta_attr$TickValue
+    meta$multiplier <- meta$multiplier %||% meta_attr$fut_multiplier %||% meta_attr$multiplier %||% meta_attr$Multiplier
+    meta$maturity <- meta$maturity %||% meta_attr$maturity %||% meta_attr$expiry %||% meta_attr$expiration
+    meta$currency <- meta$currency %||% meta_attr$currency %||% meta_attr$Currency %||% meta_attr$currency_id
     for (nm in names(attr_candidates)) {
       if (is.null(ids[[nm]]) && !is.null(meta_attr[[nm]])) {
         ids[[nm]] <- meta_attr[[nm]]
@@ -246,8 +260,27 @@
     meta$identifiers <- utils::modifyList(existing_ids, meta$identifiers)
   }
 
-  tick_size <- .sanitize_scalar_numeric(meta$tick_size, default = 0.01)
-  multiplier <- .sanitize_scalar_numeric(meta$multiplier, default = 1)
+  tick_size <- .sanitize_scalar_numeric(meta$tick_size, default = NA_real_)
+  multiplier <- .sanitize_scalar_numeric(meta$multiplier, default = NA_real_)
+  missing <- character()
+  if (!is.finite(tick_size) || tick_size <= 0) {
+    tick_size <- 1
+    missing <- c(missing, "tick_size")
+  }
+  if (!is.finite(multiplier) || multiplier <= 0) {
+    multiplier <- 1
+    missing <- c(missing, "multiplier")
+  }
+  if (length(missing)) {
+    warning(
+      sprintf(
+        "Missing instrument metadata for '%s' (%s); using 1 as fallback.",
+        symbol,
+        paste(missing, collapse = ", ")
+      ),
+      call. = FALSE
+    )
+  }
 
   currency <- meta$currency
   if (is.null(currency) || length(currency) == 0 || !nzchar(as.character(currency)[1])) {

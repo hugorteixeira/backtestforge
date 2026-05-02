@@ -6,16 +6,29 @@
 ![R](https://img.shields.io/badge/r-%23276DC3.svg?style=flat&logo=r&logoColor=white)
 ![Status: Beta](https://img.shields.io/badge/status-beta-orange)
 
-A powerful R library for simplifying backtesting with **blotter/quantstrat** using trend-following strategies on stocks, futures, and crypto. Currently focused on Donchian Channel strategies with position sizing functions.
+A fast R library for trend-following backtests on stocks, futures, and crypto.
+The default path is now a native in-memory engine that avoids `.GlobalEnv`,
+`.blotter`, and `.strategy` mutation. The older **blotter/quantstrat** path is
+still available with `engine = "quantstrat"` for parity checks and migration.
 
 ## 🚀 Features
 
+- **Native Stateless Engine** - Runs without quantstrat/blotter global state
 - **Donchian Channel Strategies** - Built-in support for classic breakout strategies
+- **EMA/SMA Crossover Strategies** - Lightweight moving-average strategies
 - **Smart Position Sizing** - Risk-based position sizing with multiple methods
 - **Multi-Asset Support** - Works with stocks, futures, and crypto
-- **Futures Specialization** - Custom logic for DI futures and other instruments
-- **Visual Backtesting** - Integrated plotting with `tplotforge`
+- **Brazilian Futures Support** - Optional `brfutures` integration for DI PU conversion; contract metadata is read from `xts` attrs
+- **Agent-Friendly Search** - `bt_search_native()` evaluates serializable parameter grids
+- **Visual Backtesting** - Optional plotting with `tradeplotr`
 - **Performance Analytics** - Comprehensive performance reporting
+
+## Current Native Engine Notes
+
+The current implementation plan, benchmark snapshot, parity findings, and next
+session handoff are documented in
+[`docs/native-engine-status-and-handoff.md`](docs/native-engine-status-and-handoff.md).
+Read that file before continuing engine, DI futures, or server-job work.
 
 ## ⚠️ Important Disclaimer
 
@@ -63,7 +76,7 @@ Here's how to run a basic Donchian Channel backtest:
 ```r
 library(backtestforge)
 
-# Simple stock backtest with 40/40 Donchian channels
+# Simple backtest with 40/40 Donchian channels using the native engine
 results <- bt_eldoc(
   ticker = "AAPL",           # Symbol or data object
   up = 40,                   # Upper channel period
@@ -71,7 +84,7 @@ results <- bt_eldoc(
   ps_risk_value = 2,         # 2% risk per trade
   start_date = "2020-01-01", # Backtest start
   end_date = "2023-01-01",   # Backtest end
-  plot = TRUE                # Show performance chart
+  engine = "native"
 )
 
 # Access results
@@ -80,9 +93,26 @@ stats <- results$stats      # Trade statistics
 trades <- results$trades    # Transaction details
 ```
 
+For the legacy path:
+
+```r
+legacy <- bt_eldoc("AAPL", up = 40, down = 40, engine = "quantstrat")
+```
+
+Native parameter search for agents:
+
+```r
+search <- bt_search_native(
+  ticker = "AAPL",
+  space = list(type = "donchian", up = c(20, 40, 80), down = c(10, 20, 40)),
+  budget = 6,
+  objective = "total_return"
+)
+```
+
 ## 🔧 Key Functions
 
-### `bt_eldoc()` - Main Backtesting Function
+### `bt_eldoc()` - Donchian Backtesting Function
 
 The workhorse of the library - runs a complete Donchian Channel backtest:
 
@@ -98,8 +128,34 @@ bt_eldoc(
   end_date = Sys.Date(),
   long = TRUE,         # Enable long trades
   short = TRUE,        # Enable short trades
+  engine = "native",   # Or "quantstrat"
   plot = FALSE         # Plot results
 )
+```
+
+### Native spec API
+
+```r
+strategy <- bt_strategy_spec("donchian", up = 40, down = 20)
+risk <- bt_risk_spec(mode = "risk", risk_pct = 2)
+execution <- bt_execution_spec(timing = "next_open", fee = "nofee")
+
+result <- bt_run_native(
+  ticker = "AAPL",
+  strategy = strategy,
+  risk = risk,
+  execution = execution,
+  start_date = "2020-01-01"
+)
+```
+
+For futures, attach instrument metadata to the `xts` object when the data source
+does not already provide it:
+
+```r
+attr(wdo, "fut_multiplier") <- 10
+attr(wdo, "fut_tick_size") <- 0.5
+attr(wdo, "identifiers") <- list(fees = 1, slippage = 1)
 ```
 
 ## 📊 Position Sizing Methods
@@ -126,16 +182,19 @@ Cumulative Returns: 156.34%
 
 ## 🛠️ Dependencies
 
-This library builds on top of these excellent R packages:
+This library uses:
 
-- `quantstrat` - Event-based backtesting framework
-- `blotter` - Portfolio and account management
-- `TTR` - Technical analysis functions
-- `xts`/`zoo` - Time series handling
-- `FinancialInstrument` - Instrument modeling
-- `PerformanceAnalytics` - Performance metrics
-- `finharvest` - Data fetching (custom)
-- `tplotforge` - Visualization (custom)
+- Native engine dependencies:
+  - `TTR` - Technical analysis functions
+  - `xts`/`zoo` - Time series handling
+  - `PerformanceAnalytics` - Performance metrics
+  - `finharvest` - Data fetching
+  - `brfutures` - Optional Brazilian futures and DI helpers
+- Legacy engine dependencies:
+  - `quantstrat` - Event-based backtesting framework
+  - `blotter` - Portfolio and account management
+  - `FinancialInstrument` - Legacy instrument modeling
+- `tradeplotr` - Visualization (custom)
 
 ## 🤝 Contributing
 
@@ -153,8 +212,10 @@ Contributions are welcome! Since this is a work in progress:
 - [ ] More strategy types beyond Donchian
 - [ ] Additional position sizing methods
 - [ ] Improved documentation and examples
-- [ ] Unit tests (none currently!)
-- [ ] Parameter optimization functions
+- [x] Unit tests for the native engine
+- [x] Parameter search with `bt_search_native()`
+- [ ] Quantstrat parity snapshots for selected strategies
+- [ ] Server job/result persistence
 - [ ] Additional asset class specializations
 
 ## 📄 License
