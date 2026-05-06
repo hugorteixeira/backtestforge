@@ -105,25 +105,37 @@ bt_risk_spec <- function(mode = c("risk", "notional", "fixed"),
 
 #' Build a native execution specification
 #'
-#' @param timing Execution timing. `"next_open"` is the default and avoids
-#'   lookahead by executing a signal on the following bar open. `"same_open"`
-#'   mirrors the legacy quantstrat market-order convention used by the old
-#'   wrappers.
+#' @param execution Execution mode. `"signal"` executes Donchian orders on the
+#'   touched signal level inside the signal bar, and close-based strategy orders
+#'   on the signal bar close. `"close"` executes at the signal bar close.
+#'   `"next_open"` and `"next_close"` execute on the next bar.
 #' @param fee Fee mode passed through `normalize_fee_mode()`.
 #' @param commission_per_contract Optional explicit commission per unit traded.
 #' @param slippage_per_contract Optional explicit slippage per unit traded.
 #' @param close_on_end Whether open positions are flattened on the last bar.
+#' @param timing Deprecated alias for `execution`.
 #' @return A list with class `bt_execution_spec`.
 #' @export
-bt_execution_spec <- function(timing = c("next_open", "next_close", "same_open", "same_close"),
+bt_execution_spec <- function(execution = c("signal", "next_open", "next_close", "close"),
                               fee = "normal",
                               commission_per_contract = NULL,
                               slippage_per_contract = NULL,
-                              close_on_end = TRUE) {
-  timing <- match.arg(timing)
-  delay <- if (grepl("^same_", timing)) 0L else 1L
+                              close_on_end = TRUE,
+                              timing = NULL) {
+  if (!is.null(timing)) {
+    execution <- timing
+  }
+  execution <- as.character(execution)[1]
+  execution <- switch(execution,
+    same_stop = "signal",
+    same_close = "close",
+    execution
+  )
+  execution <- match.arg(execution, c("signal", "next_open", "next_close", "close"))
+  delay <- if (startsWith(execution, "next_")) 1L else 0L
   spec <- list(
-    timing = timing,
+    execution = execution,
+    timing = execution,
     delay = delay,
     fee = normalize_fee_mode(fee),
     commission_per_contract = commission_per_contract,
@@ -696,13 +708,14 @@ bt_search_native <- function(ticker,
     invisible(NULL)
   }
 
-  exec_price <- switch(execution$timing,
+  execution_mode <- execution$execution %||% execution$timing
+  exec_price <- switch(execution_mode,
     next_open = prices$open,
-    same_open = prices$open,
     next_close = prices$close,
-    same_close = prices$close
+    close = prices$close,
+    signal = prices$close
   )
-  executes_on_open <- execution$timing %in% c("next_open", "same_open")
+  executes_on_open <- identical(execution_mode, "next_open")
 
   maybe_enter <- function(i, sig_i, side, eq, px) {
     stop_px <- .bt_native_stop_price(sig_i, side, indicators, strategy)
@@ -715,6 +728,88 @@ bt_search_native <- function(ticker,
     }
     tick_value <- .bt_native_tick_value_at(data, sig_i, metadata)
     .bt_native_size(side, size_px, stop_px, eq, risk, metadata, tick_value = tick_value)
+  }
+
+  signal_mode <- identical(execution_mode, "signal") && identical(strategy$type, "donchian")
+
+  stop_event_price <- function(sig_i, event) {
+    column <- if (identical(event, "upper")) "DonchianUpper" else "DonchianLower"
+    as.numeric(indicators[sig_i, column])
+  }
+
+  stop_event_sequence <- function(sig_i, qty_now) {
+    upper_touched <- isTRUE(as.logical(signals[sig_i, "LongEntry"])) ||
+      isTRUE(as.logical(signals[sig_i, "ShortExit"]))
+    lower_touched <- isTRUE(as.logical(signals[sig_i, "LongExit"])) ||
+      isTRUE(as.logical(signals[sig_i, "ShortEntry"]))
+    if (!upper_touched && !lower_touched) {
+      return(character())
+    }
+    if (upper_touched && lower_touched) {
+      if (qty_now > 0) {
+        return(c("lower", "upper"))
+      }
+      if (qty_now < 0) {
+        return(c("upper", "lower"))
+      }
+      upper <- stop_event_price(sig_i, "upper")
+      lower <- stop_event_price(sig_i, "lower")
+      open_i <- prices$open[sig_i]
+      if (!is.finite(upper) || !is.finite(lower) || !is.finite(open_i)) {
+        return(character())
+      }
+      if (abs(open_i - upper) <= abs(open_i - lower)) {
+        return(c("upper", "lower"))
+      }
+      return(c("lower", "upper"))
+    }
+    if (upper_touched) "upper" else "lower"
+  }
+
+  mark_to_price <- function(eq, from_px, to_px) {
+    if (qty == 0 || !is.finite(from_px) || !is.finite(to_px)) {
+      return(eq)
+    }
+    eq + qty * (to_px - from_px) * metadata$multiplier
+  }
+
+  process_stop_event <- function(i, sig_i, event, eq, px) {
+    if (identical(event, "upper")) {
+      if (qty < 0 && isTRUE(as.logical(signals[sig_i, "ShortExit"]))) {
+        delta <- -qty
+        fees <- .bt_native_txn_cost(delta, px, execution, metadata)
+        qty <<- 0
+        eq <- eq - fees
+        add_trade(i, delta, px, fees, "short_exit", eq)
+      }
+      if (qty == 0 && strategy$long && isTRUE(as.logical(signals[sig_i, "LongEntry"]))) {
+        delta <- maybe_enter(i, sig_i, "long", eq, px)
+        if (delta != 0) {
+          fees <- .bt_native_txn_cost(delta, px, execution, metadata)
+          qty <<- qty + delta
+          eq <- eq - fees
+          add_trade(i, delta, px, fees, "long_entry", eq)
+        }
+      }
+    } else {
+      if (qty > 0 && isTRUE(as.logical(signals[sig_i, "LongExit"]))) {
+        delta <- -qty
+        fees <- .bt_native_txn_cost(delta, px, execution, metadata)
+        qty <<- 0
+        eq <- eq - fees
+        add_trade(i, delta, px, fees, "long_exit", eq)
+      }
+      if (qty == 0 && strategy$short && isTRUE(as.logical(signals[sig_i, "ShortEntry"]))) {
+        delta <- maybe_enter(i, sig_i, "short", eq, px)
+        if (delta != 0) {
+          fees <- .bt_native_txn_cost(delta, px, execution, metadata)
+          qty <<- qty + delta
+          eq <- eq - fees
+          add_trade(i, delta, px, fees, "short_entry", eq)
+        }
+      }
+    }
+    eq
   }
 
   for (i in seq_len(n)) {
@@ -733,6 +828,25 @@ bt_search_native <- function(ticker,
       next
     }
 
+    if (signal_mode) {
+      eq <- equity[i - 1L]
+      last_px <- prev_close
+      events <- stop_event_sequence(i, qty)
+      for (event in events) {
+        px <- stop_event_price(i, event)
+        if (!is.finite(px) || px <= 0) {
+          next
+        }
+        eq <- mark_to_price(eq, last_px, px)
+        eq <- process_stop_event(i, i, event, eq, px)
+        last_px <- px
+      }
+      eq <- mark_to_price(eq, last_px, close_i)
+      equity[i] <- eq
+      qty_path[i] <- qty
+      next
+    }
+
     eq <- equity[i - 1L]
     if (executes_on_open) {
       eq <- eq + qty * (px - prev_close) * metadata$multiplier
@@ -747,11 +861,16 @@ bt_search_native <- function(ticker,
       se <- isTRUE(as.logical(signals[sig_i, "ShortEntry"]))
       sx <- isTRUE(as.logical(signals[sig_i, "ShortExit"]))
 
+      qty_before_signal <- qty
+      exited_long <- FALSE
+      exited_short <- FALSE
+
       if (qty > 0 && lx) {
         delta <- -qty
         fees <- .bt_native_txn_cost(delta, px, execution, metadata)
         qty <- 0
         eq <- eq - fees
+        exited_long <- TRUE
         add_trade(i, delta, px, fees, "long_exit", eq)
       }
       if (qty < 0 && sx) {
@@ -759,23 +878,38 @@ bt_search_native <- function(ticker,
         fees <- .bt_native_txn_cost(delta, px, execution, metadata)
         qty <- 0
         eq <- eq - fees
+        exited_short <- TRUE
         add_trade(i, delta, px, fees, "short_exit", eq)
       }
-      if (qty == 0 && strategy$long && le && !(strategy$short && se)) {
-        delta <- maybe_enter(i, sig_i, "long", eq, px)
-        if (delta != 0) {
-          fees <- .bt_native_txn_cost(delta, px, execution, metadata)
-          qty <- qty + delta
-          eq <- eq - fees
-          add_trade(i, delta, px, fees, "long_entry", eq)
+
+      if (qty == 0) {
+        entry_side <- NULL
+        if (qty_before_signal > 0 && exited_long) {
+          if (strategy$short && se) {
+            entry_side <- "short"
+          } else if (strategy$long && le && !(strategy$short && se)) {
+            entry_side <- "long"
+          }
+        } else if (qty_before_signal < 0 && exited_short) {
+          if (strategy$long && le) {
+            entry_side <- "long"
+          } else if (strategy$short && se && !(strategy$long && le)) {
+            entry_side <- "short"
+          }
+        } else if (strategy$long && le && !(strategy$short && se)) {
+          entry_side <- "long"
+        } else if (strategy$short && se && !(strategy$long && le)) {
+          entry_side <- "short"
         }
-      } else if (qty == 0 && strategy$short && se && !(strategy$long && le)) {
-        delta <- maybe_enter(i, sig_i, "short", eq, px)
-        if (delta != 0) {
-          fees <- .bt_native_txn_cost(delta, px, execution, metadata)
-          qty <- qty + delta
-          eq <- eq - fees
-          add_trade(i, delta, px, fees, "short_entry", eq)
+
+        if (!is.null(entry_side)) {
+          delta <- maybe_enter(i, sig_i, entry_side, eq, px)
+          if (delta != 0) {
+            fees <- .bt_native_txn_cost(delta, px, execution, metadata)
+            qty <- qty + delta
+            eq <- eq - fees
+            add_trade(i, delta, px, fees, paste0(entry_side, "_entry"), eq)
+          }
         }
       }
     }

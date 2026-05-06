@@ -5,18 +5,19 @@
 \title{Build a native execution specification}
 \usage{
 bt_execution_spec(
-  timing = c("next_open", "next_close", "same_open", "same_close"),
+  execution = c("signal", "next_open", "next_close", "close"),
   fee = "normal",
   commission_per_contract = NULL,
   slippage_per_contract = NULL,
-  close_on_end = TRUE
+  close_on_end = TRUE,
+  timing = NULL
 )
 }
 \arguments{
-\item{timing}{Execution timing. \code{"next_open"} is the default and avoids
-lookahead by executing a signal on the following bar open. \code{"same_open"}
-mirrors the legacy quantstrat market-order convention used by the old
-wrappers.}
+\item{execution}{Execution mode. \code{"signal"} executes Donchian orders on the
+touched signal level inside the signal bar, and close-based strategy orders
+on the signal bar close. \code{"close"} executes at the signal bar close.
+\code{"next_open"} and \code{"next_close"} execute on the next bar.}
 
 \item{fee}{Fee mode passed through \code{normalize_fee_mode()}.}
 
@@ -25,6 +26,8 @@ wrappers.}
 \item{slippage_per_contract}{Optional explicit slippage per unit traded.}
 
 \item{close_on_end}{Whether open positions are flattened on the last bar.}
+
+\item{timing}{Deprecated alias for \code{execution}.}
 }
 \value{
 A list with class \code{bt_execution_spec}.

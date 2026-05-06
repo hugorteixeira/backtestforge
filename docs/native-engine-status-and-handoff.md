@@ -55,8 +55,9 @@ bt_eldoc("WDOFUT_4H", up = 40, down = 20, engine = "quantstrat")
   - Donchian bands use `xts::lag.xts()` just like `eldoc(type = "data")`.
   - `NA -> TRUE` does not count as a crossover.
   - Entries require a valid opposite Donchian stop.
-- Default native execution is `next_open`, which avoids same-bar lookahead.
-- For legacy parity checks, use:
+- Default native Donchian execution is `signal`, which treats the Donchian
+  channel touch as the execution price inside the signal bar.
+- For legacy parity checks, use `next_open`:
 
 ```r
 bt_run_native(
@@ -64,7 +65,7 @@ bt_run_native(
   strategy = bt_strategy_spec("donchian", up = 40, down = 20),
   risk = bt_risk_spec(mode = "risk", risk_pct = 1),
   execution = bt_execution_spec(
-    timing = "next_open",
+    execution = "next_open",
     fee = "nofee",
     close_on_end = FALSE
   )
@@ -225,7 +226,7 @@ native <- bt_run_native(
   x,
   strategy = bt_strategy_spec("donchian", up = 40, down = 20),
   risk = bt_risk_spec(mode = "risk", risk_pct = 1),
-  execution = bt_execution_spec(timing = "next_open", fee = "nofee", close_on_end = FALSE)
+  execution = bt_execution_spec(execution = "next_open", fee = "nofee", close_on_end = FALSE)
 )
 ```
 
@@ -250,4 +251,3 @@ Current package verification:
 devtools::document()
 devtools::test(reporter = "summary")
 ```
-

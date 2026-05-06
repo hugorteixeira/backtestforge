@@ -138,7 +138,7 @@ bt_eldoc(
 ```r
 strategy <- bt_strategy_spec("donchian", up = 40, down = 20)
 risk <- bt_risk_spec(mode = "risk", risk_pct = 2)
-execution <- bt_execution_spec(timing = "next_open", fee = "nofee")
+execution <- bt_execution_spec(execution = "signal", fee = "nofee")
 
 result <- bt_run_native(
   ticker = "AAPL",

@@ -953,7 +953,7 @@ bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", 
         invert_signals = invert_signals
       ),
       risk = bt_risk_spec(mode = "risk", risk_pct = ps_risk_value),
-      execution = bt_execution_spec(fee = fee),
+      execution = bt_execution_spec(execution = "signal", fee = fee),
       start_date = start_date,
       end_date = end_date,
       normalize_risk = normalize_risk,

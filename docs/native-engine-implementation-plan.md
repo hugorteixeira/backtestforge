@@ -65,9 +65,10 @@ Implement a new `R/native_engine.R` with:
     sizing from channel stop distance when a stop is available.
 
 - `bt_execution_spec()`
-  - Stores execution timing and cost assumptions.
-  - Defaults to next-bar open execution to avoid lookahead.
-  - Supports `same_open` for legacy quantstrat parity checks.
+  - Stores execution mode and cost assumptions.
+  - Defaults to `signal` execution for Donchian stop orders.
+  - Supports `next_open`, `next_close`, and same-bar `close` for comparison
+    runs.
   - Supports `fee = "normal"` and `fee = "nofee"`.
 
 - `bt_run_native()`

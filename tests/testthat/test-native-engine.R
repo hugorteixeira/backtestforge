@@ -73,6 +73,38 @@ test_that("native moving-average wrappers run on synthetic data", {
   expect_true(all(is.finite(as.numeric(sma$rets))))
 })
 
+test_that("native Donchian stop mode can reverse twice in one bar", {
+  idx <- as.POSIXct("2024-01-01 09:00:00", tz = "UTC") + 3600 * 0:9
+  x <- xts::xts(
+    cbind(
+      Open = c(10, 9.5, 9.5, 9.5, 9.5, 10.5, 10.4, 10.5, 10.4, 9.8),
+      High = c(10, 10, 10, 9.8, 11, 10.8, 10.7, 10.6, 12, 10),
+      Low = c(9, 9, 9, 9.2, 9.5, 10.2, 10.1, 10.2, 8, 9.5),
+      Close = c(9.5, 9.5, 9.5, 9.5, 10.5, 10.4, 10.5, 10.4, 9.8, 9.7)
+    ),
+    order.by = idx
+  )
+  attr(x, "symbol") <- "BT_REVERSAL"
+  attr(x, "fut_tick_size") <- 1
+  attr(x, "fut_multiplier") <- 1
+  attr(x, "identifiers") <- list(fees = 1, slippage = 1)
+
+  res <- bt_run_native(
+    x,
+    strategy = bt_strategy_spec("donchian", up = 3, down = 3),
+    risk = bt_risk_spec(mode = "fixed", fixed_qty = 1),
+    execution = bt_execution_spec(execution = "signal", fee = "nofee", close_on_end = FALSE)
+  )
+
+  expect_equal(
+    res$trades$reason,
+    c("long_entry", "long_exit", "short_entry", "short_exit", "long_entry")
+  )
+  expect_equal(res$trades$qty_delta, c(1, -1, -1, 1, 1))
+  expect_equal(res$trades$price, c(10, 10.1, 10.1, 10.8, 10.8))
+  expect_equal(as.numeric(tail(res$positions$qty, 1)), 1)
+})
+
 test_that("native search evaluates and sorts parameter grids", {
   x <- bt_test_ohlc()
 
