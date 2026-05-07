@@ -8,9 +8,15 @@ bt_sma(
   ticker,
   fast = 20,
   slow = 50,
-  ps_risk_value = 2,
-  ps = "pct",
+  ps_value = NULL,
+  initial_equity = 1e+05,
+  ps_type = NULL,
+  execution = "same_close",
   fee = "normal",
+  fee_value = NULL,
+  fee_type = NULL,
+  slip_value = NULL,
+  slip_type = NULL,
   start_date = "1900-01-01",
   end_date = Sys.Date(),
   long = TRUE,
@@ -19,12 +25,10 @@ bt_sma(
   normalize_risk = NULL,
   geometric = TRUE,
   verbose = FALSE,
-  only_returns = FALSE,
   hide_details = FALSE,
-  stop_before_maturity = NULL,
-  clean_di = TRUE,
-  engine = c("native", "quantstrat"),
-  plot = FALSE
+  reinvest = TRUE,
+  plot = FALSE,
+  ...
 )
 }
 \arguments{
@@ -36,13 +40,41 @@ used directly; otherwise it is fetched via \code{finharvest::finget()}.}
 
 \item{slow}{Integer length of the slow EMA (default 50).}
 
-\item{ps_risk_value}{Numeric risk percentage (e.g., 2 for 2\%) used by the
-position sizing function.}
+\item{ps_value}{Position-sizing value. With \code{ps_type = "eldoc"} or \code{"atr"},
+this is the percent of equity to risk per entry/add. With
+\code{ps_type = "notional"}, this is percent of equity allocated to notional
+exposure. With \code{ps_type = "contract"}, this is the fixed contract/share
+quantity. When \code{NULL}, the function reads \code{ps_value} metadata from the
+ticker.}
 
-\item{ps}{Character label for position sizing mode (informational).}
+\item{initial_equity}{Starting account equity in money units.}
+
+\item{ps_type}{Position-sizing type: \code{"eldoc"}, \code{"atr"}, \code{"notional"}, or
+\code{"contract"}. When \code{NULL}, the function reads \code{ps_type} metadata from the
+ticker.}
+
+\item{execution}{Execution mode. \code{"breakout"} uses the exact touched ElDoc
+channel price. \code{"exact_price"} is an alias for \code{"breakout"}.
+\code{"same_close"} uses the signal candle close. \code{"next_open"},
+\code{"next_close"}, and \code{"next_avg"} use the next candle open, close, or OHLC
+average.}
 
 \item{fee}{Either \code{"normal"} (use instrument fees/slippage if available) or
 \code{"nofee"} to disable fees.}
+
+\item{fee_value}{Optional commission amount in account currency. When \code{NULL},
+ticker metadata such as \code{fee_value} is required unless \code{fee = "nofee"}.}
+
+\item{fee_type}{Fee unit. \code{"contract"} charges \code{fee_value} per traded unit;
+\code{"order"} charges \code{fee_value} once per executed order. When \code{NULL}, ticker
+metadata such as \code{fee_type} is required unless \code{fee = "nofee"}.}
+
+\item{slip_value}{Optional slippage override. When omitted, instrument
+metadata such as \code{slip_value} is used.}
+
+\item{slip_type}{Slippage unit for \code{slip_value}: \code{"bps"}, \code{"ticks"},
+\code{"points"}/\code{"price_points"}, or \code{"cash"}. When \code{NULL}, ticker slippage
+metadata must include its unit.}
 
 \item{start_date}{Character or Date, start date when fetching data.}
 
@@ -61,20 +93,15 @@ normalized return columns to the output.}
 
 \item{verbose}{Logical, print detailed summaries to the console.}
 
-\item{only_returns}{Logical; if \code{TRUE}, returns only the portfolio returns \code{xts}.}
-
 \item{hide_details}{Logical; if \code{TRUE}, simplifies internal object names.}
 
-\item{stop_before_maturity}{Optional compatibility argument reserved for
-futures workflows that should stop before contract maturity.}
-
-\item{clean_di}{Logical; if \code{TRUE}, applies DI-specific row cleaning to DI
-symbols only.}
-
-\item{engine}{Execution engine. \code{"native"} is the fast stateless engine;
-\code{"quantstrat"} runs the legacy path.}
+\item{reinvest}{Logical; if \code{TRUE}, size new entries using current account
+equity. Open positions keep their original quantity until the next order.}
 
 \item{plot}{Logical; if \code{TRUE}, plots the portfolio using \code{rTradingPlots::tplot}.}
+
+\item{...}{Advanced options. Currently supports \code{only_returns} (return only
+the returns \code{xts}) and \code{clean_di} (apply DI-specific bad-row filtering).}
 }
 \description{
 Identical to \code{\link[=bt_ema]{bt_ema()}} but uses simple moving averages for its crossover

@@ -12,14 +12,9 @@
 #' @importFrom zoo index<-
 #' @importFrom xts lag.xts as.xts apply.monthly
 #' @importFrom quantmod chart_Series chart_theme chart_pars Cl Hi Lo
-#' @importFrom PerformanceAnalytics table.CalendarReturns Return.annualized Return.cumulative
-#' @importFrom FinancialInstrument future stock getInstrument instrument_attr
-#' @importFrom blotter .getPortfolio initAcct initPortf getPortfolio updatePortf perTradeStats getEndEq updateEndEq AcctReturns PortfReturns updateAcct getTxns tradeStats perTradeStats getPosQty
-#' @importFrom quantstrat applyIndicators applySignals add.rule add.signal add.indicator addPosLimit strategy applyRules getOrderBook applyStrategy initOrders initStrategy
 #' @importFrom bizdays create.calendar holidays bizdays
 #' @importFrom TTR runMax runMin
 #' @importFrom magrittr %>%
-#' @importFrom bizdays create.calendar
 ## usethis namespace: end
 NULL
 

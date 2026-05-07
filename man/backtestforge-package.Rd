@@ -6,7 +6,7 @@
 \alias{backtestforge-package}
 \title{backtestforge: Easy backtesting tools}
 \description{
-Fast native trend-following backtesting tools for stocks, futures, and crypto, with legacy blotter/quantstrat compatibility available for regression checks.
+Fast native trend-following backtesting tools for stocks, futures, and crypto.
 }
 \author{
 \strong{Maintainer}: Hugo Rzepian Teixeira \email{hugorteixeira@senhormercado.com.br}

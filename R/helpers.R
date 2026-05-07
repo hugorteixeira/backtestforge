@@ -158,13 +158,14 @@
 
 #' Gather futures metadata embedded in an xts object
 #'
-#' Inspects the attributes of an xts time series to collect futures-specific
-#' metadata such as tick size, multiplier, maturity, currency, and identifier
-#' fields (fees/slippage). Missing pieces fall back to `NULL`.
+#' Inspects the direct attributes of an xts time series to collect
+#' futures-specific metadata such as tick size, multiplier, maturity,
+#' currency, fees, and slippage. Missing pieces fall back to `NULL`.
 #'
 #' @param object xts object containing market data plus metadata attributes.
 #' @return A list with `tick_size`, `tick_value`, `multiplier`, `maturity`,
-#'   `currency`, and `identifiers` entries.
+#'   `currency`, `fee_type`, `slip_value`, `slippage_bps`,
+#'   `slippage_ticks`, `slippage_points`, and `slippage_unit` entries.
 #' @keywords internal
 .collect_instrument_metadata <- function(object) {
   meta <- list(
@@ -173,143 +174,77 @@
     multiplier = NULL,
     maturity = NULL,
     currency = NULL,
-    identifiers = list()
+    fee_type = NULL,
+    slip_value = NULL,
+    slippage_bps = NULL,
+    slippage_ticks = NULL,
+    slippage_unit = NULL,
+    slippage_points = NULL
   )
   if (is.null(object)) {
     return(meta)
   }
 
   fetch_attr <- function(name) attr(object, name, exact = TRUE)
-
-  meta$tick_size <- fetch_attr("fut_tick_size") %||% fetch_attr("tick_size") %||% fetch_attr("TickSize")
-  meta$tick_value <- fetch_attr("fut_tick_value") %||% fetch_attr("tick_value") %||% fetch_attr("TickValue")
-  meta$multiplier <- fetch_attr("fut_multiplier") %||% fetch_attr("multiplier") %||% fetch_attr("Multiplier")
-  meta$maturity <- fetch_attr("maturity") %||% fetch_attr("expiry") %||% fetch_attr("expiration")
-  meta$currency <- fetch_attr("currency") %||% fetch_attr("Currency") %||% fetch_attr("currency_id")
-
-  ids <- fetch_attr("identifiers")
-  if (is.environment(ids)) ids <- as.list(ids)
-  if (!is.list(ids)) ids <- list()
-
-  attr_candidates <- list(
-    slippage = c("slippage", "Slippage", "spread", "Spread"),
-    fees = c("fees", "fee", "Fees", "commission", "commission_per_contract")
-  )
-
-  for (nm in names(attr_candidates)) {
-    if (is.null(ids[[nm]])) {
-      for (cand in attr_candidates[[nm]]) {
-        val <- fetch_attr(cand)
-        if (!is.null(val)) {
-          ids[[nm]] <- val
-          break
-        }
+  fetch_attr_first <- function(names) {
+    for (name in names) {
+      val <- fetch_attr(name)
+      if (!is.null(val)) {
+        return(val)
       }
     }
+    NULL
   }
+  fetch_list_first <- function(x, names) {
+    if (is.environment(x)) x <- as.list(x)
+    if (!is.list(x)) {
+      return(NULL)
+    }
+    for (name in names) {
+      val <- x[[name]]
+      if (!is.null(val)) {
+        return(val)
+      }
+    }
+    NULL
+  }
+
+  tick_size_names <- c("fut_tick_size", "tick_size", "ticksize", "TickSize")
+  tick_value_names <- c("fut_tick_value", "tick_value", "tickvalue", "TickValue")
+  multiplier_names <- c("fut_multiplier", "multiplier", "Multiplier")
+  maturity_names <- c("maturity", "expiry", "expiration")
+  currency_names <- c("currency", "Currency", "currency_id")
+  slip_value_names <- "slip_value"
+  fee_type_names <- "fee_type"
+  slippage_bps_names <- "slippage_bps"
+  slippage_ticks_names <- "slippage_ticks"
+  slippage_points_names <- c("slippage_points", "slippage_points_per_contract")
+  slippage_unit_names <- "slip_type"
+
+  meta$tick_size <- fetch_attr_first(tick_size_names)
+  meta$tick_value <- fetch_attr_first(tick_value_names)
+  meta$multiplier <- fetch_attr_first(multiplier_names)
+  meta$maturity <- fetch_attr_first(maturity_names)
+  meta$currency <- fetch_attr_first(currency_names)
+
+  meta$fee_type <- fetch_attr_first(fee_type_names)
+  meta$slip_value <- fetch_attr_first(slip_value_names)
+  meta$slippage_bps <- fetch_attr_first(slippage_bps_names)
+  meta$slippage_ticks <- fetch_attr_first(slippage_ticks_names)
+  meta$slippage_points <- fetch_attr_first(slippage_points_names)
+  meta$slippage_unit <- fetch_attr_first(slippage_unit_names)
 
   meta_attr <- fetch_attr("metadata")
   if (is.environment(meta_attr)) meta_attr <- as.list(meta_attr)
   if (is.list(meta_attr)) {
-    meta$tick_size <- meta$tick_size %||% meta_attr$fut_tick_size %||% meta_attr$tick_size %||% meta_attr$TickSize
-    meta$tick_value <- meta$tick_value %||% meta_attr$fut_tick_value %||% meta_attr$tick_value %||% meta_attr$TickValue
-    meta$multiplier <- meta$multiplier %||% meta_attr$fut_multiplier %||% meta_attr$multiplier %||% meta_attr$Multiplier
-    meta$maturity <- meta$maturity %||% meta_attr$maturity %||% meta_attr$expiry %||% meta_attr$expiration
-    meta$currency <- meta$currency %||% meta_attr$currency %||% meta_attr$Currency %||% meta_attr$currency_id
-    for (nm in names(attr_candidates)) {
-      if (is.null(ids[[nm]]) && !is.null(meta_attr[[nm]])) {
-        ids[[nm]] <- meta_attr[[nm]]
-      }
-    }
+    meta$tick_size <- meta$tick_size %||% fetch_list_first(meta_attr, tick_size_names)
+    meta$tick_value <- meta$tick_value %||% fetch_list_first(meta_attr, tick_value_names)
+    meta$multiplier <- meta$multiplier %||% fetch_list_first(meta_attr, multiplier_names)
+    meta$maturity <- meta$maturity %||% fetch_list_first(meta_attr, maturity_names)
+    meta$currency <- meta$currency %||% fetch_list_first(meta_attr, currency_names)
   }
 
-  meta$identifiers <- ids
   meta
-}
-
-#' Register/update a `FinancialInstrument` future from raw data
-#'
-#' Uses metadata found on an xts data object to define or update a futures
-#' instrument inside `FinancialInstrument`. Automatically ensures the currency
-#' exists and merges identifiers when the instrument is already present.
-#'
-#' @param symbol Character identifier to register.
-#' @param data_xts xts object with market data and metadata attributes.
-#' @param overwrite Passed to `FinancialInstrument::future()`; defaults to TRUE.
-#' @return Invisibly returns TRUE on successful registration, NULL otherwise.
-#' @keywords internal
-.register_future_from_data <- function(symbol, data_xts, overwrite = TRUE) {
-  if (!requireNamespace("FinancialInstrument", quietly = TRUE)) {
-    return(invisible(NULL))
-  }
-  if (missing(symbol) || is.null(symbol) || !nzchar(symbol[1])) {
-    return(invisible(NULL))
-  }
-
-  meta <- .collect_instrument_metadata(data_xts)
-
-  existing <- try(FinancialInstrument::getInstrument(symbol, silent = TRUE), silent = TRUE)
-  if (!inherits(existing, "try-error") && FinancialInstrument::is.instrument(existing)) {
-    meta$tick_size <- meta$tick_size %||% existing$tick_size
-    meta$multiplier <- meta$multiplier %||% existing$multiplier
-    meta$maturity <- meta$maturity %||% existing$maturity
-    meta$currency <- meta$currency %||% existing$currency
-    existing_ids <- existing$identifiers
-    if (is.null(existing_ids)) existing_ids <- list()
-    if (!is.list(meta$identifiers)) meta$identifiers <- list()
-    meta$identifiers <- utils::modifyList(existing_ids, meta$identifiers)
-  }
-
-  tick_size <- .sanitize_scalar_numeric(meta$tick_size, default = NA_real_)
-  multiplier <- .sanitize_scalar_numeric(meta$multiplier, default = NA_real_)
-  missing <- character()
-  if (!is.finite(tick_size) || tick_size <= 0) {
-    tick_size <- 1
-    missing <- c(missing, "tick_size")
-  }
-  if (!is.finite(multiplier) || multiplier <= 0) {
-    multiplier <- 1
-    missing <- c(missing, "multiplier")
-  }
-  if (length(missing)) {
-    warning(
-      sprintf(
-        "Missing instrument metadata for '%s' (%s); using 1 as fallback.",
-        symbol,
-        paste(missing, collapse = ", ")
-      ),
-      call. = FALSE
-    )
-  }
-
-  currency <- meta$currency
-  if (is.null(currency) || length(currency) == 0 || !nzchar(as.character(currency)[1])) {
-    currency <- "USD"
-  } else {
-    currency <- as.character(currency)[1]
-  }
-
-  identifiers <- meta$identifiers
-  if (!is.list(identifiers)) identifiers <- list()
-
-  if (!FinancialInstrument::is.currency(currency)) {
-    try(FinancialInstrument::currency(currency), silent = TRUE)
-  }
-
-  suppressWarnings(try(
-    FinancialInstrument::future(
-      primary_id = symbol,
-      tick_size = tick_size,
-      multiplier = multiplier,
-      maturity = meta$maturity,
-      currency = currency,
-      identifiers = identifiers,
-      overwrite = overwrite
-    ),
-    silent = TRUE
-  ))
-
-  invisible(TRUE)
 }
 #' Ensure OHLC columns exist, falling back to Close
 #'
@@ -389,6 +324,43 @@
 .annualize_vol <- function(r) {
   sd(r, na.rm = TRUE) * sqrt(252)
 }
+
+.bt_periods_per_year <- function(x) {
+  idx <- zoo::index(x)
+  if (length(idx) < 2L) return(NA_real_)
+  years <- format(as.POSIXct(idx, tz = "UTC"), "%Y")
+  counts <- as.integer(table(years))
+  counts <- counts[counts > 1L]
+  if (length(counts)) return(stats::median(counts))
+  dt <- stats::median(diff(as.numeric(idx)))
+  if (!is.finite(dt) || dt <= 0) return(NA_real_)
+  if (inherits(idx, "Date")) dt <- dt * 86400
+  (365.25 * 86400) / dt
+}
+
+.bt_return_summary_values <- function(x, periods_per_year, geometric = TRUE) {
+  x <- x[is.finite(x)]
+  if (!length(x)) {
+    return(list(annualized = NA_real_, cumulative = NA_real_))
+  }
+
+  cumulative <- if (isTRUE(geometric)) prod(1 + x) - 1 else sum(x)
+  if (!is.finite(periods_per_year) || periods_per_year <= 0) {
+    annualized <- cumulative
+  } else if (isTRUE(geometric)) {
+    n_periods <- max(1L, length(x) - 1L)
+    annualized <- if (1 + cumulative > 0) {
+      (1 + cumulative)^(periods_per_year / n_periods) - 1
+    } else {
+      NA_real_
+    }
+  } else {
+    annualized <- mean(x) * periods_per_year
+  }
+
+  list(annualized = annualized, cumulative = cumulative)
+}
+
 #' Create a business day calendar (bizdays)
 #'
 #' Convenience wrapper to create a `bizdays` calendar using the provided
@@ -399,12 +371,17 @@
 #' @return Invisibly returns the created bizdays calendar object.
 #' @keywords internal
 .generate_calendar <- function(name = "Brazil/ANBIMA") {
-  cal_b3 <- create.calendar(
+  tryCatch(bizdays::load_builtin_calendars(), error = function(e) NULL)
+  holidays <- tryCatch(
+    bizdays::holidays(name),
+    error = function(e) as.Date(character())
+  )
+  cal_b3 <- bizdays::create.calendar(
     name      = name,
-    holidays  = holidays(name),
+    holidays  = holidays,
     weekdays  = c("saturday", "sunday")
   )
-  return(invisible(cal_b3))
+  invisible(cal_b3)
 }
 
 .print_returns <- function(returns_xts, normalize_risk = NULL, geometric = TRUE) {
@@ -412,7 +389,13 @@
     stop("returns_xts must be an xts object.")
   }
 
-  discrete <- returns_xts
+  cols <- colnames(returns_xts)
+  discrete_col <- which(tolower(cols %||% character()) == "discrete")
+  discrete <- if (length(discrete_col)) {
+    returns_xts[, discrete_col[1], drop = FALSE]
+  } else {
+    returns_xts[, 1, drop = FALSE]
+  }
   colnames(discrete) <- "Discrete"
   log_xts <- xts::xts(log1p(as.numeric(discrete$Discrete)), order.by = index(discrete))
   colnames(log_xts) <- "Log"
@@ -444,25 +427,12 @@
   attr(out, "risk_target") <- risk_target
   attr(out, "risk_original") <- risk_original
 
-  # cat(paste0("\nAnnualized Returns Discrete",
-  #            if (geometric) " (Geometric): " else ": ",
-  #            sprintf("%.4f%%", Return.annualized(out$Discrete, geometric = geometric) * 100), "\n"))
-  # cat(paste0("Annualized Returns Log",
-  #            if (geometric) " (Geometric): " else ": ",
-  #            sprintf("%.4f%%", Return.annualized(out$Log, geometric = geometric) * 100), "\n"))
-  # cat(paste0("Cumulative Returns Discrete",
-  #            if (geometric) " (Geometric): " else ": ",
-  #            sprintf("%.4f%%", Return.cumulative(out$Discrete, geometric = geometric) * 100), "\n"))
-  # cat(paste0("Cumulative Returns Log",
-  #            if (geometric) " (Geometric): " else ": ",
-  #            sprintf("%.4f%%", Return.cumulative(out$Log, geometric = geometric) * 100), "\n\n"))
-  ann_disc <- as.numeric(Return.annualized(out$Discrete, geometric = geometric))
-  ann_log <- as.numeric(Return.annualized(out$Log, geometric = geometric))
-  cum_disc <- as.numeric(Return.cumulative(out$Discrete, geometric = geometric))
-  cum_log <- as.numeric(Return.cumulative(out$Log, geometric = geometric))
+  ppy <- .bt_periods_per_year(out)
+  disc <- .bt_return_summary_values(as.numeric(out$Discrete), ppy, geometric = geometric)
+  log_ret <- .bt_return_summary_values(as.numeric(out$Log), ppy, geometric = geometric)
 
   res_table <- matrix(
-    sprintf("%.4f%%", c(ann_disc, ann_log, cum_disc, cum_log) * 100),
+    sprintf("%.4f%%", c(disc$annualized, log_ret$annualized, disc$cumulative, log_ret$cumulative) * 100),
     nrow = 2,
     dimnames = list(c("Discrete", "Log"), c("Annual", "Total"))
   )

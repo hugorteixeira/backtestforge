@@ -12,7 +12,73 @@ bt_test_ohlc <- function(n = 260) {
   attr(out, "symbol") <- "BTTEST"
   attr(out, "fut_tick_size") <- 1
   attr(out, "fut_multiplier") <- 1
-  attr(out, "identifiers") <- list(fees = 1, slippage = 1)
+  attr(out, "ps_value") <- 2
+  attr(out, "ps_type") <- "eldoc"
+  attr(out, "fee_value") <- 1
+  attr(out, "fee_type") <- "contract"
+  attr(out, "slip_value") <- 1
+  attr(out, "slip_type") <- "cash"
+  out
+}
+
+bt_test_eldoc_breakout_ohlc <- function() {
+  idx <- as.Date("2024-01-01") + 0:9
+  open <- c(10, 10, 10, 9.8, 11, 12, 13, 14, 15, 16)
+  high <- c(10, 10, 10, 9.9, 11.6, 12.6, 13.6, 14.6, 15.6, 16.6)
+  low <- c(9, 9, 9, 9, 10.5, 11.5, 12.5, 13.5, 14.5, 15.5)
+  close <- c(9.5, 9.5, 9.5, 9.8, 11, 12, 13, 14, 15, 16)
+  out <- xts::xts(
+    cbind(Open = open, High = high, Low = low, Close = close),
+    order.by = idx
+  )
+  attr(out, "symbol") <- "BT_HAND"
+  attr(out, "fut_tick_size") <- 1
+  attr(out, "fut_multiplier") <- 1
+  out
+}
+
+bt_test_di_ohlc <- function() {
+  idx <- as.Date("2024-01-02") + 0:9
+  maturity <- as.Date("2028-01-03")
+  cal <- .generate_calendar("Brazil/ANBIMA")
+  open <- c(10, 10, 10, 9.8, 11, 12, 13, 14, 15, 16)
+  high <- c(10, 10, 10, 9.9, 11.6, 12.6, 13.6, 14.6, 15.6, 16.6)
+  low <- c(9, 9, 9, 9, 10.5, 11.5, 12.5, 13.5, 14.5, 15.5)
+  close <- c(9.5, 9.5, 9.5, 9.8, 11, 12, 13, 14, 15, 16)
+  pu_for <- function(rate, i) {
+    .calculate_futures_di_notional(rate, maturity_date = maturity, basis_date = idx[i], cal = cal)$pu
+  }
+  tick_value_for <- function(rate, i) {
+    .calculate_futures_di_notional(rate, maturity_date = maturity, basis_date = idx[i], cal = cal)$tick_value
+  }
+  pu_open <- mapply(pu_for, open, seq_along(open))
+  pu_high <- mapply(pu_for, high, seq_along(high))
+  pu_low <- mapply(pu_for, low, seq_along(low))
+  pu_close <- mapply(pu_for, close, seq_along(close))
+  tick_value <- -abs(mapply(tick_value_for, close, seq_along(close)))
+  out <- xts::xts(
+    cbind(
+      Open = open,
+      High = high,
+      Low = low,
+      Close = close,
+      PU_Open = pu_open,
+      PU_High = pu_high,
+      PU_Low = pu_low,
+      PU_Close = pu_close,
+      TickSize = rep(0.01, length(close)),
+      TickValue = tick_value
+    ),
+    order.by = idx
+  )
+  attr(out, "symbol") <- "DI1F28"
+  attr(out, "maturity") <- maturity
+  attr(out, "ticksize") <- 0.01
+  attr(out, "tickvalue") <- tick_value[1]
+  attr(out, "fee_value") <- 1
+  attr(out, "fee_type") <- "contract"
+  attr(out, "slip_value") <- 7
+  attr(out, "slip_type") <- "bps"
   out
 }
 
@@ -24,8 +90,8 @@ test_that("native Donchian engine returns finite shaped results", {
     up = 20,
     down = 10,
     fee = "nofee",
-    engine = "native",
-    verbose = FALSE
+    verbose = FALSE,
+    hide_details = TRUE
   )
 
   expect_s3_class(res, "bt_native_result")
@@ -34,38 +100,566 @@ test_that("native Donchian engine returns finite shaped results", {
   expect_true(all(is.finite(as.numeric(res$rets))))
   expect_true(all(c("trades", "positions", "mktdata", "stats") %in% names(res)))
   expect_true(NROW(res$positions) == NROW(x))
+  expect_true(res$spec$risk$reinvest)
+  expect_equal(res$spec$risk$initial_equity, 100000)
+  expect_equal(as.numeric(res$equity$Equity[1]), 100000)
+  expect_equal(res$stats$InitialEquity, 100000)
 })
 
-test_that("native wrappers do not create quantstrat global state", {
-  x <- bt_test_ohlc()
-  had_blotter <- exists(".blotter", envir = .GlobalEnv, inherits = FALSE)
-  had_strategy <- exists(".strategy", envir = .GlobalEnv, inherits = FALSE)
+test_that("native wrappers accept starting equity", {
+  x <- bt_test_ohlc(160)
 
-  invisible(bt_eldoc(x, up = 15, down = 8, fee = "nofee", engine = "native"))
+  eldoc <- bt_eldoc(x, up = 12, down = 8, initial_equity = 250000, fee = "nofee", hide_details = TRUE)
+  ema <- bt_ema(x, fast = 8, slow = 20, initial_equity = 300000, fee = "nofee", hide_details = TRUE)
+  sma <- bt_sma(x, fast = 8, slow = 20, initial_equity = 350000, fee = "nofee", hide_details = TRUE)
 
-  expect_identical(exists(".blotter", envir = .GlobalEnv, inherits = FALSE), had_blotter)
-  expect_identical(exists(".strategy", envir = .GlobalEnv, inherits = FALSE), had_strategy)
+  expect_equal(eldoc$spec$risk$initial_equity, 250000)
+  expect_equal(as.numeric(eldoc$equity$Equity[1]), 250000)
+  expect_equal(eldoc$stats$InitialEquity, 250000)
+  expect_equal(ema$spec$risk$initial_equity, 300000)
+  expect_equal(as.numeric(ema$equity$Equity[1]), 300000)
+  expect_equal(sma$spec$risk$initial_equity, 350000)
+  expect_equal(as.numeric(sma$equity$Equity[1]), 350000)
 })
 
-test_that("native metadata falls back to one with a warning", {
+test_that("native reinvest sizing uses current equity at entry", {
+  metadata <- list(multiplier = 1, tick_size = 1)
+  risk_reinvest <- bt_risk_spec(
+    mode = "risk",
+    initial_equity = 1000,
+    risk_pct = 2,
+    reinvest = TRUE,
+    integer_qty = FALSE
+  )
+  risk_fixed_basis <- bt_risk_spec(
+    mode = "risk",
+    initial_equity = 1000,
+    risk_pct = 2,
+    reinvest = FALSE,
+    integer_qty = FALSE
+  )
+
+  expect_equal(
+    .bt_native_size("long", price = 100, stop_price = 90, equity = 2000, risk_reinvest, metadata),
+    4
+  )
+  expect_equal(
+    .bt_native_size("long", price = 100, stop_price = 90, equity = 2000, risk_fixed_basis, metadata),
+    2
+  )
+  expect_error(
+    .bt_native_size("long", price = 100, stop_price = 90, equity = NA_real_, risk_reinvest, metadata),
+    "valid equity"
+  )
+})
+
+test_that("native reinvest does not resize open positions between orders", {
+  idx <- as.Date("2020-01-01") + 0:5
+  close <- c(100, 100, 120, 140, 110, 130)
+  data <- xts::xts(
+    cbind(Open = close, High = close, Low = close, Close = close),
+    order.by = idx
+  )
+  prices <- list(open = close, high = close, low = close, close = close, index = idx)
+  indicators <- xts::xts(
+    cbind(DonchianUpper = rep(110, length(idx)), DonchianLower = rep(90, length(idx))),
+    order.by = idx
+  )
+  signals <- xts::xts(
+    cbind(
+      LongEntry = c(FALSE, TRUE, FALSE, FALSE, FALSE, FALSE),
+      LongExit = FALSE,
+      ShortEntry = FALSE,
+      ShortExit = FALSE
+    ),
+    order.by = idx
+  )
+
+  sim <- .bt_native_simulate(
+    data = data,
+    prices = prices,
+    indicators = indicators,
+    signals = signals,
+    strategy = list(type = "donchian", long = TRUE, short = FALSE, invert_signals = FALSE),
+    risk = bt_risk_spec(
+      mode = "risk",
+      initial_equity = 1000,
+      risk_pct = 10,
+      reinvest = TRUE,
+      integer_qty = FALSE
+    ),
+    execution = bt_execution_spec(execution = "close", fee = "nofee", close_on_end = FALSE),
+    metadata = list(multiplier = 1, tick_size = 1, tick_value = 1, fees = 0, slippage = 0),
+    symbol = "BTTEST"
+  )
+
+  expect_equal(as.numeric(sim$positions$qty[2:6]), rep(10, 5))
+  expect_gt(length(unique(as.numeric(sim$positions$equity[2:6]))), 1)
+})
+
+test_that("native metadata falls back with a warning", {
   x <- bt_test_ohlc()
   attr(x, "fut_tick_size") <- NULL
   attr(x, "fut_multiplier") <- NULL
-  attr(x, "identifiers") <- NULL
 
   expect_warning(
-    res <- bt_eldoc(x, up = 20, down = 10, fee = "nofee", engine = "native"),
-    "using 1 as fallback"
+    res <- bt_eldoc(x, up = 20, down = 10, fee = "nofee", hide_details = TRUE),
+    "using fallback defaults"
   )
   expect_equal(res$stats$Multiplier, 1)
   expect_equal(res$stats$TickSize, 1)
 })
 
+test_that("native wrappers require missing metadata when defaults are NULL", {
+  x <- bt_test_ohlc()
+  attr(x, "ps_value") <- NULL
+  expect_error(
+    bt_eldoc(x, up = 20, down = 10, fee = "nofee", hide_details = TRUE),
+    "position sizing.*ps_value"
+  )
+
+  x <- bt_test_ohlc()
+  attr(x, "fee_type") <- NULL
+  expect_error(
+    bt_eldoc(x, up = 20, down = 10, slip_value = 0, hide_details = TRUE),
+    "fee.*fee_type"
+  )
+
+  x <- bt_test_ohlc()
+  attr(x, "slip_type") <- NULL
+  expect_error(
+    bt_eldoc(x, up = 20, down = 10, fee_value = 0, hide_details = TRUE),
+    "slippage.*slip_type"
+  )
+})
+
+test_that("native return printer uses internal return math", {
+  x <- bt_test_ohlc(160)
+  res <- bt_eldoc(x, up = 12, down = 8, fee = "nofee", hide_details = TRUE)
+
+  printed <- NULL
+  expect_output(
+    printed <- .print_returns(res$rets),
+    "Returns Summary"
+  )
+  expect_s3_class(printed, "xts")
+  expect_true(all(c("Discrete", "Log") %in% colnames(printed)))
+})
+
+test_that("native metadata uses finharvest xts contract attrs", {
+  x <- bt_test_ohlc()
+  attr(x, "symbol") <- NULL
+  attr(x, "ticker") <- "CCMFUT_1H_AGG"
+  attr(x, "fut_tick_size") <- NULL
+  attr(x, "fut_multiplier") <- NULL
+  attr(x, "ticksize") <- 0.01
+  attr(x, "tickvalue") <- 4.5
+  attr(x, "fee_value") <- 2.5
+  attr(x, "fee_type") <- "contract"
+  attr(x, "slip_value") <- 7
+  attr(x, "slip_type") <- "bps"
+
+  expect_no_warning(meta <- .bt_native_metadata(x, "CCMFUT_1H_AGG"))
+  expect_equal(meta$tick_size, 0.01)
+  expect_equal(meta$tick_value, 4.5)
+  expect_equal(meta$multiplier, 450)
+  expect_equal(meta$fees, 2.5)
+  expect_equal(meta$slippage_bps, 7)
+
+  execution <- bt_execution_spec(fee = "normal")
+  costs <- .bt_native_txn_cost_components(2, 100, execution, meta)
+  expect_equal(costs[["fees"]], 5)
+  expect_equal(costs[["slippage"]], 63)
+  expect_equal(costs[["total_cost"]], 68)
+  expect_equal(.bt_native_txn_cost(2, 100, execution, meta), 68)
+
+  contract_execution <- bt_execution_spec(fee = "normal", fee_value = 4, fee_type = "contract", slip_value = 0)
+  contract_costs <- .bt_native_txn_cost_components(3, 100, contract_execution, meta)
+  expect_equal(contract_costs[["fees"]], 12)
+  expect_equal(contract_costs[["slippage"]], 0)
+  expect_equal(contract_costs[["total_cost"]], 12)
+
+  order_execution <- bt_execution_spec(fee = "normal", fee_value = 4, fee_type = "order", slip_value = 0)
+  order_costs <- .bt_native_txn_cost_components(3, 100, order_execution, meta)
+  expect_equal(order_costs[["fees"]], 4)
+  expect_equal(order_costs[["slippage"]], 0)
+  expect_equal(order_costs[["total_cost"]], 4)
+
+  tick_slip_execution <- bt_execution_spec(fee = "normal", fee_value = 0, slip_value = 2, slip_type = "ticks")
+  tick_slip_costs <- .bt_native_txn_cost_components(3, 100, tick_slip_execution, meta)
+  expect_equal(tick_slip_costs[["fees"]], 0)
+  expect_equal(tick_slip_costs[["slippage"]], 27)
+  expect_equal(tick_slip_costs[["total_cost"]], 27)
+
+  attr(x, "slip_type") <- "ticks"
+  expect_no_warning(tick_meta <- .bt_native_metadata(x, "CCMFUT_1H_AGG"))
+  expect_equal(tick_meta$slippage_ticks, 7)
+  expect_equal(.bt_native_txn_cost(2, 100, execution, tick_meta), 68)
+
+  attr(x, "slip_type") <- NULL
+  attr(x, "slip_value") <- NULL
+  attr(x, "slippage_points") <- 0.02
+  expect_no_warning(point_meta <- .bt_native_metadata(x, "CCMFUT_1H_AGG"))
+  expect_equal(point_meta$slippage_points, 0.02)
+  expect_equal(.bt_native_txn_cost(2, 100, execution, point_meta), 23)
+
+  expect_no_warning(
+    cost_res <- bt_run_native(
+      x,
+      strategy = bt_strategy_spec("donchian", up = 20, down = 10),
+      execution = execution,
+      report = FALSE
+    )
+  )
+  expect_true(all(c("fees", "slippage", "total_cost") %in% names(cost_res$trades)))
+  expect_equal(cost_res$trades$total_cost, cost_res$trades$fees + cost_res$trades$slippage)
+  expect_equal(cost_res$stats$fees, sum(cost_res$trades$fees, na.rm = TRUE))
+  expect_equal(cost_res$stats$slippage, sum(cost_res$trades$slippage, na.rm = TRUE))
+  expect_equal(cost_res$stats$total_cost, sum(cost_res$trades$total_cost, na.rm = TRUE))
+
+  expect_no_warning(
+    order_fee_res <- bt_eldoc(
+      x,
+      up = 20,
+      down = 10,
+      fee_value = 4,
+      fee_type = "order",
+      slip_value = 0,
+      hide_details = TRUE
+    )
+  )
+  expect_true(NROW(order_fee_res$trades) > 0)
+  expect_true(all(order_fee_res$trades$fees == 4))
+  expect_true(all(order_fee_res$trades$slippage == 0))
+  expect_equal(order_fee_res$stats$fees, 4 * NROW(order_fee_res$trades))
+  expect_equal(order_fee_res$stats$FeeType, "order")
+
+  nofee_res <- bt_eldoc(
+    x,
+    up = 20,
+    down = 10,
+    ps_value = 1,
+    ps_type = "contract",
+    execution = "same_close",
+    fee = "nofee",
+    long = TRUE,
+    short = TRUE,
+    hide_details = TRUE
+  )
+  ledger_res <- bt_eldoc(
+    x,
+    up = 20,
+    down = 10,
+    ps_value = 1,
+    ps_type = "contract",
+    execution = "same_close",
+    fee_value = 2,
+    fee_type = "contract",
+    slip_value = 3,
+    slip_type = "cash",
+    long = TRUE,
+    short = TRUE,
+    hide_details = TRUE
+  )
+  expect_equal(NROW(ledger_res$trades), NROW(nofee_res$trades))
+  expect_equal(ledger_res$trades$qty_delta, nofee_res$trades$qty_delta)
+  expected_cost_drag <- sum(ledger_res$trades$total_cost, na.rm = TRUE)
+  actual_cost_drag <- as.numeric(tail(nofee_res$equity$Equity, 1) - tail(ledger_res$equity$Equity, 1))
+  expect_equal(actual_cost_drag, expected_cost_drag, tolerance = 1e-8)
+
+  cost_table <- .bt_native_cost_summary_table(
+    data.frame(num_trades = 4, net_profit = 80, fees = 10, slippage = 10, total_cost = 20),
+    data.frame(x = seq_len(8))
+  )
+  expect_false("Orders" %in% rownames(cost_table))
+  expect_false("Total Fees" %in% rownames(cost_table))
+  expect_false("Total Slippage" %in% rownames(cost_table))
+  expect_false("Total Cost" %in% rownames(cost_table))
+  expect_false(any(grepl("^Avg ", rownames(cost_table))))
+  expect_equal(cost_table["Trades", "Value"], "4")
+  expect_equal(cost_table["Fees", "Value"], "10,00")
+  expect_equal(cost_table["Slippage", "Value"], "10,00")
+  expect_equal(cost_table["Gross P/L", "Value"], "100,00")
+  expect_equal(cost_table["Fees Impact", "Value"], "10.00%")
+  expect_equal(cost_table["Slippage Impact", "Value"], "10.00%")
+  expect_equal(cost_table["Total Cost Impact", "Value"], "20.00%")
+  expect_equal(cost_table["Impact Basis", "Value"], "profit consumed")
+
+  loss_table <- .bt_native_cost_summary_table(
+    data.frame(num_trades = 4, net_profit = -120, fees = 10, slippage = 10, total_cost = 20),
+    data.frame(x = seq_len(8))
+  )
+  expect_equal(loss_table["Gross P/L", "Value"], "-100,00")
+  expect_equal(loss_table["Total Cost Impact", "Value"], "20.00%")
+  expect_equal(loss_table["Impact Basis", "Value"], "loss worsened")
+
+  expect_no_warning(
+    res <- bt_eldoc(x, up = 20, down = 10, fee = "nofee", hide_details = TRUE)
+  )
+  expect_equal(res$stats$Multiplier, 450)
+  expect_equal(res$stats$TickSize, 0.01)
+})
+
+test_that("native report prints costs before returns summary", {
+  x <- bt_test_ohlc(120)
+
+  output <- capture.output(
+    bt_eldoc(
+      x,
+      up = 12,
+      down = 8,
+      fee_value = 4,
+      slip_value = 0,
+      hide_details = FALSE
+    )
+  )
+
+  cost_idx <- grep("Costs & Slippage Summary", output)
+  returns_idx <- grep("Returns Summary", output)
+  expect_length(cost_idx, 1)
+  expect_length(returns_idx, 1)
+  expect_lt(cost_idx, returns_idx)
+  expect_false(any(grepl("Orders", output, fixed = TRUE)))
+  expect_false(any(grepl("Total Fees", output, fixed = TRUE)))
+  expect_false(any(grepl("Total Slippage", output, fixed = TRUE)))
+  expect_false(any(grepl("Gross P/L Before Costs", output, fixed = TRUE)))
+  expect_false(any(grepl("Avg Fee / Trade", output, fixed = TRUE)))
+  expect_true(any(grepl("Total Cost Impact", output, fixed = TRUE)))
+})
+
+test_that("native DI uses rate OHLC for signals and PU for execution", {
+  idx <- as.Date("2024-01-02") + 0:2
+  rates <- c(10, 11, 12)
+  pu <- c(90000, 89000, 88000)
+  x <- xts::xts(
+    cbind(
+      Open = rates,
+      High = rates + 0.1,
+      Low = rates - 0.1,
+      Close = rates,
+      PU_Open = pu,
+      PU_High = pu + 25,
+      PU_Low = pu - 25,
+      PU_Close = pu,
+      TickSize = rep(0.01, length(rates)),
+      TickValue = rep(-25, length(rates))
+    ),
+    order.by = idx
+  )
+  attr(x, "symbol") <- "DI1F28"
+  attr(x, "maturity") <- as.Date("2028-01-03")
+  attr(x, "ticksize") <- 0.01
+  attr(x, "tickvalue") <- -25
+  attr(x, "fee_value") <- 1
+  attr(x, "fee_type") <- "contract"
+  attr(x, "slip_value") <- 7
+  attr(x, "slip_type") <- "bps"
+
+  prices <- .bt_native_price_set(x, "DI1F28")
+  expect_true(prices$uses_pu)
+  expect_equal(prices$close, rates)
+  expect_equal(prices$exec_close, pu)
+
+  expect_no_warning(meta <- .bt_native_metadata(x, "DI1F28"))
+  expect_equal(meta$multiplier, 1)
+  expect_equal(meta$tick_value, 25)
+  expect_equal(meta$slippage_bps, 7)
+  di_costs <- .bt_native_txn_cost_components(2, pu[2], bt_execution_spec(fee = "normal"), meta, tick_value = 25)
+  expect_equal(di_costs[["fees"]], 2)
+  expect_equal(di_costs[["slippage"]], 350)
+  expect_equal(di_costs[["total_cost"]], 352)
+  expect_equal(.bt_native_txn_cost(2, pu[2], bt_execution_spec(fee = "normal"), meta, tick_value = 25), 352)
+
+  order_tick_costs <- .bt_native_txn_cost_components(
+    3,
+    pu[2],
+    bt_execution_spec(fee = "normal", fee_value = 4, fee_type = "order", slip_value = 2, slip_type = "ticks"),
+    meta,
+    tick_value = 25
+  )
+  expect_equal(order_tick_costs[["fees"]], 4)
+  expect_equal(order_tick_costs[["slippage"]], 150)
+  expect_equal(order_tick_costs[["total_cost"]], 154)
+
+  point_costs <- .bt_native_txn_cost_components(
+    3,
+    pu[2],
+    bt_execution_spec(fee = "normal", fee_value = 4, fee_type = "contract", slip_value = 0.02, slip_type = "points"),
+    meta,
+    tick_value = 25
+  )
+  expect_equal(point_costs[["fees"]], 12)
+  expect_equal(point_costs[["slippage"]], 150)
+  expect_equal(point_costs[["total_cost"]], 162)
+
+  cash_costs <- .bt_native_txn_cost_components(
+    3,
+    pu[2],
+    bt_execution_spec(fee = "normal", fee_value = 4, fee_type = "contract", slip_value = 5, slip_type = "cash"),
+    meta,
+    tick_value = 25
+  )
+  expect_equal(cash_costs[["fees"]], 12)
+  expect_equal(cash_costs[["slippage"]], 15)
+  expect_equal(cash_costs[["total_cost"]], 27)
+
+  indicators <- xts::xts(
+    cbind(
+      DonchianUpper = c(NA, 10.5, 10.5),
+      DonchianLower = c(NA, 9.5, 9.5)
+    ),
+    order.by = idx
+  )
+  signals <- xts::xts(
+    cbind(
+      LongEntry = c(FALSE, TRUE, FALSE),
+      LongExit = FALSE,
+      ShortEntry = FALSE,
+      ShortExit = FALSE
+    ),
+    order.by = idx
+  )
+
+  sim <- .bt_native_simulate(
+    data = x,
+    prices = prices,
+    indicators = indicators,
+    signals = signals,
+    strategy = list(type = "donchian", long = TRUE, short = FALSE, invert_signals = FALSE),
+    risk = bt_risk_spec(mode = "fixed", initial_equity = 10000, fixed_qty = 1),
+    execution = bt_execution_spec(execution = "close", fee = "nofee", close_on_end = FALSE),
+    metadata = meta,
+    symbol = "DI1F28"
+  )
+
+  expect_equal(as.numeric(sim$trades$price[1]), pu[2])
+  expect_equal(as.numeric(sim$positions$qty), c(0, 1, 1))
+  expect_gt(as.numeric(sim$equity$Equity[3]), as.numeric(sim$equity$Equity[2]))
+})
+
+test_that("DI notional fallback works without attaching bizdays", {
+  out <- .calculate_futures_di_notional(
+    10,
+    maturity_date = as.Date("2028-01-03"),
+    basis_date = as.Date("2024-01-02")
+  )
+
+  expect_true(is.finite(out$pu) && out$pu > 0)
+  expect_true(is.finite(out$tick_value) && out$tick_value > 0)
+})
+
+test_that("bt_eldoc DI uses PU execution prices and converted PU risk", {
+  x <- bt_test_di_ohlc()
+
+  same_close <- bt_eldoc(
+    x,
+    up = 3,
+    down = 3,
+    ps_value = 1,
+    ps_type = "contract",
+    execution = "same_close",
+    fee = "nofee",
+    long = TRUE,
+    short = FALSE,
+    hide_details = TRUE
+  )
+  first_same_close <- same_close$trades[same_close$trades$reason == "long_entry", ][1, ]
+  same_close_i <- which(as.Date(zoo::index(x)) == as.Date(first_same_close$timestamp))[1]
+  expect_equal(first_same_close$price, as.numeric(x[same_close_i, "PU_Close"]))
+  expect_equal(first_same_close$qty_delta, 1)
+
+  next_avg <- bt_eldoc(
+    x,
+    up = 3,
+    down = 3,
+    ps_value = 1,
+    ps_type = "contract",
+    execution = "next_avg",
+    fee = "nofee",
+    long = TRUE,
+    short = FALSE,
+    hide_details = TRUE
+  )
+  first_next_avg <- next_avg$trades[next_avg$trades$reason == "long_entry", ][1, ]
+  next_avg_i <- which(as.Date(zoo::index(x)) == as.Date(first_next_avg$timestamp))[1]
+  expected_next_avg <- mean(as.numeric(x[next_avg_i, c("PU_Open", "PU_High", "PU_Low", "PU_Close")]))
+  expect_equal(first_next_avg$price, expected_next_avg)
+  expect_equal(first_next_avg$qty_delta, 1)
+
+  risk_res <- bt_eldoc(
+    x,
+    up = 3,
+    down = 3,
+    ps_value = 2,
+    initial_equity = 1e8,
+    ps_type = "eldoc",
+    execution = "same_close",
+    fee = "nofee",
+    long = TRUE,
+    short = FALSE,
+    hide_details = TRUE
+  )
+  first_risk_entry <- risk_res$trades[risk_res$trades$reason == "long_entry", ][1, ]
+  risk_i <- which(as.Date(zoo::index(risk_res$mktdata)) == as.Date(first_risk_entry$timestamp))[1]
+  stop_rate <- as.numeric(risk_res$mktdata[risk_i, "DonchianLower"])
+  stop_pu <- .bt_native_di_rate_to_pu(stop_rate, x, risk_i, "DI1F28")
+  tick_value <- abs(as.numeric(x[risk_i, "TickValue"]))
+  expected_qty <- floor(1e8 * 0.02 / max(abs(first_risk_entry$price - stop_pu), tick_value))
+
+  expect_true(is.finite(stop_pu) && stop_pu > 0)
+  expect_equal(first_risk_entry$qty_delta, expected_qty)
+  expect_equal(risk_res$spec$risk$ps_type, "eldoc")
+})
+
+test_that("DI breakout converts exact rate line to PU and pyramids in rate space", {
+  x <- bt_test_di_ohlc()
+
+  breakout <- bt_eldoc(
+    x,
+    up = 3,
+    down = 3,
+    ps_value = 1,
+    ps_type = "contract",
+    execution = "breakout",
+    fee = "nofee",
+    long = TRUE,
+    short = FALSE,
+    hide_details = TRUE
+  )
+  first_breakout <- breakout$trades[breakout$trades$reason == "long_entry", ][1, ]
+  signal_i <- which(as.Date(zoo::index(breakout$mktdata)) == as.Date(first_breakout$timestamp))[1]
+  upper_rate <- as.numeric(breakout$mktdata[signal_i, "DonchianUpper"])
+  expected_pu <- .bt_native_di_rate_to_pu(upper_rate, x, signal_i, "DI1F28")
+
+  expect_true(is.finite(expected_pu) && expected_pu > 0)
+  expect_equal(first_breakout$price, expected_pu)
+
+  pyramided <- bt_eldoc(
+    x,
+    up = 3,
+    down = 3,
+    ps_value = 1,
+    ps_type = "contract",
+    execution = "breakout",
+    atr_n = 3,
+    pyramid = TRUE,
+    pyramid_step = 0.5,
+    max_units = 3,
+    fee = "nofee",
+    long = TRUE,
+    short = FALSE,
+    hide_details = TRUE
+  )
+  expect_true(any(pyramided$trades$reason == "long_pyramid"))
+  expect_equal(max(as.numeric(pyramided$positions$units), na.rm = TRUE), 3)
+  expect_true(all(pyramided$trades$price[pyramided$trades$reason == "long_pyramid"] > 1000))
+})
+
 test_that("native moving-average wrappers run on synthetic data", {
   x <- bt_test_ohlc()
 
-  ema <- bt_ema(x, fast = 10, slow = 30, fee = "nofee", engine = "native")
-  sma <- bt_sma(x, fast = 10, slow = 30, fee = "nofee", engine = "native")
+  ema <- bt_ema(x, fast = 10, slow = 30, fee = "nofee", hide_details = TRUE)
+  sma <- bt_sma(x, fast = 10, slow = 30, fee = "nofee", hide_details = TRUE)
 
   expect_s3_class(ema, "bt_native_result")
   expect_s3_class(sma, "bt_native_result")
@@ -87,13 +681,17 @@ test_that("native Donchian stop mode can reverse twice in one bar", {
   attr(x, "symbol") <- "BT_REVERSAL"
   attr(x, "fut_tick_size") <- 1
   attr(x, "fut_multiplier") <- 1
-  attr(x, "identifiers") <- list(fees = 1, slippage = 1)
+  attr(x, "fee_value") <- 1
+  attr(x, "fee_type") <- "contract"
+  attr(x, "slip_value") <- 1
+  attr(x, "slip_type") <- "cash"
 
   res <- bt_run_native(
     x,
     strategy = bt_strategy_spec("donchian", up = 3, down = 3),
     risk = bt_risk_spec(mode = "fixed", fixed_qty = 1),
-    execution = bt_execution_spec(execution = "signal", fee = "nofee", close_on_end = FALSE)
+    execution = bt_execution_spec(execution = "breakout", fee = "nofee", close_on_end = FALSE),
+    report = FALSE
   )
 
   expect_equal(
@@ -103,6 +701,163 @@ test_that("native Donchian stop mode can reverse twice in one bar", {
   expect_equal(res$trades$qty_delta, c(1, -1, -1, 1, 1))
   expect_equal(res$trades$price, c(10, 10.1, 10.1, 10.8, 10.8))
   expect_equal(as.numeric(tail(res$positions$qty, 1)), 1)
+})
+
+test_that("ElDoc execution modes choose the documented fill price", {
+  idx <- as.POSIXct("2024-01-01 09:00:00", tz = "UTC") + 3600 * 0:9
+  x <- xts::xts(
+    cbind(
+      Open = c(10, 9.5, 9.5, 9.5, 9.5, 10.5, 10.4, 10.5, 10.4, 9.8),
+      High = c(10, 10, 10, 9.8, 11, 10.8, 10.7, 10.6, 12, 10),
+      Low = c(9, 9, 9, 9.2, 9.5, 10.2, 10.1, 10.2, 8, 9.5),
+      Close = c(9.5, 9.5, 9.5, 9.5, 10.5, 10.4, 10.5, 10.4, 9.8, 9.7)
+    ),
+    order.by = idx
+  )
+  attr(x, "symbol") <- "BT_EXEC"
+  attr(x, "fut_tick_size") <- 1
+  attr(x, "fut_multiplier") <- 1
+
+  first_entry_price <- function(mode) {
+    res <- bt_eldoc(
+      x,
+      up = 3,
+      down = 3,
+      ps_value = 1,
+      ps_type = "contract",
+      execution = mode,
+      fee = "nofee",
+      long = TRUE,
+      short = FALSE,
+      hide_details = TRUE
+    )
+    res$trades$price[which(res$trades$reason == "long_entry")[1]]
+  }
+
+  expect_equal(bt_execution_spec("exact_price")$execution, "breakout")
+  expect_equal(first_entry_price("breakout"), 10)
+  expect_equal(first_entry_price("same_close"), 10.5)
+  expect_equal(first_entry_price("next_open"), 10.5)
+  expect_equal(first_entry_price("next_close"), 10.4)
+  expect_equal(first_entry_price("next_avg"), mean(c(10.5, 10.8, 10.2, 10.4)))
+})
+
+test_that("ElDoc channel and notional sizing are hand calculated", {
+  x <- bt_test_eldoc_breakout_ohlc()
+
+  eldoc_res <- bt_eldoc(
+    x,
+    up = 3,
+    down = 3,
+    ps_value = 2,
+    ps_type = "eldoc",
+    execution = "breakout",
+    fee = "nofee",
+    long = TRUE,
+    short = FALSE,
+    hide_details = TRUE
+  )
+  first_eldoc_entry <- eldoc_res$trades[eldoc_res$trades$reason == "long_entry", ][1, ]
+  expect_equal(first_eldoc_entry$price, 10)
+  expect_equal(first_eldoc_entry$qty_delta, 2000)
+  expect_equal(eldoc_res$spec$risk$ps_type, "eldoc")
+
+  notional_res <- bt_eldoc(
+    x,
+    up = 3,
+    down = 3,
+    ps_value = 5,
+    ps_type = "notional",
+    execution = "breakout",
+    fee = "nofee",
+    long = TRUE,
+    short = FALSE,
+    hide_details = TRUE
+  )
+  first_notional_entry <- notional_res$trades[notional_res$trades$reason == "long_entry", ][1, ]
+  expect_equal(first_notional_entry$price, 10)
+  expect_equal(first_notional_entry$qty_delta, 500)
+  expect_equal(notional_res$spec$risk$ps_type, "notional")
+})
+
+test_that("ElDoc supports contract and ATR position sizing", {
+  x <- bt_test_ohlc(180)
+
+  contract_res <- bt_eldoc(
+    x,
+    up = 12,
+    down = 8,
+    ps_value = 3,
+    ps_type = "contract",
+    execution = "same_close",
+    fee = "nofee",
+    long = TRUE,
+    short = FALSE,
+    hide_details = TRUE
+  )
+  first_contract_entry <- contract_res$trades[contract_res$trades$reason == "long_entry", ][1, ]
+  expect_equal(first_contract_entry$qty_delta, 3)
+  expect_equal(contract_res$spec$risk$ps_type, "contract")
+
+  atr_res <- bt_eldoc(
+    x,
+    up = 12,
+    down = 8,
+    ps_value = 2,
+    ps_type = "atr",
+    atr_n = 10,
+    atr_mult = 2,
+    execution = "same_close",
+    fee = "nofee",
+    long = TRUE,
+    short = FALSE,
+    hide_details = TRUE
+  )
+  first_atr_entry <- atr_res$trades[atr_res$trades$reason == "long_entry", ][1, ]
+  atr_i <- which(as.Date(zoo::index(atr_res$mktdata)) == as.Date(first_atr_entry$timestamp))[1]
+  atr <- as.numeric(atr_res$mktdata[atr_i, "ATR"])
+  expected_qty <- floor(100000 * 0.02 / (atr * 2))
+  expect_true(is.finite(atr) && atr > 0)
+  expect_equal(first_atr_entry$qty_delta, expected_qty)
+  expect_equal(atr_res$spec$risk$ps_type, "atr")
+})
+
+test_that("ElDoc pyramiding adds ATR-stepped units up to the cap", {
+  idx <- as.Date("2024-01-01") + 0:29
+  close <- c(10, 10, 10, 9.8, seq(11, 36, by = 1))
+  x <- xts::xts(
+    cbind(
+      Open = close,
+      High = c(10, 10, 10, 9.9, close[-(1:4)] + 0.6),
+      Low = close - 0.6,
+      Close = close
+    ),
+    order.by = idx
+  )
+  attr(x, "symbol") <- "BT_PYRAMID"
+  attr(x, "fut_tick_size") <- 1
+  attr(x, "fut_multiplier") <- 1
+
+  res <- bt_eldoc(
+    x,
+    up = 3,
+    down = 3,
+    ps_value = 1,
+    ps_type = "contract",
+    execution = "breakout",
+    atr_n = 3,
+    pyramid = TRUE,
+    pyramid_step = 0.5,
+    max_units = 3,
+    fee = "nofee",
+    long = TRUE,
+    short = FALSE,
+    hide_details = TRUE
+  )
+
+  expect_true(any(res$trades$reason == "long_pyramid"))
+  expect_equal(max(as.numeric(res$positions$units), na.rm = TRUE), 3)
+  expect_lte(max(abs(as.numeric(res$positions$qty)), na.rm = TRUE), 3)
 })
 
 test_that("native search evaluates and sorts parameter grids", {
@@ -134,13 +889,98 @@ test_that("bt_batch uses the native engine with exact-match preloaded data", {
     mup = c(12, 20),
     mdown = c(8, 10),
     fee = "nofee",
-    engine = "native",
     only_returns = TRUE,
     returns_type = "Log",
+    hide_details = TRUE,
     verbose = FALSE
   )
 
   expect_s3_class(out, "xts")
   expect_equal(NCOL(out), 2)
   expect_true(all(is.finite(as.numeric(out))))
+})
+
+test_that("bt_batch passes starting equity through specs", {
+  x <- bt_test_ohlc(160)
+  assign("BT_NATIVE_EQUITY_BATCH", x, envir = .GlobalEnv)
+  on.exit(rm("BT_NATIVE_EQUITY_BATCH", envir = .GlobalEnv), add = TRUE)
+
+  out <- bt_batch(
+    type = "eldoc",
+    tickers = "BT_NATIVE_EQUITY_BATCH",
+    exact_match = TRUE,
+    mup = 12,
+    mdown = 8,
+    initial_equity = 250000,
+    fee = "nofee",
+    hide_details = TRUE,
+    verbose = FALSE
+  )
+
+  expect_type(out, "list")
+  expect_length(out, 1)
+  expect_true(any(grepl("eq_250000", names(out), fixed = TRUE)))
+  expect_equal(out[[1]]$spec$risk$initial_equity, 250000)
+  expect_equal(as.numeric(out[[1]]$equity$Equity[1]), 250000)
+})
+
+test_that("bt_batch fails strictly by default and can opt into zero-fill", {
+  x <- bt_test_ohlc(140)
+  attr(x, "ps_value") <- NULL
+  attr(x, "ps_type") <- NULL
+  assign("BT_NATIVE_BATCH_MISSING_PS", x, envir = .GlobalEnv)
+  on.exit(rm("BT_NATIVE_BATCH_MISSING_PS", envir = .GlobalEnv), add = TRUE)
+
+  expect_error(
+    bt_batch(
+      type = "eldoc",
+      tickers = "BT_NATIVE_BATCH_MISSING_PS",
+      exact_match = TRUE,
+      mup = 12,
+      mdown = 8,
+      fee = "nofee",
+      only_returns = TRUE,
+      hide_details = TRUE,
+      verbose = FALSE
+    ),
+    "Backtest failed.*position sizing"
+  )
+
+  out <- NULL
+  expect_warning(
+    out <- bt_batch(
+      type = "eldoc",
+      tickers = "BT_NATIVE_BATCH_MISSING_PS",
+      exact_match = TRUE,
+      mup = 12,
+      mdown = 8,
+      fee = "nofee",
+      only_returns = TRUE,
+      hide_details = TRUE,
+      verbose = FALSE,
+      fail_on_error = FALSE
+    ),
+    "Filling with zeros"
+  )
+  expect_s3_class(out, "xts")
+  expect_true(all(as.numeric(out) == 0))
+})
+
+test_that("removed engine argument fails explicitly", {
+  x <- bt_test_ohlc(120)
+
+  expect_error(
+    bt_batch(
+      type = "eldoc",
+      tickers = "BT_REMOVED_ENGINE",
+      exact_match = TRUE,
+      engine = "native",
+      only_returns = TRUE
+    ),
+    "engine.*removed"
+  )
+  expect_error(
+    bt_eldoc(x, up = 12, down = 8, fee = "nofee", engine = "native"),
+    "engine.*removed"
+  )
 })

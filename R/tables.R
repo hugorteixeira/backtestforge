@@ -1,42 +1,3 @@
-#' Build a monthly returns table (percent)
-#'
-#' Aggregates a returns `xts` into a calendar-style monthly table with
-#' year rows and month columns, plus a `Total` column. Values are formatted
-#' as percentages for display.
-#'
-#' @param object_name An `xts` vector or 1-column `xts` of periodic returns.
-#' @param return_data Logical; if `TRUE` returns the data.frame, otherwise prints.
-#' @param geometric Logical; whether to compute geometric returns in totals.
-#' @return If `return_data = TRUE`, a data.frame with year rows and monthly
-#'   percent strings. Otherwise, printed output.
-#' @keywords internal
-.table_monthly_returns <- function(object_name, return_data = TRUE, geometric = TRUE) {
-  return_man_mensal <- apply.monthly(object_name, colSums)
-  colnames(return_man_mensal) <- "Year"
-  return_man_mensal <- table.CalendarReturns(return_man_mensal, digits = 1, geometric = geometric)
-
-  return_man_mensal_tabela <- as.data.frame(return_man_mensal)
-
-  return_man_mensal_tabela[is.na(return_man_mensal_tabela)] <- ""
-
-  for (col in colnames(return_man_mensal_tabela)) {
-    return_man_mensal_tabela[[col]] <- sapply(return_man_mensal_tabela[[col]], function(x) {
-      if (x != "") {
-        paste0(x, "")
-      } else {
-        x
-      }
-    })
-  }
-
-  nomes_meses_pt <- c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Total")
-  colnames(return_man_mensal_tabela) <- nomes_meses_pt
-
-  if (return_data) {
-    cat("--- Monthly Returns (Geometric) ---\n")
-    return(return_man_mensal_tabela)
-  }
-}
 .table_quarterly_returns <- function(returns_xts, return_data = TRUE, geometric = TRUE) {
   # Ensure input is xts
   if (!xts::is.xts(returns_xts)) stop("Input must be an xts object.")
@@ -91,56 +52,7 @@
     return(as.data.frame(mat))
   }
 }
-#' Build a monthly profit table from blotter portfolio
-#'
-#' Sums daily Net.Trading.PL into monthly totals and returns a year-by-month
-#' table with a `Total` column. Useful with `blotter` portfolio objects.
-#'
-#' @param object_name A blotter portfolio object with `$summary` and
-#'   `Net.Trading.PL` column.
-#' @param return_data Logical; if `TRUE` returns the data.frame, otherwise prints.
-#' @return If `return_data = TRUE`, a data.frame of monthly profit totals.
-#' @keywords internal
-.table_monthly_profit <- function(object_name, return_data = TRUE) {
-  daily_profit <- object_name$summary[, "Net.Trading.PL"]
-  daily_profit <- daily_profit[-1]
 
-  monthly_profit <- apply.monthly(daily_profit, sum)
-
-  anos <- format(index(monthly_profit), "%Y")
-  meses <- as.numeric(format(index(monthly_profit), "%m"))
-
-  anos_unicos <- unique(anos)
-  table_profit <- matrix(NA, nrow = length(anos_unicos), ncol = 13)
-  rownames(table_profit) <- anos_unicos
-  colnames(table_profit) <- c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Total")
-
-  for (i in 1:length(monthly_profit)) {
-    ano_idx <- which(anos_unicos == anos[i])
-    mes_idx <- meses[i]
-    table_profit[ano_idx, mes_idx] <- as.numeric(monthly_profit[i])
-  }
-
-  for (i in 1:nrow(table_profit)) {
-    table_profit[i, 13] <- sum(table_profit[i, 1:12], na.rm = TRUE)
-  }
-
-  lucro_mensal_tabela <- as.data.frame(table_profit)
-
-  for (col in colnames(lucro_mensal_tabela)) {
-    lucro_mensal_tabela[[col]] <- sapply(lucro_mensal_tabela[[col]], function(x) {
-      if (is.na(x)) {
-        ""
-      } else {
-        format(round(x), big.mark = ".", decimal.mark = ",", nsmall = 0)
-      }
-    })
-  }
-
-  if (return_data) {
-    return(lucro_mensal_tabela)
-  }
-}
 .table_quarterly_profit <- function(object_name, return_data = TRUE) {
   # 1. Extract P&L
   # Check if summary table and specific column exist
@@ -185,7 +97,7 @@
   }
 
   # Calculate Total column (Row sums), ignoring NAs
-  mat_num[, 5] <- rowSums(mat_num[, 1:4], na.rm = TRUE)
+  mat_num[, 5] <- rowSums(mat_num[, 1:4, drop = FALSE], na.rm = TRUE)
 
   # 4. Format the Matrix (Numeric -> String)
   # We create a character matrix for display

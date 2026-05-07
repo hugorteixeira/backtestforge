@@ -8,9 +8,20 @@ bt_eldoc(
   ticker,
   up = 40,
   down = 40,
-  ps_risk_value = 2,
-  ps = "pct",
+  ps_value = NULL,
+  initial_equity = 1e+05,
+  ps_type = NULL,
+  execution = "breakout",
+  atr_n = 20,
+  atr_mult = 2,
+  pyramid = FALSE,
+  pyramid_step = 0.5,
+  max_units = if (isTRUE(pyramid)) 4L else 1L,
   fee = "normal",
+  fee_value = NULL,
+  fee_type = NULL,
+  slip_value = NULL,
+  slip_type = NULL,
   start_date = "1900-01-01",
   end_date = Sys.Date(),
   long = TRUE,
@@ -19,12 +30,10 @@ bt_eldoc(
   normalize_risk = NULL,
   geometric = TRUE,
   verbose = FALSE,
-  only_returns = FALSE,
   hide_details = FALSE,
-  stop_before_maturity = NULL,
-  clean_di = TRUE,
-  engine = c("native", "quantstrat"),
-  plot = FALSE
+  reinvest = TRUE,
+  plot = FALSE,
+  ...
 )
 }
 \arguments{
@@ -36,13 +45,52 @@ used directly; otherwise it is fetched via \code{finharvest::finget()}.}
 
 \item{down}{Integer Donchian window for the lower channel (default 40).}
 
-\item{ps_risk_value}{Numeric risk percentage (e.g., 2 for 2\%) used by the
-position sizing function.}
+\item{ps_value}{Position-sizing value. With \code{ps_type = "eldoc"} or \code{"atr"},
+this is the percent of equity to risk per entry/add. With
+\code{ps_type = "notional"}, this is percent of equity allocated to notional
+exposure. With \code{ps_type = "contract"}, this is the fixed contract/share
+quantity. When \code{NULL}, the function reads \code{ps_value} metadata from the
+ticker.}
 
-\item{ps}{Character label for position sizing mode (informational).}
+\item{initial_equity}{Starting account equity in money units.}
+
+\item{ps_type}{Position-sizing type: \code{"eldoc"}, \code{"atr"}, \code{"notional"}, or
+\code{"contract"}. When \code{NULL}, the function reads \code{ps_type} metadata from the
+ticker.}
+
+\item{execution}{Execution mode. \code{"breakout"} uses the exact touched ElDoc
+channel price. \code{"exact_price"} is an alias for \code{"breakout"}.
+\code{"same_close"} uses the signal candle close. \code{"next_open"},
+\code{"next_close"}, and \code{"next_avg"} use the next candle open, close, or OHLC
+average.}
+
+\item{atr_n}{Integer ATR lookback used by ATR sizing and pyramiding.}
+
+\item{atr_mult}{ATR multiple used when \code{ps_type = "atr"}.}
+
+\item{pyramid}{Logical; if \code{TRUE}, add units as the position moves in favor.}
+
+\item{pyramid_step}{Favorable movement in ATR units required before each
+add.}
+
+\item{max_units}{Maximum number of entry/add units in one position.}
 
 \item{fee}{Either \code{"normal"} (use instrument fees/slippage if available) or
 \code{"nofee"} to disable fees.}
+
+\item{fee_value}{Optional commission amount in account currency. When \code{NULL},
+ticker metadata such as \code{fee_value} is required unless \code{fee = "nofee"}.}
+
+\item{fee_type}{Fee unit. \code{"contract"} charges \code{fee_value} per traded unit;
+\code{"order"} charges \code{fee_value} once per executed order. When \code{NULL}, ticker
+metadata such as \code{fee_type} is required unless \code{fee = "nofee"}.}
+
+\item{slip_value}{Optional slippage override. When omitted, instrument
+metadata such as \code{slip_value} is used.}
+
+\item{slip_type}{Slippage unit for \code{slip_value}: \code{"bps"}, \code{"ticks"},
+\code{"points"}/\code{"price_points"}, or \code{"cash"}. When \code{NULL}, ticker slippage
+metadata must include its unit.}
 
 \item{start_date}{Character or Date, start date when fetching data.}
 
@@ -61,37 +109,33 @@ normalized return columns to the output.}
 
 \item{verbose}{Logical, print detailed summaries to the console.}
 
-\item{only_returns}{Logical; if \code{TRUE}, returns only the portfolio returns \code{xts}.}
-
 \item{hide_details}{Logical; if \code{TRUE}, simplifies internal object names.}
 
-\item{stop_before_maturity}{Optional compatibility argument reserved for
-futures workflows that should stop before contract maturity.}
-
-\item{clean_di}{Logical; if \code{TRUE}, applies DI-specific row cleaning to DI
-symbols only.}
-
-\item{engine}{Execution engine. \code{"native"} is the fast stateless engine;
-\code{"quantstrat"} runs the legacy path.}
+\item{reinvest}{Logical; if \code{TRUE}, size new entries using current account
+equity. Open positions keep their original quantity until the next order.}
 
 \item{plot}{Logical; if \code{TRUE}, plots the portfolio using \code{rTradingPlots::tplot}.}
+
+\item{...}{Advanced options. Currently supports \code{only_returns} (return only
+the returns \code{xts}) and \code{clean_di} (apply DI-specific bad-row filtering).}
 }
 \value{
 If \code{only_returns = TRUE}, returns an \code{xts} with discrete and log
 returns. Otherwise, returns a named list with elements:
 \itemize{
-\item \code{rets}: portfolio returns \code{xts}
-\item \code{stats}: \code{tradeStats} output with additional metadata
-\item \code{trades}: transactions \code{xts}
+\item \code{rets}: equity/account returns \code{xts}
+\item \code{stats}: native summary statistics
+\item \code{trades}: native transactions \code{data.frame}; \code{fees} is commission only,
+\code{slippage} is slippage cost, and \code{total_cost} is their sum
 \item \code{rets_acct}: account-level returns \code{xts}
 \item \code{mktdata}: market data with indicator columns
+\item \code{positions}: native position/equity path
+\item \code{equity}: native account equity curve
 }
 }
 \description{
-Configures a simple Donchian breakout system. The default native engine is a
-pure in-memory simulator that does not mutate \code{.GlobalEnv}, \code{.blotter}, or
-\code{.strategy}. The legacy \code{quantstrat} implementation remains available with
-\code{engine = "quantstrat"}.
+Configures a simple Donchian breakout system using the native in-memory
+simulator.
 }
 \details{
 Data is fetched from \code{finharvest::finget()} if the symbol is not
@@ -100,8 +144,17 @@ found in the global environment; otherwise the preloaded object is used.
 The function builds the strategy, runs the backtest, prints key summaries, and
 returns a list of results.
 
-If the symbol starts with \code{"DI1"}, the native engine uses PU columns when
-available and can enrich rate OHLC data through \code{brfutures} when installed.
-Instrument metadata (multiplier, tick size, maturity) is propagated when
-available.
+ElDoc can size positions from its opposite channel (\code{ps_type = "eldoc"}),
+ATR distance (\code{ps_type = "atr"}), notional percent of equity
+(\code{ps_type = "notional"}), or fixed contracts/shares
+(\code{ps_type = "contract"}).
+Pyramiding currently uses ATR steps and sizes each add independently.
+
+If the symbol starts with \code{"DI1"}, the native engine keeps rate OHLC columns
+for indicators/signals and uses PU columns for execution and mark-to-market
+when available. It can enrich rate OHLC data through \code{brfutures} when
+installed. Instrument metadata (multiplier, tick size, maturity) is
+propagated when available. Transaction costs are charged in account currency:
+\verb{fee_value = 4, fee_type = "contract"} means 4 per contract/share, while
+\code{fee_type = "order"} means 4 for the whole executed order.
 }

@@ -1,209 +1,182 @@
-# Backtestforge Native Engine Implementation Plan
+# Backtestforge Native-Only Implementation Plan
 
-This plan is written so an agent with no prior context can continue the work
-without rediscovering the architecture. The goal is to turn `backtestforge` into
-a fast, deterministic, server-safe trend-following backtest package.
-
-For the current implementation snapshot, benchmark results, parity findings,
-and next-session continuation notes, read
-`docs/native-engine-status-and-handoff.md` first.
+This document is the maintenance plan after removing the old external
+backtesting stack. For the current state and verification commands, read
+`docs/native-engine-status-and-handoff.md`.
 
 ## Target Architecture
 
-`backtestforge` should have three explicit layers:
+`backtestforge` has three explicit layers:
 
 1. Data layer
    - Source: `finharvest::finget()` or already loaded `xts` objects.
    - Futures helpers: use `brfutures` when available for DI rate-to-PU
-     conversion. Contract metadata must come from `xts` attributes.
-   - Contract: data is returned to the caller, never assigned into `.GlobalEnv`.
+     conversion.
+   - Contract metadata must come from `xts` attributes.
    - Shape: one `xts` per symbol with at least `Open`, `High`, `Low`, `Close`.
    - Server rule: fetch once per universe/timeframe, then reuse immutable data.
 
 2. Native simulation layer
    - Pure R functions.
-   - No `.GlobalEnv`, `.blotter`, `.strategy`, or `FinancialInstrument` writes.
    - Input: data plus strategy, risk, and execution specs.
    - Output: trades, positions, returns, stats, and annotated market data.
    - Inner loop: local vectors only; no database and no mutable package globals.
 
-3. Compatibility/service layer
-   - Existing wrappers (`bt_eldoc()`, `bt_sma()`, `bt_ema()`, `bt_batch()`) get
-     an `engine` argument.
-   - `engine = "native"` is the default path.
-   - `engine = "quantstrat"` remains available for regression/parity checks.
-   - Future server jobs should store immutable specs, data hashes, seeds, status,
-     and result artifacts outside the inner simulation loop.
+3. Service layer
+   - Wrappers (`bt_eldoc()`, `bt_sma()`, `bt_ema()`, `bt_batch()`) call the
+     native simulator directly.
+   - Server jobs should store immutable specs, data hashes, seeds, status,
+     logs, and result artifacts outside the inner simulation loop.
 
 ## Non-Negotiable Constraints
 
-- Native backtests must not create or mutate `.GlobalEnv` objects.
-- Native backtests must not require `quantstrat`, `blotter`, or
-  `FinancialInstrument` at runtime.
-- Native Brazilian futures handling must not call private `brfutures` helpers
-  that register `FinancialInstrument` objects. Reuse exported helpers only.
-- Do not infer multiplier, tick size, fees, or slippage from ticker roots. Read
-  them from the `xts` attributes/metadata. If missing, warn and use `1`.
+- Do not infer multiplier, tick size, fees, or slippage from ticker roots.
+- Read contract metadata from `xts` attrs and warn when required values are
+  missing.
 - The same spec and data must produce the same result.
 - Backtest specs must be serializable as JSON-like lists.
 - Batch/search APIs must be usable by agents without writing arbitrary R code.
-- Tests must cover the native path without downloading market data.
+- Tests must cover the package without downloading market data.
 
-## Phase 1: Native Core
+## ElDoc-First Scope
 
-Implement a new `R/native_engine.R` with:
+The immediate product target is an impeccable ElDoc backtester. Do not broaden
+the package into a general indicator framework before this path is stable.
+Moving-average wrappers may remain for compatibility, but current development
+priority is:
 
-- `bt_strategy_spec()`
-  - Accepts `type = "donchian"`, `"eldoc"`, `"ema"`, or `"sma"`.
-  - Stores indicator parameters and side flags.
-  - Produces a simple list with class `bt_strategy_spec`.
+1. ElDoc entries and exits.
+2. Explicit execution timing for those entries and exits.
+3. Position sizing that can use ElDoc channel risk, ATR risk, notional
+   allocation, or fixed contract/share counts.
+4. Generic pyramiding on top of the ElDoc event loop.
+5. Clear trade/cost/result audit output.
 
-- `bt_risk_spec()`
-  - Stores initial equity, risk percentage, sizing mode, max quantity, max
-    leverage, integer quantity behavior, and minimum risk.
-  - Default behavior should match the current Donchian intent: risk-based
-    sizing from channel stop distance when a stop is available.
+Turtle-style behavior should be expressible as a preset/wrapper around
+`bt_eldoc()`, not as a separate primary engine.
 
-- `bt_execution_spec()`
-  - Stores execution mode and cost assumptions.
-  - Defaults to `signal` execution for Donchian stop orders.
-  - Supports `next_open`, `next_close`, and same-bar `close` for comparison
-    runs.
-  - Supports `fee = "normal"` and `fee = "nofee"`.
+Execution modes for ElDoc:
 
-- `bt_run_native()`
-  - Accepts a symbol or an `xts` object.
-  - Fetches with `finharvest` only when data is not already supplied.
-  - Computes indicators/signals.
-  - Runs an in-memory event loop.
-  - Returns a list with at least `rets`, `stats`, `trades`, `rets_acct`,
-    `mktdata`, `positions`, and `spec`.
-  - If `only_returns = TRUE`, returns only the `xts` returns object.
+- `breakout`: execute at the exact touched ElDoc channel price.
+- `exact_price`: accepted alias for `breakout`.
+- `same_close`: execute at the close of the signal candle.
+- `next_open`: execute at the next candle open.
+- `next_close`: execute at the next candle close.
+- `next_avg`: execute at the next candle OHLC average.
 
-Expected output columns:
+Position-sizing modes for ElDoc:
 
-- Returns: `Discrete`, `Log`.
-- Trades: `symbol`, `side`, `qty`, `qty_delta`, `price`, `fees`, `reason`,
-  `equity`.
-- Positions: `qty`, `close`, `equity`, `position_value`.
-- Market data: original OHLC plus indicator and signal columns.
+- `eldoc`: risk a percent of equity using the opposite ElDoc channel as the
+  sizing stop.
+- `atr`: risk a percent of equity using `ATR * atr_mult` as the sizing
+  distance.
+- `notional`: allocate a percent of equity to notional exposure.
+- `contract`: trade a fixed number of contracts/shares per entry/add.
 
-Futures requirements:
+Pyramiding belongs in the native ElDoc path. The initial implementation should
+add units at ATR-based intervals (`pyramid_step` in ATR units), cap the number
+of units with `max_units`, and size each add independently at the time of the
+add.
 
-- Resolve contract metadata from attributes only. Recognized fields include
-  `fut_multiplier`, `multiplier`, `fut_tick_size`, `tick_size`,
-  `fut_tick_value`, `tick_value`, `identifiers$fees`, and
-  `identifiers$slippage`.
-- If any required metadata is absent, emit a warning and use `1` as the fallback
-  value. This keeps tests runnable but makes bad data visible.
-- For DI contracts, prefer PU columns for execution and mark-to-market when
-  available (`PU_o`, `PU_h`, `PU_l`, `PU_c`, or `PU_open`, `PU_high`,
-  `PU_low`, `PU_close`).
-- If DI data is in annualized-rate OHLC and `brfutures` is installed, enrich the
-  series through `brfutures::di_ohlc_to_pu_augmented_xts()` using the maturity
-  attribute or `brfutures::di_maturity_from_ticker()`.
-- DI tick-size and PU conversion rules should follow `brfutures`; do not keep a
-  separate hand-written DI formula unless `brfutures` is unavailable.
+DI pyramiding must preserve the DI contract model:
 
-## Phase 2: Public Wrapper Migration
+- indicators, signals, ATR, and pyramid triggers are computed in annualized-rate
+  space;
+- execution, mark-to-market, and transaction costs are computed in PU space;
+- long DI positions are positive quantity and gain when PU falls; short DI
+  positions are negative quantity and gain when PU rises;
+- each pyramid add stores its trigger in rate space and its fill in PU space.
 
-Update:
+## Core Public Specs
 
-- `bt_eldoc()`
-- `bt_ema()`
-- `bt_sma()`
-- `bt_batch()`
+- `bt_strategy_spec()` accepts `type = "donchian"`, `"eldoc"`, `"ema"`, or
+  `"sma"`, indicator parameters, side flags, and inversion flags.
+- `bt_risk_spec()` stores initial equity, position-sizing value/type, sizing
+  mode, max quantity, max leverage, integer quantity behavior, minimum risk,
+  ATR risk settings, and `reinvest`.
+- `bt_execution_spec()` stores execution mode and cost assumptions.
+- `bt_run_native()` accepts a symbol or `xts`, computes indicators/signals, runs
+  the event loop, and returns a `bt_native_result`.
+- `bt_search_native()` evaluates serializable parameter grids and returns a
+  sorted data frame with full results attached as an attribute.
 
-Required behavior:
+## Futures Requirements
 
-- Add `engine = c("native", "quantstrat")`.
-- Default to `"native"`.
-- For `"native"`, call `bt_run_native()` with equivalent specs.
-- For `"quantstrat"`, keep the existing implementation untouched.
-- Keep return shape compatible with existing batch/returns extraction.
+- Recognized metadata: `fut_multiplier`, `multiplier`, `fut_tick_size`,
+  `tick_size`, `ticksize`, `fut_tick_value`, `tick_value`, `tickvalue`,
+  `fee_value`, `fee_type`, `slip_value`, `slip_type`,
+  `slippage_bps`, `slippage_ticks`, `slippage_points`,
+  `ps_value`, and `ps_type`.
+- If `multiplier` is absent but both `tickvalue` and `ticksize` are present,
+  derive `multiplier = tickvalue / ticksize`.
+- Keep `ticksize` and `multiplier` separate.
+- Treat `slip_value` as basis points by default. For non-DI instruments,
+  convert it as `price * slip_value / 10000 * multiplier`; for DI, convert
+  rate basis points using the row `TickValue`. Use `slippage_ticks` or
+  `slippage_points` for explicit tick or price-point slippage, or
+  `slip_type` for explicit `"ticks"`, `"price_points"`, or `"cash"`.
+- Store transaction costs separately: `fees` for commission, `slippage` for
+  slippage cost, and `total_cost = fees + slippage` for the equity debit.
+- Print a `Costs & Slippage Summary` before `Returns Summary`, including
+  cost values and cost impact percentages versus gross P/L.
+- Expose scenario-test cost overrides in wrappers and specs: `fee_value` in
+  account currency, `fee_type = "contract"` or `"order"`, plus
+  `slip_value` with `slip_type = "bps"`, `"ticks"`, `"points"`, or
+  `"cash"`.
+- Expose `ps_value` and `ps_type` for position sizing. `NULL` values are
+  resolved from ticker metadata; missing position-sizing, fee, or slippage
+  metadata errors instead of guessing.
+- Expose `initial_equity` in Donchian, EMA, SMA, and batch wrappers. The native
+  default starting capital is `100000`.
+- For DI contracts, keep annualized-rate OHLC columns for indicators/signals and
+  prefer PU columns for execution and mark-to-market.
 
-## Phase 3: Agent Search API
+## Tests
 
-Implement `bt_search_native()`:
+Minimum test coverage:
 
-- Accepts one dataset and a parameter space.
-- Supports grid or random sampling.
-- Returns a data frame sorted by objective.
-- Keeps full result objects as an attribute, not as huge data-frame columns.
-- Supports `workers > 1` through process-level parallelism where available.
+- Donchian returns are finite and shaped correctly.
+- Metadata warning/fallback behavior is explicit.
+- Metadata attrs from `finharvest` are consumed without external registration.
+- DI uses rate OHLC for signals and PU for execution when PU columns exist.
+- DI ElDoc execution modes convert rate triggers to PU fills where appropriate.
+- DI position sizing converts the sizing stop from rate to PU before computing
+  per-contract risk.
+- DI cost tests cover fee type and slippage units (`bps`, `ticks`, `points`,
+  and `cash`).
+- DI pyramiding adds ATR-stepped units in rate space while filling in PU space.
+- EMA/SMA wrappers run on synthetic data.
+- `bt_search_native()` evaluates and sorts a small search space.
+- `bt_batch()` works with exact-match preloaded data.
+- Passing removed `engine` inputs fails explicitly.
 
-Default objective order:
+Optional real-data smoke coverage should live outside the deterministic unit
+tests and use local `finharvest` data when available:
 
-1. `total_return`
-2. `sharpe`
-3. `max_drawdown`
-4. `num_trades`
+- `CCMFUT_1H_AGG`, `BGIFUT_1H_AGG`, `WDOFUT_1H_AGG`, and `DI1F28`.
+- `bt_eldoc()` with `breakout`, `same_close`, `next_open`, `next_close`, and
+  `next_avg`.
+- Assertions: no metadata fallback warning, at least one trade when signals are
+  present, finite returns, finite equity, and nonnegative costs.
+- Command: `Rscript scripts/smoke-native-real-data.R`.
+- By default the smoke uses explicit scenario costs (`fee_value = 4`,
+  `fee_type = "contract"`, `slip_value = 7`, `slip_type = "bps"`). Set
+  `BT_SMOKE_STRICT_METADATA=true` to require fee/slippage attrs from the ticker
+  itself.
 
-## Phase 4: Tests
+## Verification Checklist
 
-Create `tests/testthat/` if it does not exist.
-
-Minimum tests:
-
-- Native Donchian returns are finite and shaped correctly.
-- Native wrapper does not create `.GlobalEnv$.blotter` or `.GlobalEnv$.strategy`.
-- Native EMA/SMA wrappers run on synthetic data.
-- `bt_search_native()` evaluates a small search space and returns sorted rows.
-- `bt_batch(..., engine = "native")` works with exact-match preloaded data.
-
-No test should require internet, finharvest DB access, or quantstrat.
-
-## Phase 5: Documentation And Package Surface
-
-Update:
-
-- `DESCRIPTION`
-  - Description should say native engine first, quantstrat legacy second.
-  - Add `testthat` to `Suggests`.
-
-- `README.md`
-  - Present native engine as the default path.
-  - Explain `engine = "quantstrat"` as legacy/parity mode.
-  - Include examples for direct native run, wrapper run, batch run, and search.
-
-- Roxygen docs
-  - Regenerate `NAMESPACE` and `man/*.Rd` with `devtools::document()`.
-
-## Phase 6: Verification Checklist
-
-Run these commands from the repository root:
+Run from the repository root:
 
 ```r
 devtools::document()
 devtools::load_all(".")
-testthat::test_dir("tests/testthat")
+devtools::test(reporter = "summary")
 ```
 
-Then run a smoke benchmark:
+Then run:
 
-```r
-res <- bt_eldoc(synthetic_xts, up = 20, down = 10, engine = "native")
-stopifnot(inherits(res, "bt_native_result"))
+```sh
+git diff --check
+R CMD INSTALL .
 ```
-
-Success means:
-
-- Native tests pass.
-- Documentation regenerates.
-- `bt_eldoc(..., engine = "native")` returns results without quantstrat state.
-- `bt_eldoc(..., engine = "quantstrat")` still routes to the legacy path.
-- `bt_batch(..., engine = "native")` can run multiple specs without global
-  backtest state.
-
-## Deferred Work
-
-These are intentionally outside the first implementation pass:
-
-- Exact transaction-by-transaction parity with quantstrat.
-- Database-backed server queue tables.
-- Cross-process result artifact persistence.
-- Multi-asset portfolio margin model.
-- Walk-forward train/test optimization.
-
-Those should be added after the native single-symbol engine is stable and
-covered by tests.

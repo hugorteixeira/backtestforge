@@ -1,81 +1,48 @@
 # Backtestforge Native Engine Status And Handoff
 
-Date: 2026-05-01
+Date: 2026-05-06
 
-This document records the current implementation state, the parity findings,
-and the next engineering steps for continuing the `backtestforge` native engine
-work in a later session.
+`backtestforge` is now native-only. The public wrappers call the in-memory
+simulator directly, and the package no longer imports or ships the old external
+portfolio/instrument stack.
 
-## Current Direction
+## Public Surface
 
-The chosen direction is to make `backtestforge` a fast, deterministic
-trend-following backtest package with a native in-memory engine as the default.
-The legacy `quantstrat` path stays available only for migration and parity
-checks.
-
-Do not try to "fix quantstrat" as the primary path. The native engine is already
-fast enough to justify continuing with it, and it avoids the global-state
-problems from `.GlobalEnv`, `.blotter`, `.strategy`, and
-`FinancialInstrument`.
-
-## Implemented Surface
-
-Native public APIs:
-
+- `bt_eldoc()`
+- `bt_ema()`
+- `bt_sma()`
+- `bt_batch()`
 - `bt_strategy_spec()`
 - `bt_risk_spec()`
 - `bt_execution_spec()`
 - `bt_run_native()`
 - `bt_search_native()`
 
-Wrappers now default to the native engine:
+There is no `engine` argument. Passing `engine` through `bt_batch()` specs or
+`...` fails explicitly so stale callers are easy to find.
 
-- `bt_eldoc(..., engine = "native")`
-- `bt_ema(..., engine = "native")`
-- `bt_sma(..., engine = "native")`
-- `bt_batch(..., engine = "native")`
+## Simulation Contract
 
-Legacy mode remains:
-
-```r
-bt_eldoc("WDOFUT_4H", up = 40, down = 20, engine = "quantstrat")
-```
-
-## Native Engine Contracts
-
-- The native path must not create or mutate `.GlobalEnv$.blotter` or
-  `.GlobalEnv$.strategy`.
-- The native path must not require `quantstrat`, `blotter`, or
-  `FinancialInstrument`.
-- The native path keeps the input data frequency. For a 1H series, returns stay
-  on the 1H index. This is different from the legacy quantstrat path, which can
-  return daily account returns even when trades are intraday.
-- Donchian signals now match the legacy `eldoc()` plus
-  `quantstrat::sigCrossover()` behavior:
-  - Donchian bands use `xts::lag.xts()` just like `eldoc(type = "data")`.
-  - `NA -> TRUE` does not count as a crossover.
-  - Entries require a valid opposite Donchian stop.
-- Default native Donchian execution is `signal`, which treats the Donchian
-  channel touch as the execution price inside the signal bar.
-- For legacy parity checks, use `next_open`:
-
-```r
-bt_run_native(
-  x,
-  strategy = bt_strategy_spec("donchian", up = 40, down = 20),
-  risk = bt_risk_spec(mode = "risk", risk_pct = 1),
-  execution = bt_execution_spec(
-    execution = "next_open",
-    fee = "nofee",
-    close_on_end = FALSE
-  )
-)
-```
+- Input data is an `xts` object or a symbol fetched with `finharvest::finget()`.
+- The simulator keeps the input data frequency.
+- Strategy, risk, and execution settings are plain list specs.
+- ElDoc execution defaults to `breakout`, using the exact touched channel price.
+  `exact_price` is an alias. Other supported modes are `same_close`,
+  `next_open`, `next_close`, and `next_avg`.
+- Risk sizing uses `reinvest = TRUE` by default: new entries use current equity,
+  while open positions keep their original quantity until another order.
+- ElDoc position sizing supports `ps_type = "eldoc"` for channel-risk sizing,
+  `"atr"` for ATR-risk sizing, `"notional"` for percent-of-equity notional
+  allocation, and `"contract"` for fixed contracts/shares.
+- Pyramiding is part of the ElDoc path, not a separate Turtle engine. Turtle-like
+  behavior should be represented as a preset around `bt_eldoc()`.
+- Results include returns, stats, trades, positions, equity, annotated market
+  data, and the spec used to run the backtest.
 
 ## Futures Metadata Policy
 
-Do not infer futures metadata from ticker roots such as `WDO`, `WIN`, or `DI1`.
-The native engine must read contract metadata from `xts` attributes only.
+Contract metadata comes from the `xts` object only. Do not infer multiplier,
+tick size, fees, or slippage from ticker roots.
 
 Recognized metadata fields include:
 
@@ -83,171 +50,104 @@ Recognized metadata fields include:
 - `multiplier`
 - `fut_tick_size`
 - `tick_size`
+- `ticksize`
 - `fut_tick_value`
 - `tick_value`
-- `identifiers$fees`
-- `identifiers$slippage`
+- `tickvalue`
+- `fee_value`
+- `fee_type`
+- `slip_value`
+- `slip_type`
+- `slippage_bps`
+- `slippage_ticks`
+- `slippage_points`
+- `ps_value`
+- `ps_type`
 
-If metadata is missing, the native engine warns and uses `1` as the fallback.
-This is intentional: it keeps backtests runnable while making bad or incomplete
-data visible.
+If `multiplier` is absent but `tickvalue` and `ticksize` are present, the
+simulator derives `multiplier = tickvalue / ticksize`. `slip_value` is
+treated as basis points by default. For non-DI instruments the cash cost is
+`price * slip_value / 10000 * multiplier`; for DI contracts the basis
+points apply to the quoted annualized rate and are converted with the row
+`TickValue`.
+Use `slippage_points` for price-point slippage, `slippage_ticks` for tick
+slippage, or set `slip_type` to `"ticks"`, `"price_points"`, or
+`"cash"` when overriding the default unit.
 
-Example:
+Transaction rows keep cost attribution separate: `fees` is commission only,
+`slippage` is estimated slippage cost, and `total_cost` is the amount subtracted
+from equity.
+The console report prints a `Costs & Slippage Summary` block before
+`Returns Summary`; it includes cost values and cost impact percentages versus
+gross P/L.
 
-```r
-attr(wdo, "fut_multiplier") <- 10
-attr(wdo, "fut_tick_size") <- 0.5
-attr(wdo, "identifiers") <- list(fees = 1, slippage = 1)
-```
+Backtest wrappers expose cost overrides directly. `fee_value` is account
+currency, with `fee_type = "contract"` charging per unit traded and
+`fee_type = "order"` charging once for the whole executed order.
+`slip_value` uses `slip_type` (`"bps"`, `"ticks"`, `"points"`, or
+`"cash"`) and overrides the instrument slippage metadata for scenario tests.
+The public position-sizing arguments are `ps_value` and `ps_type`;
+no position-sizing aliases are accepted.
+
+For `ps_value`/`ps_type`, `fee_value`/`fee_type`, and
+`slip_value`/`slip_type`, `NULL` means "read from ticker metadata". If the
+metadata is missing, the native engine errors instead of guessing. `fee =
+"nofee"` disables fee and slippage resolution, but still requires position
+sizing from arguments or metadata.
+
+Backtest wrappers also expose `initial_equity`, defaulting to `100000`, and pass
+it through to `bt_risk_spec()` for Donchian, EMA, SMA, and `bt_batch()` runs.
+
+`ticksize` and `multiplier` are intentionally separate: `ticksize` is the minimum
+price increment, while `multiplier` is the cash value of one full price point.
+
+If multiplier or tick-size metadata is missing, the simulator still warns and
+uses `1` as the fallback. Position sizing, fee, and slippage metadata are strict
+and error when required values are missing.
 
 ## DI Futures Behavior
 
-For DI-like symbols, the native engine:
+For DI-like symbols, the simulator:
 
 - tries to fill missing maturity using `finharvest::finget_maturities()` when
   available;
 - uses `brfutures` when installed to convert annualized-rate OHLC data into PU
   columns;
-- prefers PU columns (`PU_o`, `PU_h`, `PU_l`, `PU_c`) for execution,
-  indicators, and mark-to-market.
+- keeps annualized-rate OHLC columns for indicators and signals;
+- prefers PU columns (`PU_o`, `PU_h`, `PU_l`, `PU_c`, or equivalent names) for
+  execution and mark-to-market.
 
-Important current data issue:
+DI pyramiding follows the same split: ATR and favorable-move triggers are
+calculated in rate space, then each add is filled and marked in PU space. Long
+DI positions gain when PU falls, so the simulator keeps the negative PU P/L
+multiplier for positive long quantity.
 
-- `DI1F28_1H` is not available as a plain symbol in `finharvest`.
-- `finharvest` suggests `DI1F28_1H_AGG` and `DI1F28_1H_OLD`.
-- `DI1F28_1H_AGG` currently arrives without `maturity`, `fut_tick_size`,
-  `fut_multiplier`, fees, or slippage attrs.
-- The native engine can derive/enrich enough to run, but pays DI PU conversion
-  cost inside each backtest.
-
-The next data-layer improvement should be to make `finharvest` or `brfutures`
+The preferred data-layer improvement is to have `finharvest` or `brfutures`
 return DI PU columns and contract metadata as attrs before the backtest starts.
-That is not a backtest-result cache; it is data normalization.
 
-## Benchmark Snapshot
+## Verification
 
-These are informal local timings from 2026-05-01 using real `finharvest` data,
-Donchian `up = 40`, `down = 20`, `risk_pct = 1`, `fee = "nofee"`.
-
-| Symbol | Rows | Native | Quantstrat | Speedup | Parity Notes |
-| --- | ---: | ---: | ---: | ---: | --- |
-| `WDOFUT_4H` | 2483 | ~0.74s | ~4.05s | ~5.4x | Trades matched exactly after alignment. |
-| `WDOFUT_1H` | 8110 | 2.124s | 12.011s | 5.65x | Signals matched exactly. |
-| `DI1F28_1H_AGG` | 7423 | 9.889s | 33.500s | 3.39x | Not parity; native converts DI to PU, legacy path differs. |
-
-For `WDOFUT_4H`, exact trade parity was reached under the parity config above:
-
-- signal timestamps equal;
-- 105/105 nonzero transactions aligned;
-- `qty_max_abs = 0`;
-- `price_max_abs = 0`.
-
-The remaining P&L difference in legacy comparisons came from mark-to-market
-frequency, not from transaction price or quantity. Native kept the 4H index;
-quantstrat/blotter marked account returns on daily rows.
-
-## Validation Snapshot
-
-Commands run successfully after the native engine and parity fixes:
+Run from the repository root:
 
 ```r
 devtools::document()
 devtools::test(reporter = "summary")
 ```
 
-Package checks:
+Then run:
 
 ```sh
 git diff --check
-R CMD build /home/hugorteixeira/Documents/Libs/backtestforge --no-manual --no-build-vignettes
-R CMD check --no-manual --no-build-vignettes backtestforge_0.0.1.tar.gz
+R CMD INSTALL .
 ```
 
-`R CMD check` finished with no ERROR/WARNING and one environment NOTE:
+## Next Work
 
-```text
-Failed to connect to system scope bus via local transport: Operation not permitted
-```
-
-That NOTE is environmental and was already seen in this workspace.
-
-## Next Session Plan
-
-Continue in this order:
-
-1. Data normalization for futures metadata.
-   - Ensure `finharvest::finget()` or a helper around it returns contract attrs
-     consistently for B3 futures.
-   - Required attrs: `fut_multiplier`, `fut_tick_size`, optional
-     `fut_tick_value`, `identifiers$fees`, `identifiers$slippage`, and for DI
-     `maturity`.
-
-2. DI pre-enrichment.
-   - For DI intraday series, avoid converting rate OHLC to PU inside every
-     backtest run.
-   - Prefer storing or returning PU columns (`PU_o`, `PU_h`, `PU_l`, `PU_c`)
-     from the data layer.
-
-3. Parity fixtures.
-   - Add small local fixtures for WDO Donchian parity that do not hit the
-     `finharvest` database.
-   - Test signal equality and transaction equality under the legacy-parity
-     execution config.
-
-4. Performance measurement harness.
-   - Add a script or test helper that runs a fixed benchmark suite and reports
-     rows, trades, elapsed time, and speedup.
-   - Keep it outside normal CRAN-style tests if it requires the DB.
-
-5. Server job architecture.
-   - Add a job/result persistence layer only after single-symbol native
-     behavior and data normalization are stable.
-   - Store immutable specs, data identifiers/hashes, seeds, status, logs, and
-     result artifacts.
-
-## Useful Commands
-
-WDO 1H benchmark:
-
-```r
-devtools::load_all(".")
-x <- finharvest::finget(
-  "WDOFUT_1H",
-  start_date = "2023-01-01",
-  end_date = Sys.Date(),
-  assign = FALSE,
-  single_xts = TRUE,
-  consolidate = FALSE,
-  mode = "raw",
-  verbose = FALSE
-)
-
-native <- bt_run_native(
-  x,
-  strategy = bt_strategy_spec("donchian", up = 40, down = 20),
-  risk = bt_risk_spec(mode = "risk", risk_pct = 1),
-  execution = bt_execution_spec(execution = "next_open", fee = "nofee", close_on_end = FALSE)
-)
-```
-
-DI 1H available symbol:
-
-```r
-x <- finharvest::finget(
-  "DI1F28_1H_AGG",
-  start_date = "2023-01-01",
-  end_date = Sys.Date(),
-  assign = FALSE,
-  single_xts = TRUE,
-  consolidate = FALSE,
-  mode = "raw",
-  verbose = FALSE
-)
-```
-
-Current package verification:
-
-```r
-devtools::document()
-devtools::test(reporter = "summary")
-```
+1. Stabilize futures metadata at the data layer so all B3 futures arrive with
+   `multiplier`, `ticksize`, fees, slippage, and DI maturity where applicable.
+2. Pre-enrich DI series with PU columns before repeated backtests.
+3. Keep deterministic DI fixtures for execution, costs, sizing, and pyramiding
+   regressions.
+4. Add an optional real-data smoke script for local `finharvest` caches.
+5. Add a lightweight benchmark helper for fixed symbols/specs.
+6. Add job/result persistence only after the single-symbol path is stable.

@@ -5,29 +5,57 @@
 \title{Build a native execution specification}
 \usage{
 bt_execution_spec(
-  execution = c("signal", "next_open", "next_close", "close"),
+  execution = c("breakout", "same_close", "next_open", "next_close", "next_avg"),
   fee = "normal",
+  fee_value = NULL,
+  fee_type = NULL,
   commission_per_contract = NULL,
+  commission_per_order = NULL,
+  slip_value = NULL,
+  slip_type = NULL,
   slippage_per_contract = NULL,
-  close_on_end = TRUE,
-  timing = NULL
+  slippage_bps = NULL,
+  slippage_ticks = NULL,
+  slippage_points = NULL,
+  close_on_end = TRUE
 )
 }
 \arguments{
-\item{execution}{Execution mode. \code{"signal"} executes Donchian orders on the
-touched signal level inside the signal bar, and close-based strategy orders
-on the signal bar close. \code{"close"} executes at the signal bar close.
-\code{"next_open"} and \code{"next_close"} execute on the next bar.}
+\item{execution}{Execution mode. \code{"breakout"} executes ElDoc orders on the
+exact touched channel price. \code{"exact_price"} is an alias for \code{"breakout"}.
+\code{"same_close"} executes at the signal-bar close.
+\code{"next_open"}, \code{"next_close"}, and \code{"next_avg"} execute on the next bar.}
 
 \item{fee}{Fee mode passed through \code{normalize_fee_mode()}.}
 
+\item{fee_value}{Optional explicit commission amount in account currency.
+Interpreted according to \code{fee_type}. If \code{NULL}, ticker metadata is used.}
+
+\item{fee_type}{Commission unit. \code{"contract"} charges \code{fee_value} per unit
+traded; \code{"order"} charges \code{fee_value} once per executed order. If \code{NULL},
+ticker metadata is used.}
+
 \item{commission_per_contract}{Optional explicit commission per unit traded.}
+
+\item{commission_per_order}{Optional explicit commission per executed order.}
+
+\item{slip_value}{Optional explicit slippage amount. Interpreted according to
+\code{slip_type}.}
+
+\item{slip_type}{Slippage unit for \code{slip_value}: \code{"bps"}, \code{"ticks"},
+\code{"points"}, or \code{"cash"}. If \code{NULL}, ticker metadata is used.}
 
 \item{slippage_per_contract}{Optional explicit slippage per unit traded.}
 
-\item{close_on_end}{Whether open positions are flattened on the last bar.}
+\item{slippage_bps}{Optional explicit slippage in basis points. For DI
+contracts this means interest-rate basis points; for other instruments it
+is a basis-point fraction of execution price.}
 
-\item{timing}{Deprecated alias for \code{execution}.}
+\item{slippage_ticks}{Optional explicit slippage in ticks.}
+
+\item{slippage_points}{Optional explicit slippage in quoted price points.}
+
+\item{close_on_end}{Whether open positions are flattened on the last bar.}
 }
 \value{
 A list with class \code{bt_execution_spec}.

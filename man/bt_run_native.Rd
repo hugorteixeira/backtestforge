@@ -2,13 +2,17 @@
 % Please edit documentation in R/native_engine.R
 \name{bt_run_native}
 \alias{bt_run_native}
-\title{Run a native backtest without quantstrat or blotter state}
+\title{Run a native in-memory backtest}
 \usage{
 bt_run_native(
   ticker,
   data = NULL,
   strategy = bt_strategy_spec("donchian"),
-  risk = bt_risk_spec(),
+  risk = NULL,
+  ps_value = NULL,
+  ps_type = NULL,
+  initial_equity = 1e+05,
+  reinvest = TRUE,
   execution = bt_execution_spec(),
   start_date = "1900-01-01",
   end_date = Sys.Date(),
@@ -16,7 +20,8 @@ bt_run_native(
   geometric = TRUE,
   only_returns = FALSE,
   verbose = FALSE,
-  clean_di = TRUE
+  clean_di = TRUE,
+  report = TRUE
 )
 }
 \arguments{
@@ -26,7 +31,15 @@ bt_run_native(
 
 \item{strategy}{A \code{bt_strategy_spec}, or a character strategy type.}
 
-\item{risk}{A \code{bt_risk_spec}.}
+\item{risk}{Optional \code{bt_risk_spec}. If \code{NULL}, \code{ps_value}/\code{ps_type} are
+resolved from arguments or ticker metadata.}
+
+\item{ps_value, ps_type}{Position-sizing value and type used when \code{risk} is
+\code{NULL}.}
+
+\item{initial_equity}{Starting account equity when \code{risk} is \code{NULL}.}
+
+\item{reinvest}{Whether risk sizing uses current equity when \code{risk} is \code{NULL}.}
 
 \item{execution}{A \code{bt_execution_spec}.}
 
@@ -38,14 +51,17 @@ bt_run_native(
 
 \item{only_returns}{If \code{TRUE}, return only the \code{xts} returns object.}
 
-\item{verbose}{If \code{TRUE}, print a compact stats row.}
+\item{verbose}{If \code{TRUE}, print detailed stats and transactions.}
 
 \item{clean_di}{If \code{TRUE}, apply DI cleanup before running.}
+
+\item{report}{If \code{TRUE}, print the standard console performance tables.}
 }
 \value{
 A \code{bt_native_result} list, or an \code{xts} returns object when
-\code{only_returns = TRUE}.
+\code{only_returns = TRUE}. In \code{trades}, \code{fees} is commission only,
+\code{slippage} is slippage cost, and \code{total_cost} is their sum.
 }
 \description{
-Run a native backtest without quantstrat or blotter state
+Run a native in-memory backtest
 }

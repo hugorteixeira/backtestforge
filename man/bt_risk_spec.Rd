@@ -6,26 +6,36 @@
 \usage{
 bt_risk_spec(
   mode = c("risk", "notional", "fixed"),
-  initial_equity = 1e+07,
+  initial_equity = 1e+05,
   risk_pct = 2,
   fixed_qty = 1,
+  ps_type = NULL,
+  stop_source = NULL,
+  atr_mult = 2,
   max_qty = Inf,
   max_leverage = Inf,
   integer_qty = TRUE,
-  reinvest = FALSE,
+  reinvest = TRUE,
   min_risk_pct = 5e-04
 )
 }
 \arguments{
-\item{mode}{Sizing mode. \code{"risk"} uses stop distance when available and
-falls back to notional sizing. \code{"notional"} uses \code{risk_pct} as capital
-allocation. \code{"fixed"} uses \code{fixed_qty}.}
+\item{mode}{Sizing mode. \code{"risk"} uses an explicit sizing stop distance,
+\code{"notional"} uses \code{risk_pct} as capital allocation, and \code{"fixed"} uses
+\code{fixed_qty}.}
 
 \item{initial_equity}{Starting equity.}
 
 \item{risk_pct}{Percent of equity/capital to risk or allocate.}
 
 \item{fixed_qty}{Quantity used by fixed sizing.}
+
+\item{ps_type}{Public position-sizing type (\code{"eldoc"}, \code{"atr"},
+\code{"notional"}, or \code{"contract"}).}
+
+\item{stop_source}{Sizing stop source for risk mode (\code{"eldoc"} or \code{"atr"}).}
+
+\item{atr_mult}{ATR multiple used when \code{stop_source = "atr"}.}
 
 \item{max_qty}{Absolute maximum contracts/shares per position.}
 

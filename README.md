@@ -7,13 +7,12 @@
 ![Status: Beta](https://img.shields.io/badge/status-beta-orange)
 
 A fast R library for trend-following backtests on stocks, futures, and crypto.
-The default path is now a native in-memory engine that avoids `.GlobalEnv`,
-`.blotter`, and `.strategy` mutation. The older **blotter/quantstrat** path is
-still available with `engine = "quantstrat"` for parity checks and migration.
+Backtests run through the native in-memory simulator; there is no external
+portfolio/instrument engine to configure.
 
 ## 🚀 Features
 
-- **Native Stateless Engine** - Runs without quantstrat/blotter global state
+- **Native In-Memory Simulator** - Runs directly from `xts` data and attrs
 - **Donchian Channel Strategies** - Built-in support for classic breakout strategies
 - **EMA/SMA Crossover Strategies** - Lightweight moving-average strategies
 - **Smart Position Sizing** - Risk-based position sizing with multiple methods
@@ -21,7 +20,7 @@ still available with `engine = "quantstrat"` for parity checks and migration.
 - **Brazilian Futures Support** - Optional `brfutures` integration for DI PU conversion; contract metadata is read from `xts` attrs
 - **Agent-Friendly Search** - `bt_search_native()` evaluates serializable parameter grids
 - **Visual Backtesting** - Optional plotting with `tradeplotr`
-- **Performance Analytics** - Comprehensive performance reporting
+- **Performance Reporting** - Built-in monthly, quarterly, and summary tables
 
 ## Current Native Engine Notes
 
@@ -71,20 +70,26 @@ devtools::install_github("hugorteixeira/backtestforge")
 
 ## 🚀 Quick Start
 
-Here's how to run a basic Donchian Channel backtest:
+Here's how to run a basic ElDoc channel backtest:
 
 ```r
 library(backtestforge)
 
-# Simple backtest with 40/40 Donchian channels using the native engine
+# Simple backtest with 40/40 ElDoc channels
 results <- bt_eldoc(
   ticker = "AAPL",           # Symbol or data object
   up = 40,                   # Upper channel period
   down = 40,                 # Lower channel period
-  ps_risk_value = 2,         # 2% risk per trade
+  ps_value = 2,        # 2% risk per trade
+  ps_type = "eldoc",   # Risk to the opposite ElDoc channel
+  execution = "breakout",    # Exact touched channel price
+  initial_equity = 100000,   # Starting capital
+  fee_value = 4,
+  fee_type = "order",
+  slip_value = 3,
+  slip_type = "bps",
   start_date = "2020-01-01", # Backtest start
-  end_date = "2023-01-01",   # Backtest end
-  engine = "native"
+  end_date = "2023-01-01"    # Backtest end
 )
 
 # Access results
@@ -93,13 +98,12 @@ stats <- results$stats      # Trade statistics
 trades <- results$trades    # Transaction details
 ```
 
-For the legacy path:
+In `results$trades`, `fees` is commission only, `slippage` is the estimated
+slippage cost, and `total_cost` is the amount subtracted from equity.
+Console reports include a `Costs & Slippage Summary` section before the returns
+summary, with cost values and cost impact percentages.
 
-```r
-legacy <- bt_eldoc("AAPL", up = 40, down = 40, engine = "quantstrat")
-```
-
-Native parameter search for agents:
+Parameter search for agents:
 
 ```r
 search <- bt_search_native(
@@ -112,33 +116,76 @@ search <- bt_search_native(
 
 ## 🔧 Key Functions
 
-### `bt_eldoc()` - Donchian Backtesting Function
+### `bt_eldoc()` - ElDoc Backtesting Function
 
-The workhorse of the library - runs a complete Donchian Channel backtest:
+The workhorse of the library - runs a complete ElDoc channel backtest:
 
 ```r
 bt_eldoc(
   ticker,              # Symbol or data object
   up = 40,             # Upper channel period
   down = 40,           # Lower channel period
-  ps_risk_value = 2,   # Risk percentage
-  ps = "pct",          # Position sizing method
+  ps_value = NULL, # Position-sizing value; NULL reads ticker metadata
+  initial_equity = 100000, # Starting capital
+  ps_type = NULL,# "eldoc", "atr", "notional", or "contract"
+  execution = "breakout", # "breakout", "same_close", "next_open",
+                          # "next_close", or "next_avg"
+  atr_n = 20,          # ATR lookback for ATR sizing/pyramiding
+  atr_mult = 2,        # ATR risk multiple when ps_type = "atr"
+  pyramid = FALSE,     # Add ATR-stepped units in favorable moves
+  pyramid_step = 0.5,
+  max_units = 4,
   fee = "normal",      # Fee handling
+  fee_value = NULL,    # Account-currency commission; NULL reads metadata
+  fee_type = NULL,     # "contract" or "order"; NULL reads metadata
+  slip_value = NULL, # Optional slippage override; NULL reads metadata
+  slip_type = NULL,# "bps", "ticks", "points", or "cash"; NULL reads metadata
   start_date = "1900-01-01",
   end_date = Sys.Date(),
   long = TRUE,         # Enable long trades
   short = TRUE,        # Enable short trades
-  engine = "native",   # Or "quantstrat"
   plot = FALSE         # Plot results
 )
 ```
+
+When `ps_value`/`ps_type`, `fee_value`/`fee_type`, or
+`slip_value`/`slip_type` are `NULL`, the wrapper reads the ticker
+metadata. If the required metadata is missing, the backtest errors and asks for
+the missing argument. `fee = "nofee"` disables fee and slippage requirements.
+
+`fee_value` is money. With `fee_type = "contract"`, `fee_value = 4` charges 4
+per contract/share traded. With `fee_type = "order"`, the same 4 is charged once
+for the whole executed order. Slippage can be overridden with the same native
+units used by metadata: basis points, ticks, price points, or cash per contract.
+
+ElDoc execution modes:
+
+- `breakout`: fill at the exact touched channel price.
+- `exact_price`: alias for `breakout`.
+- `same_close`: fill at the signal candle close.
+- `next_open`: fill at the next candle open.
+- `next_close`: fill at the next candle close.
+- `next_avg`: fill at the next candle OHLC average.
+
+ElDoc position sizing modes:
+
+- `eldoc`: risk `ps_value` percent of equity to the opposite channel.
+- `atr`: risk `ps_value` percent of equity to `ATR * atr_mult`.
+- `notional`: allocate `ps_value` percent of equity to notional exposure.
+- `contract`: trade `ps_value` contracts/shares per entry or add.
 
 ### Native spec API
 
 ```r
 strategy <- bt_strategy_spec("donchian", up = 40, down = 20)
-risk <- bt_risk_spec(mode = "risk", risk_pct = 2)
-execution <- bt_execution_spec(execution = "signal", fee = "nofee")
+risk <- bt_risk_spec(mode = "risk", ps_type = "eldoc", initial_equity = 100000, risk_pct = 2, reinvest = TRUE)
+execution <- bt_execution_spec(
+  execution = "breakout",
+  fee_value = 4,
+  fee_type = "contract",
+  slip_value = 7,
+  slip_type = "bps"
+)
 
 result <- bt_run_native(
   ticker = "AAPL",
@@ -149,21 +196,58 @@ result <- bt_run_native(
 )
 ```
 
+Risk sizing reinvests by default: new entries use current account equity, while
+an open position keeps its original quantity until the next order. Use
+`reinvest = FALSE` to size every entry from the initial capital instead.
+
 For futures, attach instrument metadata to the `xts` object when the data source
 does not already provide it:
 
 ```r
 attr(wdo, "fut_multiplier") <- 10
 attr(wdo, "fut_tick_size") <- 0.5
-attr(wdo, "identifiers") <- list(fees = 1, slippage = 1)
+attr(wdo, "fee_value") <- 1
+attr(wdo, "fee_type") <- "contract"
+attr(wdo, "slip_value") <- 1
+attr(wdo, "slip_type") <- "ticks"
+attr(wdo, "ps_value") <- 2
+attr(wdo, "ps_type") <- "eldoc"
 ```
+
+When data comes from `finharvest` aggregate futures, the native engine reads the
+same direct attrs emitted on the `xts` object:
+
+```r
+attr(ccm, "ticksize") <- 0.01
+attr(ccm, "tickvalue") <- 4.5
+attr(ccm, "fee_value") <- 2.5
+attr(ccm, "fee_type") <- "contract"
+attr(ccm, "slip_value") <- 7
+attr(ccm, "slip_type") <- "bps"
+attr(ccm, "ps_value") <- 2
+attr(ccm, "ps_type") <- "eldoc"
+```
+
+If `fut_multiplier`/`multiplier` is absent but `tickvalue` and `ticksize` are
+present, the native engine derives the multiplier as `tickvalue / ticksize`.
+`slip_value` is interpreted as basis points by default. For non-DI
+instruments the cost is `price * slip_value / 10000 * multiplier`; for DI
+contracts the basis points apply to the quoted rate and are converted with the
+row `TickValue`. To provide slippage as ticks or price points, set `slip_type` to
+`"ticks"`/`"price_points"` or use explicit `slippage_ticks`/`slippage_points`.
+
+`ticksize` and `multiplier` are separate contract fields: `ticksize` is the
+minimum price increment, while `multiplier` is the cash value of one full price
+point.
 
 ## 📊 Position Sizing Methods
 
-1. **Fixed Contracts** - Trade fixed number of contracts
-2. **Percentage Equity** - Simple percentage of equity allocation
-3. **Donchian Risk-Based** - Risk-based sizing using Donchian stops
-4. **DI Futures Specialized** - Custom logic for Brazilian DI futures
+1. **ElDoc risk** - Risk a percent of equity to the opposite channel.
+2. **ATR risk** - Risk a percent of equity to `ATR * atr_mult`.
+3. **Notional allocation** - Allocate a percent of equity to exposure.
+4. **Contract count** - Trade a fixed number of contracts/shares.
+5. **DI futures handling** - Use rate OHLC for signals and PU for execution
+   when PU data is available.
 
 ## 📈 Example Output
 
@@ -184,17 +268,11 @@ Cumulative Returns: 156.34%
 
 This library uses:
 
-- Native engine dependencies:
-  - `TTR` - Technical analysis functions
-  - `xts`/`zoo` - Time series handling
-  - `PerformanceAnalytics` - Performance metrics
-  - `finharvest` - Data fetching
-  - `brfutures` - Optional Brazilian futures and DI helpers
-- Legacy engine dependencies:
-  - `quantstrat` - Event-based backtesting framework
-  - `blotter` - Portfolio and account management
-  - `FinancialInstrument` - Legacy instrument modeling
-- `tradeplotr` - Visualization (custom)
+- `TTR` - Technical analysis functions
+- `xts`/`zoo` - Time series handling
+- `finharvest` - Data fetching
+- `brfutures` - Optional Brazilian futures and DI helpers
+- `tradeplotr` - Visualization
 
 ## 🤝 Contributing
 
@@ -206,17 +284,16 @@ Contributions are welcome! Since this is a work in progress:
 4. Push to the branch
 5. Open a pull request
 
-## 📝 TODO (Lots of Work Needed!)
+## 📝 Current Roadmap
 
-- [ ] Better error handling and validation
-- [ ] More strategy types beyond Donchian
-- [ ] Additional position sizing methods
-- [ ] Improved documentation and examples
-- [x] Unit tests for the native engine
+- [x] Native-only engine without `quantstrat`, `blotter`, or `FinancialInstrument`
+- [x] Explicit fees/slippage with separate trade-ledger columns
+- [x] Donchian/ElDoc execution modes, ATR sizing, contract sizing, and pyramiding
+- [x] Unit tests for native sizing, DI PU handling, costs, and batch failure strictness
+- [ ] Split the native simulator internals into smaller state-transition helpers
+- [ ] Add more real-data regression fixtures for DI and stitched futures series
+- [ ] Improve documentation around metadata attrs expected from `finharvest`
 - [x] Parameter search with `bt_search_native()`
-- [ ] Quantstrat parity snapshots for selected strategies
-- [ ] Server job/result persistence
-- [ ] Additional asset class specializations
 
 ## 📄 License
 

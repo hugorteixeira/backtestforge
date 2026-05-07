@@ -13,10 +13,10 @@ bt_strategy_spec(
 )
 }
 \arguments{
-\item{type}{Strategy type. Use \code{"donchian"}/\code{"eldoc"}, \code{"ema"}, or \code{"sma"}.}
+\item{type}{Strategy type. Use \code{"eldoc"}/\code{"donchian"}, \code{"ema"}, or \code{"sma"}.}
 
-\item{...}{Indicator parameters (\code{up}/\code{down} for Donchian, \code{fast}/\code{slow} for
-moving averages).}
+\item{...}{Indicator parameters (\code{up}/\code{down} for ElDoc, \code{fast}/\code{slow} for
+moving averages), plus ElDoc ATR/pyramiding settings.}
 
 \item{long, short}{Logical flags enabling long and short trades.}
 

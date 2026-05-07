@@ -11,11 +11,12 @@
 }
 \value{
 A list with \code{tick_size}, \code{tick_value}, \code{multiplier}, \code{maturity},
-\code{currency}, and \code{identifiers} entries.
+\code{currency}, \code{fee_type}, \code{slip_value}, \code{slippage_bps},
+\code{slippage_ticks}, \code{slippage_points}, and \code{slippage_unit} entries.
 }
 \description{
-Inspects the attributes of an xts time series to collect futures-specific
-metadata such as tick size, multiplier, maturity, currency, and identifier
-fields (fees/slippage). Missing pieces fall back to \code{NULL}.
+Inspects the direct attributes of an xts time series to collect
+futures-specific metadata such as tick size, multiplier, maturity,
+currency, fees, and slippage. Missing pieces fall back to \code{NULL}.
 }
 \keyword{internal}

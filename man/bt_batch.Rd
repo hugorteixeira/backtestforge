@@ -11,9 +11,20 @@ bt_batch(
   exact_match = FALSE,
   mup = 40,
   mdown = 40,
-  mps_risk_value = 2,
-  mps = "pct",
+  ps_value = NULL,
+  initial_equity = 1e+05,
+  ps_type = NULL,
+  execution = "breakout",
+  atr_n = 20,
+  atr_mult = 2,
+  pyramid = FALSE,
+  pyramid_step = 0.5,
+  max_units = if (isTRUE(pyramid)) 4L else 1L,
   fee = "normal",
+  fee_value = NULL,
+  fee_type = NULL,
+  slip_value = NULL,
+  slip_type = NULL,
   start_date = "1900-01-01",
   end_date = Sys.Date(),
   long = TRUE,
@@ -24,9 +35,10 @@ bt_batch(
   verbose = FALSE,
   only_returns = FALSE,
   hide_details = FALSE,
+  fail_on_error = TRUE,
   clean_di = TRUE,
+  reinvest = TRUE,
   returns_type = "Log",
-  engine = c("native", "quantstrat"),
   plot_mult = FALSE,
   gen_portfolio = NULL,
   gen_portfolio_weights = NULL,
@@ -55,12 +67,33 @@ instead of appending \code{timeframes}.}
 \item{mup, mdown}{Numeric vectors used as Donchian window lengths and also as
 fallbacks for moving-average speeds.}
 
-\item{mps_risk_value}{Numeric risk percentage passed to the position-sizing
-function.}
+\item{ps_value}{Position-sizing value. When \code{NULL}, ticker metadata is
+used.}
 
-\item{mps}{Character string specifying the position-sizing method.}
+\item{initial_equity}{Starting account equity in money units.}
+
+\item{ps_type}{Position-sizing type. When \code{NULL}, ticker metadata is
+used.}
+
+\item{execution}{Execution mode for ElDoc runs. See \code{\link[=bt_eldoc]{bt_eldoc()}}.}
+
+\item{atr_n, atr_mult}{ATR settings for ElDoc ATR sizing and pyramiding.}
+
+\item{pyramid, pyramid_step, max_units}{ElDoc pyramiding controls.}
 
 \item{fee}{Fee handling mode per test (\code{"normal"} or \code{"nofee"}).}
+
+\item{fee_value}{Optional commission amount in account currency. \code{NULL}
+reads ticker metadata.}
+
+\item{fee_type}{Fee unit, either \code{"contract"} or \code{"order"}. \code{NULL} reads
+ticker metadata.}
+
+\item{slip_value}{Optional slippage override. \code{NULL} reads ticker
+metadata.}
+
+\item{slip_type}{Slippage unit for \code{slip_value}. \code{NULL} reads ticker
+metadata.}
 
 \item{start_date, end_date}{Optional boundaries for fetched data.}
 
@@ -79,13 +112,17 @@ instead of the full backtest objects.}
 
 \item{hide_details}{Logical flag propagated to the underlying backtest.}
 
+\item{fail_on_error}{Logical; if \code{TRUE} (default), any failed individual
+backtest stops the batch. Set to \code{FALSE} only when you explicitly want the
+behavior of warning and filling the failed series with zeros.}
+
 \item{clean_di}{Logical flag propagated to the underlying backtest.}
+
+\item{reinvest}{Logical; if \code{TRUE}, size new entries using current account
+equity. Open positions keep their original quantity until the next order.}
 
 \item{returns_type}{Desired returns column (\code{"Log"}, \code{"Discrete"},
 \code{"LogAdj"}, or \code{"DiscreteAdj"}).}
-
-\item{engine}{Execution engine propagated to each wrapper. \code{"native"} is the
-stateless engine; \code{"quantstrat"} runs the legacy implementation.}
 
 \item{plot_mult}{Logical flag; if \code{TRUE}, plots combined results via \code{tplot()}.}
 

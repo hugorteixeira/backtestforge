@@ -111,782 +111,53 @@
   )
 }
 
-.bt_fetch_ticker_data <- function(symbol, data_env, start_date, end_date, clean_di = TRUE, preloaded_xts = NULL) {
-  symbol_chr <- if (length(symbol)) as.character(symbol)[1] else ""
-  provided_xts <- !is.null(preloaded_xts)
-
-  if (provided_xts) {
-    ticker_data <- preloaded_xts
-    resolved_symbol <- if (nzchar(symbol_chr)) symbol_chr else "local_xts"
-  } else {
-    candidate_symbols <- symbol_chr
-    daily_suffix <- "_1[dD]$"
-    if (nzchar(symbol_chr) && grepl(daily_suffix, symbol_chr)) {
-      base_symbol <- sub(daily_suffix, "", symbol_chr)
-      if (nzchar(base_symbol)) {
-        candidate_symbols <- unique(c(base_symbol, symbol_chr))
-      }
-    }
-    candidate_symbols <- as.character(candidate_symbols)
-    candidate_symbols <- candidate_symbols[nzchar(candidate_symbols)]
-    if (!length(candidate_symbols)) {
-      stop("No valid symbol provided to '.bt_fetch_ticker_data'.", call. = FALSE)
-    }
-
-    last_error_msg <- NULL
-    ticker_data <- NULL
-    resolved_symbol <- NULL
-
-    fetch_candidate <- function(sym) {
-      if (exists(sym, envir = data_env, inherits = FALSE)) {
-        return(get(sym, envir = data_env))
-      }
-      if (exists(sym, envir = .GlobalEnv, inherits = FALSE)) {
-        return(get(sym, envir = .GlobalEnv))
-      }
-      tryCatch(
-        .bt_fetch_finharvest_data(sym,
-          start_date = start_date,
-          end_date = end_date
-        ),
-        error = function(e) {
-          last_error_msg <<- conditionMessage(e)
-          NULL
-        }
-      )
-    }
-
-    for (sym in candidate_symbols) {
-      tmp_data <- fetch_candidate(sym)
-      if (!is.null(tmp_data)) {
-        ticker_data <- tmp_data
-        resolved_symbol <- sym
-        break
-      }
-    }
-
-    if (is.null(ticker_data) || is.null(resolved_symbol)) {
-      msg <- last_error_msg %||% sprintf("Could not locate market data for symbol '%s'.", symbol_chr)
-      stop(msg, call. = FALSE)
-    }
-  }
-
-  if (!xts::is.xts(ticker_data)) {
-    ticker_data <- tryCatch(xts::as.xts(ticker_data), error = function(e) NULL)
-  }
-  if (is.null(ticker_data) || !xts::is.xts(ticker_data)) {
-    stop("Provided market data must be an xts object.", call. = FALSE)
-  }
-
-  ticker_data <- .bt_fill_di_maturity(ticker_data, resolved_symbol %||% symbol_chr)
-
-  if (isTRUE(clean_di) && .bt_is_di_symbol(resolved_symbol %||% symbol_chr)) {
-    ticker_data <- .bt_clean_di(ticker_data, "TickSize", value = 0.001)
-    ticker_data <- .bt_clean_di_tick(ticker_data, "TickValue", value_over = -5)
-  }
-
-  attr(ticker_data, "bt_fetched_symbol") <- resolved_symbol
-  if (!identical(resolved_symbol, symbol_chr) && nzchar(symbol_chr)) {
-    attr(ticker_data, "bt_requested_symbol") <- symbol_chr
-  }
-
-  if (!identical(resolved_symbol, symbol_chr) && nzchar(resolved_symbol) && !provided_xts) {
-    if (!exists(resolved_symbol, envir = data_env, inherits = FALSE)) {
-      try(assign(resolved_symbol, ticker_data, envir = data_env), silent = TRUE)
-    }
-  }
-
-  if (nzchar(resolved_symbol)) {
-    try(.register_future_from_data(resolved_symbol, ticker_data, overwrite = TRUE), silent = TRUE)
-  }
-
-  ticker_data
-}
-
-.bt_indicator_spec <- function(type) {
-  type <- tolower(type)
-  switch(type,
-    eldoc = .bt_module_eldoc(),
-    ema = .bt_module_ma("ema"),
-    sma = .bt_module_ma("sma"),
-    stop(sprintf("Unsupported backtest type '%s'", type), call. = FALSE)
+.bt_backtest_execution <- function(execution = "breakout",
+                                   fee = "normal",
+                                   fee_value = NULL,
+                                   fee_type = NULL,
+                                   slip_value = NULL,
+                                   slip_type = NULL) {
+  bt_execution_spec(
+    execution = execution,
+    fee = fee,
+    fee_value = fee_value,
+    fee_type = fee_type,
+    slip_value = slip_value,
+    slip_type = slip_type
   )
 }
 
-.bt_module_eldoc <- function() {
-  defaults <- list(up = 40L, down = 40L)
-
-  resolve_args <- function(args) {
-    list(
-      up = as.integer(.bt_first_non_null(args$up, defaults$up)),
-      down = as.integer(.bt_first_non_null(args$down, defaults$down))
-    )
+.bt_wrapper_options <- function(extra_args, ps_value = NULL, ps_type = NULL,
+                                slip_value = NULL) {
+  if (length(extra_args) && "engine" %in% names(extra_args)) {
+    stop("'engine' was removed; the native engine is now the only engine.", call. = FALSE)
   }
-
-  build_label <- function(context, fee_mode_suffix = "") {
-    up_str <- as.character(context$indicator_args$up)
-    down_str <- as.character(context$indicator_args$down)
-
-    if (!isTRUE(context$hide_details)) {
-      paste0(
-        context$base_ticker, "_eD_", up_str, "_", down_str, "_",
-        context$ps, "_", context$ps_risk_value, fee_mode_suffix
-      )
-    } else {
-      paste0(context$base_ticker, "_eD_nodets", fee_mode_suffix)
-    }
+  only_returns <- FALSE
+  if (length(extra_args) && "only_returns" %in% names(extra_args)) {
+    only_returns <- isTRUE(extra_args$only_returns)
+    extra_args$only_returns <- NULL
   }
-
-  configure_strategy <- function(strategy, context) {
-    up <- context$indicator_args$up
-    down <- context$indicator_args$down
-    hi_col <- context$columns$high
-    lo_col <- context$columns$low
-
-    strategy <- add.indicator(
-      strategy, "eldoc",
-      arguments = list(
-        ticker = quote(mktdata),
-        x = up,
-        y = down,
-        hi.col = hi_col,
-        lo.col = lo_col,
-        type = "data"
-      ),
-      label = "el"
-    )
-
-    strategy <- add.signal(
-      strategy,
-      name = "sigCrossover",
-      arguments = list(
-        data = quote(mktdata),
-        columns = c(context$columns$high, "X.el"),
-        relationship = "gte"
-      ),
-      label = "Entry"
-    )
-
-    strategy <- add.signal(
-      strategy,
-      name = "sigCrossover",
-      arguments = list(
-        data = quote(mktdata),
-        columns = c(context$columns$low, "Y.el"),
-        relationship = "lte"
-      ),
-      label = "Exit"
-    )
-
-    list(
-      strategy = strategy,
-      signals = list(
-        long_entry = "Entry",
-        long_exit = "Exit",
-        short_entry = "Exit",
-        short_exit = "Entry"
-      ),
-      indicator_label = paste0(up, "/", down)
-    )
+  clean_di <- TRUE
+  if (length(extra_args) && "clean_di" %in% names(extra_args)) {
+    clean_di <- isTRUE(extra_args$clean_di)
+    extra_args$clean_di <- NULL
   }
-
-  augment_stats <- function(stats, context) {
-    stats$elDoc <- paste0(context$indicator_args$up, "/", context$indicator_args$down)
-    stats
+  if (length(extra_args)) {
+    stop(sprintf("Unused argument(s): %s", paste(names(extra_args), collapse = ", ")), call. = FALSE)
   }
-
   list(
-    type = "eldoc",
-    names = list(portfolio = "elDoc", account = "elDoc", strategy = "elDoc"),
-    defaults = defaults,
-    resolve_indicator_args = resolve_args,
-    build_bt_ticker = build_label,
-    configure_strategy = configure_strategy,
-    augment_stats = augment_stats,
-    indicator_column_name = "Donchian",
-    batch_suffix = function(indicator_args) {
-      paste0(indicator_args$up, "_", indicator_args$down)
-    }
+    ps_value = ps_value,
+    ps_type = ps_type,
+    slip_value = slip_value,
+    only_returns = only_returns,
+    clean_di = clean_di
   )
-}
-
-.bt_module_ma <- function(kind = c("ema", "sma")) {
-  kind <- match.arg(kind)
-  indicator_fun <- toupper(kind)
-  defaults <- list(fast = 20L, slow = 50L)
-
-  resolve_args <- function(args) {
-    list(
-      fast = as.integer(.bt_first_non_null(args$fast, args$mup, args$up, defaults$fast)),
-      slow = as.integer(.bt_first_non_null(args$slow, args$mdown, args$down, defaults$slow))
-    )
-  }
-
-  build_label <- function(context, fee_mode_suffix = "") {
-    args <- context$indicator_args
-    base <- paste0(
-      context$base_ticker, "_", kind, "_", args$fast, "_", args$slow,
-      "_", context$ps, "_", context$ps_risk_value
-    )
-    if (isTRUE(context$hide_details)) {
-      base <- paste0(context$base_ticker, "_", kind, "_nodets")
-    }
-    paste0(base, fee_mode_suffix)
-  }
-
-  configure_strategy <- function(strategy, context) {
-    args <- context$indicator_args
-    price_expr <- quote(Cl(mktdata))
-    fast_lab <- "fast"
-    slow_lab <- "slow"
-
-    strategy <- add.indicator(
-      strategy, indicator_fun,
-      arguments = list(x = price_expr, n = args$fast),
-      label = fast_lab
-    )
-
-    strategy <- add.indicator(
-      strategy, indicator_fun,
-      arguments = list(x = price_expr, n = args$slow),
-      label = slow_lab
-    )
-
-    fast_col <- paste0(indicator_fun, ".", fast_lab)
-    slow_col <- paste0(indicator_fun, ".", slow_lab)
-
-    strategy <- add.signal(
-      strategy,
-      name = "sigCrossover",
-      arguments = list(columns = c(fast_col, slow_col), relationship = "gt"),
-      label = "LongEntry"
-    )
-
-    strategy <- add.signal(
-      strategy,
-      name = "sigCrossover",
-      arguments = list(columns = c(fast_col, slow_col), relationship = "lt"),
-      label = "LongExit"
-    )
-
-    strategy <- add.signal(
-      strategy,
-      name = "sigCrossover",
-      arguments = list(columns = c(fast_col, slow_col), relationship = "lt"),
-      label = "ShortEntry"
-    )
-
-    strategy <- add.signal(
-      strategy,
-      name = "sigCrossover",
-      arguments = list(columns = c(fast_col, slow_col), relationship = "gt"),
-      label = "ShortExit"
-    )
-
-    label_prefix <- toupper(kind)
-
-    list(
-      strategy = strategy,
-      signals = list(
-        long_entry = "LongEntry",
-        long_exit = "LongExit",
-        short_entry = "ShortEntry",
-        short_exit = "ShortExit"
-      ),
-      indicator_label = paste0(label_prefix, " ", args$fast, "/", args$slow)
-    )
-  }
-
-  augment_stats <- function(stats, context) {
-    label_prefix <- toupper(kind)
-    stats[[label_prefix]] <- paste0(context$indicator_args$fast, "/", context$indicator_args$slow)
-    stats
-  }
-
-  friendly <- toupper(kind)
-
-  list(
-    type = kind,
-    names = list(
-      portfolio = friendly,
-      account = friendly,
-      strategy = friendly
-    ),
-    defaults = defaults,
-    resolve_indicator_args = resolve_args,
-    build_bt_ticker = build_label,
-    configure_strategy = configure_strategy,
-    augment_stats = augment_stats,
-    indicator_column_name = friendly,
-    batch_suffix = function(indicator_args) {
-      paste0(indicator_args$fast, "_", indicator_args$slow)
-    }
-  )
-}
-
-.bt_run_module <- function(
-  type,
-  ticker,
-  ticker_data_override = NULL,
-  indicator_args = list(),
-  ps_risk_value = 2,
-  ps = "pct",
-  fee = "normal",
-  start_date = "1900-01-01",
-  end_date = Sys.Date(),
-  long = TRUE,
-  short = TRUE,
-  invert_signals = FALSE,
-  normalize_risk = NULL,
-  geometric = TRUE,
-  verbose = TRUE,
-  only_returns = FALSE,
-  hide_details = FALSE,
-  stop_before_maturity = NULL,
-  clean_di = TRUE,
-  plot = FALSE
-) {
-  module <- .bt_indicator_spec(type)
-
-  indicator_args <- module$resolve_indicator_args(indicator_args)
-
-  fee_mode <- normalize_fee_mode(fee)
-
-  if (exists(".blotter")) rm(list = ls(envir = .blotter), envir = .blotter)
-  if (exists(".strategy")) rm(list = ls(envir = .strategy), envir = .strategy)
-
-  #  if (exists("data_env")) rm(list = ls(envir = data_env), envir = data_env)
-
-  if (!exists(".strategy")) .strategy <<- new.env()
-  if (!exists(".blotter")) .blotter <<- new.env()
-  # if (!exists("data_env")) data_env <<- new.env()
-
-  data_env <- .get_bt_data_env()
-
-  ticker_data <- .bt_fetch_ticker_data(
-    ticker,
-    data_env,
-    start_date,
-    end_date,
-    clean_di = clean_di,
-    preloaded_xts = ticker_data_override
-  )
-  ticker_data <- .use_close_only(ticker_data)
-  attr(ticker_data, "bt_original_symbol") <- ticker
-  attr(ticker_data, "bt_root_symbol") <- sub("_.*$", "", ticker)
-  assign(ticker, ticker_data, envir = data_env)
-  .register_future_from_data(ticker, ticker_data)
-  original_ticker <- ticker
-
-  if (!isTRUE(long) && !isTRUE(short)) {
-    stop("You need to enable at least one side (long and/or short).", call. = FALSE)
-  }
-
-  context <- list(
-    base_ticker = ticker,
-    indicator_args = indicator_args,
-    ps = ps,
-    ps_risk_value = ps_risk_value,
-    long = long,
-    short = short,
-    invert_signals = invert_signals,
-    hide_details = hide_details,
-    fee_mode = fee_mode,
-    module = module
-  )
-
-  fee_suffix <- if (identical(fee_mode, "nofee")) "_nofees" else ""
-  bt_ticker <- module$build_bt_ticker(context, fee_mode_suffix = fee_suffix)
-
-  fetched_symbol <- attr(ticker_data, "bt_fetched_symbol", exact = TRUE)
-  root_symbol <- attr(ticker_data, "bt_root_symbol", exact = TRUE)
-  merge_candidates <- unique(c(fetched_symbol, root_symbol, context$base_ticker))
-  merge_candidates <- merge_candidates[!is.na(merge_candidates) & nzchar(merge_candidates)]
-
-  candidate_instruments <- list()
-  if (length(merge_candidates)) {
-    for (cand in merge_candidates) {
-      inst <- tryCatch(getInstrument(cand, silent = TRUE), error = function(e) NULL)
-      if (FinancialInstrument::is.instrument(inst)) {
-        candidate_instruments[[length(candidate_instruments) + 1]] <- list(
-          symbol = cand,
-          instrument = inst
-        )
-      }
-    }
-  }
-
-  select_source_instrument <- function(candidates) {
-    if (!length(candidates)) {
-      return(NULL)
-    }
-    has_ids <- Filter(function(entry) {
-      ids <- entry$instrument$identifiers
-      if (is.environment(ids)) ids <- as.list(ids)
-      is.list(ids) && length(ids) > 0
-    }, candidates)
-    if (length(has_ids)) {
-      return(has_ids[[1]])
-    }
-    preferred_symbols <- unique(c(fetched_symbol, root_symbol))
-    preferred <- Filter(function(entry) entry$symbol %in% preferred_symbols, candidates)
-    if (length(preferred)) {
-      return(preferred[[1]])
-    }
-    candidates[[1]]
-  }
-
-  source_info <- select_source_instrument(candidate_instruments)
-
-  merge_instrument_metadata <- function(target_symbol, source_entry) {
-    if (is.null(target_symbol) || !nzchar(target_symbol)) {
-      return(invisible(NULL))
-    }
-    target_inst <- tryCatch(getInstrument(target_symbol, silent = TRUE), error = function(e) NULL)
-    if (!FinancialInstrument::is.instrument(target_inst)) {
-      return(invisible(NULL))
-    }
-    if (is.null(source_entry) || is.null(source_entry$instrument)) {
-      return(invisible(NULL))
-    }
-    source_inst <- source_entry$instrument
-
-    normalize_ids <- function(ids) {
-      if (is.null(ids)) {
-        return(list())
-      }
-      if (is.environment(ids)) ids <- as.list(ids)
-      if (!is.list(ids)) ids <- list()
-      ids
-    }
-
-    source_ids <- normalize_ids(source_inst$identifiers)
-    target_ids <- normalize_ids(target_inst$identifiers)
-    merged_ids <- utils::modifyList(source_ids, target_ids)
-    if (length(merged_ids) && !identical(merged_ids, target_ids)) {
-      try(instrument_attr(target_symbol, "identifiers", merged_ids), silent = TRUE)
-    }
-
-    copy_numeric_attr <- function(name) {
-      src_val <- suppressWarnings(as.numeric(source_inst[[name]]))[1]
-      tgt_val <- suppressWarnings(as.numeric(target_inst[[name]]))[1]
-      if (is.finite(src_val) && (!is.finite(tgt_val) || is.na(tgt_val) || identical(tgt_val, 0))) {
-        try(instrument_attr(target_symbol, name, src_val), silent = TRUE)
-      }
-    }
-
-    copy_char_attr <- function(name) {
-      src_val <- source_inst[[name]]
-      tgt_val <- target_inst[[name]]
-      if (is.null(tgt_val) || !nzchar(as.character(tgt_val)[1])) {
-        if (!is.null(src_val) && nzchar(as.character(src_val)[1])) {
-          try(instrument_attr(target_symbol, name, src_val), silent = TRUE)
-        }
-      }
-    }
-
-    copy_numeric_attr("multiplier")
-    copy_numeric_attr("tick_size")
-    copy_char_attr("currency")
-    invisible(NULL)
-  }
-
-  merge_instrument_metadata(context$base_ticker, source_info)
-
-  .register_future_from_data(bt_ticker, ticker_data)
-  merge_instrument_metadata(bt_ticker, source_info)
-
-  ticker <- bt_ticker
-  context$ticker <- ticker
-
-  verbose_flag <- isTRUE(verbose)
-  initEq <- 10000000
-  path.dependence <- TRUE
-
-  portfolio.st <- module$names$portfolio
-  account.st <- module$names$account
-
-  initPortf(portfolio.st, symbols = ticker)
-  initAcct(account.st, portfolios = portfolio.st, initEq = initEq)
-  initOrders(portfolio = portfolio.st)
-  my_strategy <- strategy(module$names$strategy)
-
-  tradeSize <- 9999999
-  bcontracts <- 1
-  scontracts <- -1
-
-  isDI <- startsWith(ticker, "DI1") |
-    (!is.null(attr(ticker_data, "subcategoria")) &&
-      grepl("juros brasil", attr(ticker_data, "subcategoria"), ignore.case = TRUE))
-  .dbg("Is it DI?", isDI)
-
-  PositionSizing <- if (isDI) {
-    function(data, timestamp, orderqty, ordertype, orderside,
-             portfolio, symbol, tradeSize, maxSize, ...) {
-      .psEquityPercentageDonchian_DI(data, timestamp, orderqty, ordertype, orderside,
-        portfolio, symbol, tradeSize, maxSize,
-        risk = ps_risk_value, ...
-      )
-    }
-  } else {
-    function(data, timestamp, orderqty, ordertype, orderside,
-             portfolio, symbol, tradeSize, maxSize, ...) {
-      .psEquityPercentageDonchian(data, timestamp, orderqty, ordertype, orderside,
-        portfolio, symbol, tradeSize, maxSize,
-        risk = ps_risk_value, ...
-      )
-    }
-  }
-
-  OrderType <- "market"
-  LongEnabled <- isTRUE(long)
-  ShortEnabled <- isTRUE(short)
-
-  HighCol <- "High"
-  LowCol <- "Low"
-  # if ("PU_o" %in% colnames(ticker_data)) Preference <- "PU_o" else Preference <- "Open"
-  pu_col <- grep("^PU_o(pen)?$", colnames(ticker_data), ignore.case = TRUE, value = TRUE)
-  Preference <- if (length(pu_col) > 0) pu_col[1] else "Open"
-  assign(bt_ticker, ticker_data, envir = data_env)
-  assign(bt_ticker, ticker_data, envir = .GlobalEnv)
-  ReplaceBuy <- FALSE
-  ReplaceSell <- FALSE
-  ReplaceShort <- FALSE
-  ReplaceCover <- FALSE
-
-  context$ticker_data <- ticker_data
-  context$data_env <- data_env
-  context$columns <- list(high = HighCol, low = LowCol, close = "Close")
-  context$preference <- Preference
-
-  TxnFeesVal <- if (fee_mode == "nofee") 0 else "calculate_fees"
-
-  module_setup <- module$configure_strategy(my_strategy, context)
-  my_strategy <- module_setup$strategy
-
-  coisa <- applyIndicators(strategy = my_strategy, mktdata = get(ticker, envir = data_env))
-  coisa <- applySignals(strategy = my_strategy, mktdata = coisa)
-
-  signals <- module_setup$signals
-  signal_or <- function(name, fallback) {
-    val <- signals[[name]]
-    if (is.null(val) || !nzchar(val)) fallback else val
-  }
-
-  long_entry_col <- signal_or("long_entry", "Entry")
-  long_exit_col <- signal_or("long_exit", "Exit")
-  short_entry_col <- signal_or("short_entry", long_exit_col)
-  short_exit_col <- signal_or("short_exit", long_entry_col)
-
-  n.ent <- sum(coisa[, long_entry_col] == 1, na.rm = TRUE)
-  n.saida <- sum(coisa[, long_exit_col] == 1, na.rm = TRUE)
-  .dbg("Signals detected - Entry:", n.ent, " Exit:", n.saida)
-
-  my_strategy <- add.rule(
-    strategy = my_strategy,
-    name = "ruleSignal",
-    arguments = list(
-      sigcol = long_entry_col,
-      sigval = TRUE,
-      datax = mktdata,
-      initEq = initEq,
-      orderqty = tradeSize,
-      portfolio = portfolio.st,
-      ordertype = OrderType,
-      orderside = if (!isDI) "long" else "short",
-      osFUN = PositionSizing,
-      tradeSize = tradeSize,
-      buyorderqty = bcontracts,
-      sellorderqty = scontracts,
-      maxSize = 9999999,
-      prefer = Preference,
-      replace = ReplaceBuy,
-      TxnFees = TxnFeesVal
-    ),
-    type = if (invert_signals) "exit" else "enter",
-    label = if (invert_signals) "exitLong" else "enterLong",
-    storefun = TRUE,
-    path.dep = path.dependence,
-    enabled = LongEnabled
-  )
-
-  my_strategy <- add.rule(
-    strategy = my_strategy,
-    name = "ruleSignal",
-    arguments = list(
-      sigcol = long_exit_col,
-      sigval = TRUE,
-      orderqty = "all",
-      ordertype = OrderType,
-      orderside = if (!isDI) "long" else "short",
-      prefer = Preference,
-      replace = ReplaceSell,
-      TxnFees = TxnFeesVal
-    ),
-    type = if (invert_signals) "enter" else "exit",
-    label = if (invert_signals) "enterLong" else "exitLong",
-    storefun = TRUE,
-    path.dep = path.dependence,
-    enabled = LongEnabled
-  )
-
-  my_strategy <- add.rule(
-    strategy = my_strategy,
-    name = "ruleSignal",
-    arguments = list(
-      sigcol = short_entry_col,
-      sigval = TRUE,
-      datax = mktdata,
-      initEq = initEq,
-      orderqty = tradeSize,
-      portfolio = portfolio.st,
-      ordertype = OrderType,
-      orderside = if (isDI) "long" else "short",
-      osFUN = PositionSizing,
-      tradeSize = -tradeSize,
-      buyorderqty = bcontracts,
-      sellorderqty = scontracts,
-      maxSize = -9999999,
-      prefer = Preference,
-      replace = ReplaceShort,
-      TxnFees = TxnFeesVal
-    ),
-    type = if (invert_signals) "exit" else "enter",
-    label = if (invert_signals) "exitShort" else "enterShort",
-    storefun = TRUE,
-    path.dep = path.dependence,
-    enabled = ShortEnabled
-  )
-
-  my_strategy <- add.rule(
-    strategy = my_strategy,
-    name = "ruleSignal",
-    arguments = list(
-      sigcol = short_exit_col,
-      sigval = TRUE,
-      orderqty = "all",
-      ordertype = OrderType,
-      orderside = if (isDI) "long" else "short",
-      prefer = Preference,
-      replace = ReplaceCover,
-      TxnFees = TxnFeesVal
-    ),
-    type = if (invert_signals) "enter" else "exit",
-    label = if (invert_signals) "enterShort" else "exitShort",
-    storefun = TRUE,
-    path.dep = path.dependence,
-    enabled = ShortEnabled
-  )
-
-  start_t <- Sys.time()
-  getInstrument(ticker)
-  applyStrategy(strategy = my_strategy, portfolios = portfolio.st, verbose = FALSE, initEq = initEq, mdenv = data_env)
-
-  tx <- getTxns(portfolio.st, ticker)
-  .dbg("Generated orders:", nrow(tx))
-  if (nrow(tx) == 0) {
-    warning("No generated order. Check column passed to 'prefer' and if the instrument has a multiplier/tick_size defined.")
-    return(invisible(NULL))
-  }
-  updatePortf(Portfolio = portfolio.st, prefer = Preference)
-  updateAcct(name = account.st)
-  updateEndEq(Account = account.st)
-
-  mktdata <- tryCatch(get(ticker, envir = data_env), error = function(e) NULL)
-
-  port <- getPortfolio(portfolio.st)
-  book <- getOrderBook(portfolio.st)
-  stats <- tradeStats(portfolio.st)
-  ptstats <- perTradeStats(portfolio.st)
-  ptrets <- PortfReturns(portfolio.st)
-  acrets <- AcctReturns(portfolio.st)
-  txns <- getTxns(portfolio.st, ticker)
-  Fee.n.Slip <- sum(txns$Txn.Fees)
-  stats$Fee.n.Slip <- Fee.n.Slip
-
-  cat(paste0(.dbg("Results for ", ticker, " - ", toupper(type), "\n")))
-  if (verbose_flag) {
-    print(stats)
-    cat("\n")
-    print(txns)
-    cat("\n")
-  }
-  tab <- .table_monthly_returns(ptrets, return_data = TRUE, geometric = geometric)
-  print(tab)
-  quart <- .table_quarterly_returns(ptrets, return_data = TRUE, geometric = geometric)
-
-  tab_rs <- .table_monthly_profit(port)
-  tab_rss <- .table_quarterly_profit(port)
-
-  index(ptrets) <- .convert_posixct(ptrets)
-  index(txns) <- .convert_posixct(txns)
-  index(acrets) <- .convert_posixct(acrets)
-
-  ptrets <- .print_returns(ptrets, normalize_risk, geometric = geometric)
-
-  stop_t <- Sys.time()
-
-  # Calculate total seconds (rounded to nearest integer)
-  total_secs <- round(as.numeric(difftime(stop_t, start_t, units = "secs")))
-
-  # Calculate hours, minutes, and seconds
-  hrs <- total_secs %/% 3600
-  mins <- (total_secs %% 3600) %/% 60
-  secs <- total_secs %% 60
-
-  # Print with a nice visual border
-  cat("\n-----------------------------------\n")
-  cat(sprintf("Runtime: %02dh %02dm %02ds", hrs, mins, secs))
-  cat("\n-----------------------------------\n\n")
-
-  if (only_returns) {
-    attr(ptrets, "backtest") <- TRUE
-    attr(ptrets, "local") <- TRUE
-    attr(ptrets, "fee_mode") <- fee_mode
-    return(ptrets)
-  }
-
-  stats$PosSiz <- ps
-  stats$Multiplier <- ticker_data$multiplier
-  stats$TickSize <- ticker_data$tick_size
-  if (fee_mode == "nofee") {
-    stats$Slippage <- 0
-    stats$Fees <- 0
-  } else {
-    stats$Slippage <- ticker_data$identifiers$slippage
-    stats$Fees <- ticker_data$identifiers$fees
-  }
-  stats$FeeMode <- fee_mode
-
-  if (!is.null(module$augment_stats)) {
-    stats <- module$augment_stats(stats, context)
-  }
-  if (!is.null(module_setup$indicator_label)) {
-    stats$Indicator <- module_setup$indicator_label
-  }
-
-  attr(ptrets, "backtest") <- TRUE
-  attr(ptrets, "local") <- TRUE
-  attr(ptrets, "fee_mode") <- fee_mode
-
-  elements_names <- c("rets", "stats", "trades", "rets_acct", "mktdata")
-
-  results <- setNames(
-    list(ptrets, stats, txns, acrets, mktdata),
-    elements_names
-  )
-
-  if (plot) .bt_tplot(portfolio.st, original_ticker)
-
-  results
 }
 
 #' Run an ElDoc (Donchian) backtest
 #'
-#' Configures a simple Donchian breakout system. The default native engine is a
-#' pure in-memory simulator that does not mutate `.GlobalEnv`, `.blotter`, or
-#' `.strategy`. The legacy `quantstrat` implementation remains available with
-#' `engine = "quantstrat"`.
+#' Configures a simple Donchian breakout system using the native in-memory
+#' simulator.
 #'
 #' Data is fetched from `finharvest::finget()` if the symbol is not
 #' found in the global environment; otherwise the preloaded object is used.
@@ -899,11 +170,39 @@
 #'   used directly; otherwise it is fetched via `finharvest::finget()`.
 #' @param up Integer Donchian window for the upper channel (default 40).
 #' @param down Integer Donchian window for the lower channel (default 40).
-#' @param ps_risk_value Numeric risk percentage (e.g., 2 for 2%) used by the
-#'   position sizing function.
-#' @param ps Character label for position sizing mode (informational).
+#' @param ps_value Position-sizing value. With `ps_type = "eldoc"` or `"atr"`,
+#'   this is the percent of equity to risk per entry/add. With
+#'   `ps_type = "notional"`, this is percent of equity allocated to notional
+#'   exposure. With `ps_type = "contract"`, this is the fixed contract/share
+#'   quantity. When `NULL`, the function reads `ps_value` metadata from the
+#'   ticker.
+#' @param initial_equity Starting account equity in money units.
+#' @param ps_type Position-sizing type: `"eldoc"`, `"atr"`, `"notional"`, or
+#'   `"contract"`. When `NULL`, the function reads `ps_type` metadata from the
+#'   ticker.
+#' @param execution Execution mode. `"breakout"` uses the exact touched ElDoc
+#'   channel price. `"exact_price"` is an alias for `"breakout"`.
+#'   `"same_close"` uses the signal candle close. `"next_open"`,
+#'   `"next_close"`, and `"next_avg"` use the next candle open, close, or OHLC
+#'   average.
+#' @param atr_n Integer ATR lookback used by ATR sizing and pyramiding.
+#' @param atr_mult ATR multiple used when `ps_type = "atr"`.
+#' @param pyramid Logical; if `TRUE`, add units as the position moves in favor.
+#' @param pyramid_step Favorable movement in ATR units required before each
+#'   add.
+#' @param max_units Maximum number of entry/add units in one position.
 #' @param fee Either `"normal"` (use instrument fees/slippage if available) or
 #'   `"nofee"` to disable fees.
+#' @param fee_value Optional commission amount in account currency. When `NULL`,
+#'   ticker metadata such as `fee_value` is required unless `fee = "nofee"`.
+#' @param fee_type Fee unit. `"contract"` charges `fee_value` per traded unit;
+#'   `"order"` charges `fee_value` once per executed order. When `NULL`, ticker
+#'   metadata such as `fee_type` is required unless `fee = "nofee"`.
+#' @param slip_value Optional slippage override. When omitted, instrument
+#'   metadata such as `slip_value` is used.
+#' @param slip_type Slippage unit for `slip_value`: `"bps"`, `"ticks"`,
+#'   `"points"`/`"price_points"`, or `"cash"`. When `NULL`, ticker slippage
+#'   metadata must include its unit.
 #' @param start_date Character or Date, start date when fetching data.
 #' @param end_date Date, end date when fetching data (default `Sys.Date()`).
 #' @param long Logical, enable long entries.
@@ -913,78 +212,81 @@
 #'   normalized return columns to the output.
 #' @param geometric Logical, use geometric returns when reporting performance.
 #' @param verbose Logical, print detailed summaries to the console.
-#' @param only_returns Logical; if `TRUE`, returns only the portfolio returns `xts`.
 #' @param hide_details Logical; if `TRUE`, simplifies internal object names.
-#' @param stop_before_maturity Optional compatibility argument reserved for
-#'   futures workflows that should stop before contract maturity.
-#' @param clean_di Logical; if `TRUE`, applies DI-specific row cleaning to DI
-#'   symbols only.
-#' @param engine Execution engine. `"native"` is the fast stateless engine;
-#'   `"quantstrat"` runs the legacy path.
+#' @param reinvest Logical; if `TRUE`, size new entries using current account
+#'   equity. Open positions keep their original quantity until the next order.
 #' @param plot Logical; if `TRUE`, plots the portfolio using `rTradingPlots::tplot`.
+#' @param ... Advanced options. Currently supports `only_returns` (return only
+#'   the returns `xts`) and `clean_di` (apply DI-specific bad-row filtering).
 #'
 #' @return If `only_returns = TRUE`, returns an `xts` with discrete and log
 #'   returns. Otherwise, returns a named list with elements:
-#'   - `rets`: portfolio returns `xts`
-#'   - `stats`: `tradeStats` output with additional metadata
-#'   - `trades`: transactions `xts`
+#'   - `rets`: equity/account returns `xts`
+#'   - `stats`: native summary statistics
+#'   - `trades`: native transactions `data.frame`; `fees` is commission only,
+#'     `slippage` is slippage cost, and `total_cost` is their sum
 #'   - `rets_acct`: account-level returns `xts`
 #'   - `mktdata`: market data with indicator columns
+#'   - `positions`: native position/equity path
+#'   - `equity`: native account equity curve
 #'
 #' @details
-#' If the symbol starts with `"DI1"`, the native engine uses PU columns when
-#' available and can enrich rate OHLC data through `brfutures` when installed.
-#' Instrument metadata (multiplier, tick size, maturity) is propagated when
-#' available.
+#' ElDoc can size positions from its opposite channel (`ps_type = "eldoc"`),
+#' ATR distance (`ps_type = "atr"`), notional percent of equity
+#' (`ps_type = "notional"`), or fixed contracts/shares
+#' (`ps_type = "contract"`).
+#' Pyramiding currently uses ATR steps and sizes each add independently.
+#'
+#' If the symbol starts with `"DI1"`, the native engine keeps rate OHLC columns
+#' for indicators/signals and uses PU columns for execution and mark-to-market
+#' when available. It can enrich rate OHLC data through `brfutures` when
+#' installed. Instrument metadata (multiplier, tick size, maturity) is
+#' propagated when available. Transaction costs are charged in account currency:
+#' `fee_value = 4, fee_type = "contract"` means 4 per contract/share, while
+#' `fee_type = "order"` means 4 for the whole executed order.
 #' @export
-bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", fee = "normal", start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, normalize_risk = NULL, geometric = TRUE, verbose = FALSE, only_returns = FALSE, hide_details = FALSE, stop_before_maturity = NULL, clean_di = TRUE, engine = c("native", "quantstrat"), plot = FALSE) {
-  engine <- match.arg(engine)
+bt_eldoc <- function(ticker, up = 40, down = 40, ps_value = NULL, initial_equity = 100000, ps_type = NULL, execution = "breakout", atr_n = 20, atr_mult = 2, pyramid = FALSE, pyramid_step = 0.5, max_units = if (isTRUE(pyramid)) 4L else 1L, fee = "normal", fee_value = NULL, fee_type = NULL, slip_value = NULL, slip_type = NULL, start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, normalize_risk = NULL, geometric = TRUE, verbose = FALSE, hide_details = FALSE, reinvest = TRUE, plot = FALSE, ...) {
+  opts <- .bt_wrapper_options(list(...), ps_value = ps_value, ps_type = ps_type, slip_value = slip_value)
   ticker_input <- .bt_resolve_ticker_input(ticker, substitute(ticker))
-  if (identical(engine, "native")) {
-    return(bt_run_native(
-      ticker = ticker_input$symbol,
-      data = ticker_input$data,
-      strategy = bt_strategy_spec(
-        "donchian",
-        up = up,
-        down = down,
-        long = long,
-        short = short,
-        invert_signals = invert_signals
-      ),
-      risk = bt_risk_spec(mode = "risk", risk_pct = ps_risk_value),
-      execution = bt_execution_spec(execution = "signal", fee = fee),
-      start_date = start_date,
-      end_date = end_date,
-      normalize_risk = normalize_risk,
-      geometric = geometric,
-      only_returns = only_returns,
-      verbose = verbose,
-      clean_di = clean_di
-    ))
-  }
-  .bt_run_module(
-    type = "eldoc",
+  res <- bt_run_native(
     ticker = ticker_input$symbol,
-    ticker_data_override = ticker_input$data,
-    indicator_args = list(up = up, down = down),
-    ps_risk_value = ps_risk_value,
-    ps = ps,
-    fee = fee,
+    data = ticker_input$data,
+    strategy = bt_strategy_spec(
+      "donchian",
+      up = up,
+      down = down,
+      atr_n = atr_n,
+      atr_mult = atr_mult,
+      pyramid = pyramid,
+      pyramid_step = pyramid_step,
+      max_units = max_units,
+      long = long,
+      short = short,
+      invert_signals = invert_signals
+    ),
+    ps_value = opts$ps_value,
+    ps_type = opts$ps_type,
+    initial_equity = initial_equity,
+    reinvest = reinvest,
+    execution = .bt_backtest_execution(
+      execution = execution,
+      fee = fee,
+      fee_value = fee_value,
+      fee_type = fee_type,
+      slip_value = opts$slip_value,
+      slip_type = slip_type
+    ),
     start_date = start_date,
     end_date = end_date,
-    long = long,
-    short = short,
-    invert_signals = invert_signals,
     normalize_risk = normalize_risk,
     geometric = geometric,
+    only_returns = opts$only_returns,
     verbose = verbose,
-    only_returns = only_returns,
-    hide_details = hide_details,
-    stop_before_maturity = stop_before_maturity,
-    clean_di = clean_di,
-    plot = plot
+    clean_di = opts$clean_di,
+    report = !isTRUE(hide_details)
   )
+  if (isTRUE(plot) && !isTRUE(opts$only_returns)) .bt_tplot(res$rets)
+  res
 }
 
 #' Run an EMA crossover backtest
@@ -998,54 +300,43 @@ bt_eldoc <- function(ticker, up = 40, down = 40, ps_risk_value = 2, ps = "pct", 
 #' @param fast Integer length of the fast EMA (default 20).
 #' @param slow Integer length of the slow EMA (default 50).
 #' @export
-bt_ema <- function(ticker, fast = 20, slow = 50, ps_risk_value = 2, ps = "pct", fee = "normal", start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, normalize_risk = NULL, geometric = TRUE, verbose = FALSE, only_returns = FALSE, hide_details = FALSE, stop_before_maturity = NULL, clean_di = TRUE, engine = c("native", "quantstrat"), plot = FALSE) {
-  engine <- match.arg(engine)
+bt_ema <- function(ticker, fast = 20, slow = 50, ps_value = NULL, initial_equity = 100000, ps_type = NULL, execution = "same_close", fee = "normal", fee_value = NULL, fee_type = NULL, slip_value = NULL, slip_type = NULL, start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, normalize_risk = NULL, geometric = TRUE, verbose = FALSE, hide_details = FALSE, reinvest = TRUE, plot = FALSE, ...) {
+  opts <- .bt_wrapper_options(list(...), ps_value = ps_value, ps_type = ps_type, slip_value = slip_value)
   ticker_input <- .bt_resolve_ticker_input(ticker, substitute(ticker))
-  if (identical(engine, "native")) {
-    return(bt_run_native(
-      ticker = ticker_input$symbol,
-      data = ticker_input$data,
-      strategy = bt_strategy_spec(
-        "ema",
-        fast = fast,
-        slow = slow,
-        long = long,
-        short = short,
-        invert_signals = invert_signals
-      ),
-      risk = bt_risk_spec(mode = "risk", risk_pct = ps_risk_value),
-      execution = bt_execution_spec(fee = fee),
-      start_date = start_date,
-      end_date = end_date,
-      normalize_risk = normalize_risk,
-      geometric = geometric,
-      only_returns = only_returns,
-      verbose = verbose,
-      clean_di = clean_di
-    ))
-  }
-  .bt_run_module(
-    type = "ema",
+  res <- bt_run_native(
     ticker = ticker_input$symbol,
-    ticker_data_override = ticker_input$data,
-    indicator_args = list(fast = fast, slow = slow),
-    ps_risk_value = ps_risk_value,
-    ps = ps,
-    fee = fee,
+    data = ticker_input$data,
+    strategy = bt_strategy_spec(
+      "ema",
+      fast = fast,
+      slow = slow,
+      long = long,
+      short = short,
+      invert_signals = invert_signals
+    ),
+    ps_value = opts$ps_value,
+    ps_type = opts$ps_type,
+    initial_equity = initial_equity,
+    reinvest = reinvest,
+    execution = .bt_backtest_execution(
+      execution = execution,
+      fee = fee,
+      fee_value = fee_value,
+      fee_type = fee_type,
+      slip_value = opts$slip_value,
+      slip_type = slip_type
+    ),
     start_date = start_date,
     end_date = end_date,
-    long = long,
-    short = short,
-    invert_signals = invert_signals,
     normalize_risk = normalize_risk,
     geometric = geometric,
+    only_returns = opts$only_returns,
     verbose = verbose,
-    only_returns = only_returns,
-    hide_details = hide_details,
-    stop_before_maturity = stop_before_maturity,
-    clean_di = clean_di,
-    plot = plot
+    clean_di = opts$clean_di,
+    report = !isTRUE(hide_details)
   )
+  if (isTRUE(plot) && !isTRUE(opts$only_returns)) .bt_tplot(res$rets)
+  res
 }
 
 #' Run an SMA crossover backtest
@@ -1056,54 +347,43 @@ bt_ema <- function(ticker, fast = 20, slow = 50, ps_risk_value = 2, ps = "pct", 
 #'
 #' @inheritParams bt_ema
 #' @export
-bt_sma <- function(ticker, fast = 20, slow = 50, ps_risk_value = 2, ps = "pct", fee = "normal", start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, normalize_risk = NULL, geometric = TRUE, verbose = FALSE, only_returns = FALSE, hide_details = FALSE, stop_before_maturity = NULL, clean_di = TRUE, engine = c("native", "quantstrat"), plot = FALSE) {
-  engine <- match.arg(engine)
+bt_sma <- function(ticker, fast = 20, slow = 50, ps_value = NULL, initial_equity = 100000, ps_type = NULL, execution = "same_close", fee = "normal", fee_value = NULL, fee_type = NULL, slip_value = NULL, slip_type = NULL, start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, normalize_risk = NULL, geometric = TRUE, verbose = FALSE, hide_details = FALSE, reinvest = TRUE, plot = FALSE, ...) {
+  opts <- .bt_wrapper_options(list(...), ps_value = ps_value, ps_type = ps_type, slip_value = slip_value)
   ticker_input <- .bt_resolve_ticker_input(ticker, substitute(ticker))
-  if (identical(engine, "native")) {
-    return(bt_run_native(
-      ticker = ticker_input$symbol,
-      data = ticker_input$data,
-      strategy = bt_strategy_spec(
-        "sma",
-        fast = fast,
-        slow = slow,
-        long = long,
-        short = short,
-        invert_signals = invert_signals
-      ),
-      risk = bt_risk_spec(mode = "risk", risk_pct = ps_risk_value),
-      execution = bt_execution_spec(fee = fee),
-      start_date = start_date,
-      end_date = end_date,
-      normalize_risk = normalize_risk,
-      geometric = geometric,
-      only_returns = only_returns,
-      verbose = verbose,
-      clean_di = clean_di
-    ))
-  }
-  .bt_run_module(
-    type = "sma",
+  res <- bt_run_native(
     ticker = ticker_input$symbol,
-    ticker_data_override = ticker_input$data,
-    indicator_args = list(fast = fast, slow = slow),
-    ps_risk_value = ps_risk_value,
-    ps = ps,
-    fee = fee,
+    data = ticker_input$data,
+    strategy = bt_strategy_spec(
+      "sma",
+      fast = fast,
+      slow = slow,
+      long = long,
+      short = short,
+      invert_signals = invert_signals
+    ),
+    ps_value = opts$ps_value,
+    ps_type = opts$ps_type,
+    initial_equity = initial_equity,
+    reinvest = reinvest,
+    execution = .bt_backtest_execution(
+      execution = execution,
+      fee = fee,
+      fee_value = fee_value,
+      fee_type = fee_type,
+      slip_value = opts$slip_value,
+      slip_type = slip_type
+    ),
     start_date = start_date,
     end_date = end_date,
-    long = long,
-    short = short,
-    invert_signals = invert_signals,
     normalize_risk = normalize_risk,
     geometric = geometric,
+    only_returns = opts$only_returns,
     verbose = verbose,
-    only_returns = only_returns,
-    hide_details = hide_details,
-    stop_before_maturity = stop_before_maturity,
-    clean_di = clean_di,
-    plot = plot
+    clean_di = opts$clean_di,
+    report = !isTRUE(hide_details)
   )
+  if (isTRUE(plot) && !isTRUE(opts$only_returns)) .bt_tplot(res$rets)
+  res
 }
 
 #' Normalize a return series to a target annualized risk level
@@ -1356,6 +636,63 @@ normalize_fee_mode <- function(val, default = "normal") {
   default
 }
 
+.bt_batch_module_info <- function(type_name) {
+  type_token <- tolower(trimws(as.character(type_name)[1]))
+  switch(type_token,
+    eldoc = list(
+      type = "eldoc",
+      runner = bt_eldoc,
+      resolve_indicator_args = function(args) {
+        list(
+          up = as.integer(.bt_first_non_null(args$up, args$mup, 40L)),
+          down = as.integer(.bt_first_non_null(args$down, args$mdown, 40L)),
+          atr_n = as.integer(.bt_first_non_null(args$atr_n, args$atr, 20L)),
+          atr_mult = as.numeric(.bt_first_non_null(args$atr_mult, 2)),
+          pyramid = isTRUE(.bt_first_non_null(args$pyramid, FALSE)),
+          pyramid_step = as.numeric(.bt_first_non_null(args$pyramid_step, 0.5)),
+          max_units = as.integer(.bt_first_non_null(args$max_units, if (isTRUE(args$pyramid)) 4L else 1L))
+        )
+      },
+      batch_suffix = function(indicator_args) {
+        fmt <- function(x) gsub("[^A-Za-z0-9]+", "p", format(x, trim = TRUE, scientific = FALSE))
+        suffix <- paste0(indicator_args$up, "_", indicator_args$down)
+        atr_changed <- !identical(as.integer(indicator_args$atr_n), 20L) ||
+          !isTRUE(all.equal(as.numeric(indicator_args$atr_mult), 2))
+        if (isTRUE(atr_changed) || isTRUE(indicator_args$pyramid)) {
+          suffix <- paste0(suffix, "_atr", fmt(indicator_args$atr_n), "x", fmt(indicator_args$atr_mult))
+        }
+        if (isTRUE(indicator_args$pyramid)) {
+          suffix <- paste0(suffix, "_pyr", fmt(indicator_args$pyramid_step), "u", fmt(indicator_args$max_units))
+        }
+        suffix
+      }
+    ),
+    ema = list(
+      type = "ema",
+      runner = bt_ema,
+      resolve_indicator_args = function(args) {
+        list(
+          fast = as.integer(.bt_first_non_null(args$fast, args$mup, args$up, 20L)),
+          slow = as.integer(.bt_first_non_null(args$slow, args$mdown, args$down, 50L))
+        )
+      },
+      batch_suffix = function(indicator_args) paste0(indicator_args$fast, "_", indicator_args$slow)
+    ),
+    sma = list(
+      type = "sma",
+      runner = bt_sma,
+      resolve_indicator_args = function(args) {
+        list(
+          fast = as.integer(.bt_first_non_null(args$fast, args$mup, args$up, 20L)),
+          slow = as.integer(.bt_first_non_null(args$slow, args$mdown, args$down, 50L))
+        )
+      },
+      batch_suffix = function(indicator_args) paste0(indicator_args$fast, "_", indicator_args$slow)
+    ),
+    stop(sprintf("Unsupported backtest type '%s'.", type_name), call. = FALSE)
+  )
+}
+
 #' Run multiple backtests in batch
 #'
 #' Vectorises the single-ticker backtest wrappers (`bt_eldoc()`, `bt_ema()`,
@@ -1378,10 +715,23 @@ normalize_fee_mode <- function(val, default = "normal") {
 #'   instead of appending `timeframes`.
 #' @param mup,mdown Numeric vectors used as Donchian window lengths and also as
 #'   fallbacks for moving-average speeds.
-#' @param mps_risk_value Numeric risk percentage passed to the position-sizing
-#'   function.
-#' @param mps Character string specifying the position-sizing method.
+#' @param ps_value Position-sizing value. When `NULL`, ticker metadata is
+#'   used.
+#' @param initial_equity Starting account equity in money units.
+#' @param ps_type Position-sizing type. When `NULL`, ticker metadata is
+#'   used.
+#' @param execution Execution mode for ElDoc runs. See [`bt_eldoc()`].
+#' @param atr_n,atr_mult ATR settings for ElDoc ATR sizing and pyramiding.
+#' @param pyramid,pyramid_step,max_units ElDoc pyramiding controls.
 #' @param fee Fee handling mode per test (`"normal"` or `"nofee"`).
+#' @param fee_value Optional commission amount in account currency. `NULL`
+#'   reads ticker metadata.
+#' @param fee_type Fee unit, either `"contract"` or `"order"`. `NULL` reads
+#'   ticker metadata.
+#' @param slip_value Optional slippage override. `NULL` reads ticker
+#'   metadata.
+#' @param slip_type Slippage unit for `slip_value`. `NULL` reads ticker
+#'   metadata.
 #' @param start_date,end_date Optional boundaries for fetched data.
 #' @param long,short Logical flags enabling long and/or short trades.
 #' @param invert_signals Logical flag to invert generated signals.
@@ -1391,11 +741,14 @@ normalize_fee_mode <- function(val, default = "normal") {
 #' @param only_returns Logical; if `TRUE`, returns an `xts` matrix of returns
 #'   instead of the full backtest objects.
 #' @param hide_details Logical flag propagated to the underlying backtest.
+#' @param fail_on_error Logical; if `TRUE` (default), any failed individual
+#'   backtest stops the batch. Set to `FALSE` only when you explicitly want the
+#'   behavior of warning and filling the failed series with zeros.
 #' @param clean_di Logical flag propagated to the underlying backtest.
+#' @param reinvest Logical; if `TRUE`, size new entries using current account
+#'   equity. Open positions keep their original quantity until the next order.
 #' @param returns_type Desired returns column (`"Log"`, `"Discrete"`,
 #'   `"LogAdj"`, or `"DiscreteAdj"`).
-#' @param engine Execution engine propagated to each wrapper. `"native"` is the
-#'   stateless engine; `"quantstrat"` runs the legacy implementation.
 #' @param plot_mult Logical flag; if `TRUE`, plots combined results via `tplot()`.
 #' @param gen_portfolio Optional vector or list describing which backtest
 #'   outputs to aggregate into synthetic portfolios. Each element (or the entire
@@ -1425,9 +778,20 @@ bt_batch <- function(
   exact_match = FALSE,
   mup = 40,
   mdown = 40,
-  mps_risk_value = 2,
-  mps = "pct",
+  ps_value = NULL,
+  initial_equity = 100000,
+  ps_type = NULL,
+  execution = "breakout",
+  atr_n = 20,
+  atr_mult = 2,
+  pyramid = FALSE,
+  pyramid_step = 0.5,
+  max_units = if (isTRUE(pyramid)) 4L else 1L,
   fee = "normal",
+  fee_value = NULL,
+  fee_type = NULL,
+  slip_value = NULL,
+  slip_type = NULL,
   start_date = "1900-01-01",
   end_date = Sys.Date(),
   long = TRUE,
@@ -1438,9 +802,10 @@ bt_batch <- function(
   verbose = FALSE,
   only_returns = FALSE,
   hide_details = FALSE,
+  fail_on_error = TRUE,
   clean_di = TRUE,
+  reinvest = TRUE,
   returns_type = "Log",
-  engine = c("native", "quantstrat"),
   plot_mult = FALSE,
   gen_portfolio = NULL,
   gen_portfolio_weights = NULL,
@@ -1448,7 +813,6 @@ bt_batch <- function(
   ...
 ) {
   if (!requireNamespace("xts", quietly = TRUE)) stop("Package 'xts' is required.")
-  engine <- match.arg(engine)
 
   spec_list_input <- NULL
   using_spec_list <- FALSE
@@ -1468,7 +832,21 @@ bt_batch <- function(
   tol <- 1e-8
 
   extra_args <- list(...)
-  indicator_vectors <- c(list(mup = mup, mdown = mdown), extra_args)
+  if ("engine" %in% names(extra_args)) {
+    stop("'engine' was removed; the native engine is now the only engine.", call. = FALSE)
+  }
+  indicator_vectors <- c(
+    list(
+      mup = mup,
+      mdown = mdown,
+      atr_n = atr_n,
+      atr_mult = atr_mult,
+      pyramid = pyramid,
+      pyramid_step = pyramid_step,
+      max_units = max_units
+    ),
+    extra_args
+  )
 
   module_cache <- new.env(parent = emptyenv())
   resolve_module <- function(type_name) {
@@ -1486,13 +864,7 @@ bt_batch <- function(
         sma = "sma",
         stop(sprintf("Unsupported backtest type '%s'", type_name), call. = FALSE)
       )
-      module_obj <- .bt_indicator_spec(canonical)
-      runner_sym <- switch(canonical,
-        eldoc = as.name("bt_eldoc"),
-        ema = as.name("bt_ema"),
-        sma = as.name("bt_sma")
-      )
-      assign(type_token, list(module = module_obj, runner = runner_sym, type = canonical), envir = module_cache)
+      assign(type_token, .bt_batch_module_info(canonical), envir = module_cache)
     }
     get(type_token, envir = module_cache, inherits = FALSE)
   }
@@ -1520,23 +892,58 @@ bt_batch <- function(
     "Log"
   }
 
-  normalize_engine <- function(x) {
-    val <- if (is.null(x) || length(x) == 0) "native" else tolower(as.character(x)[1])
-    if (!val %in% c("native", "quantstrat")) {
-      stop(sprintf("Unsupported engine '%s'.", val), call. = FALSE)
+  format_cost_value <- function(value) {
+    val <- suppressWarnings(as.numeric(value)[1])
+    if (!is.finite(val)) {
+      return(NULL)
     }
-    val
+    out <- format(val, trim = TRUE, scientific = FALSE)
+    if (grepl(".", out, fixed = TRUE)) {
+      out <- sub("0+$", "", out)
+      out <- sub("\\.$", "", out)
+    }
+    gsub("[^A-Za-z0-9]+", "p", out)
   }
 
-  build_label <- function(tk, tf, type_name, indicator_suffix, ps, riskv, L, S, fee_mode, inv, geom, nrisk, rtype) {
+  build_label <- function(tk, tf, type_name, indicator_suffix, ps_type, ps_value, initial_equity, execution_mode, L, S, fee_mode, fee_value, fee_type, slip_value, slip_type, inv, geom, nrisk, rtype, reinv) {
     suffix <- if (identical(fee_mode, "nofee")) "_nofees" else ""
+    eq_value <- suppressWarnings(as.numeric(initial_equity)[1])
+    eq_token_value <- format_cost_value(eq_value)
+    eq_token <- if (is.finite(eq_value) && !identical(eq_value, 100000)) {
+      paste0("eq_", eq_token_value)
+    } else {
+      NULL
+    }
+    fee_token_value <- format_cost_value(fee_value)
+    fee_type_token <- .bt_normalize_fee_type(fee_type)
+    fee_token <- if (!identical(fee_mode, "nofee") && (!is.null(fee_token_value) || !is.null(fee_type_token))) {
+      paste0("fee_", fee_token_value %||% "meta", "_", fee_type_token %||% "meta")
+    } else {
+      NULL
+    }
+    slip_token_value <- format_cost_value(slip_value)
+    slip_token <- if (!is.null(slip_token_value)) {
+      paste0("slip_", slip_token_value, "_", .bt_normalize_slippage_type(slip_type) %||% "meta")
+    } else {
+      NULL
+    }
+    ps_type_token <- .bt_normalize_ps_type(ps_type) %||% "ps"
+    ps_value_token <- format_risk_token(ps_value)
+    if (!length(ps_value_token) || is.na(ps_value_token) || !nzchar(ps_value_token)) ps_value_token <- "meta"
+    exec_token <- tryCatch(.bt_normalize_execution_mode(execution_mode), error = function(e) NULL)
+    exec_token <- if (!is.null(exec_token) && !identical(exec_token, "breakout")) paste0("exec_", exec_token) else NULL
     parts <- c(
       sprintf("%s_%s%s", tk, tf, suffix),
       sprintf("%s_%s", type_name, indicator_suffix),
-      sprintf("%s_%s", ps, riskv),
+      sprintf("%s_%s", ps_type_token, ps_value_token),
+      eq_token,
+      exec_token,
+      fee_token,
+      slip_token,
       if (!isTRUE(L)) "nolong" else "long",
       if (!isTRUE(S)) "noshort" else "short",
       if (isTRUE(inv)) "inv" else NULL,
+      if (!isTRUE(reinv)) "noreinv" else NULL,
       paste0("geom_", if (isTRUE(geom)) "T" else "F"),
       if (is.null(nrisk)) NULL else paste0("nr_", nrisk),
       paste0("rt_", rtype)
@@ -2071,34 +1478,17 @@ bt_batch <- function(
     paste0(toupper(substr(name, 1, 1)), substring(name, 2))
   }
 
-  with_safe_future <- function(expr_call) {
-    safe_future <- function(primary_id, tick_size = NULL, multiplier = NULL, maturity = NULL, currency = "USD", ...) {
-      if (!requireNamespace("FinancialInstrument", quietly = TRUE)) {
-        stop("Package 'FinancialInstrument' is required for instrument definition.")
-      }
-      tsz <- .sanitize_scalar_numeric(tick_size, default = 1)
-      mult <- .sanitize_scalar_numeric(multiplier, default = 1)
-      cur <- if (is.null(currency)) "USD" else as.character(currency)[1]
-      suppressWarnings(
-        FinancialInstrument::future(
-          primary_id = primary_id,
-          tick_size = tsz,
-          multiplier = mult,
-          maturity = maturity,
-          currency = cur, ...
-        )
-      )
-    }
-    exec_env <- new.env(parent = .GlobalEnv)
-    assign("future", safe_future, envir = exec_env)
-    eval(expr_call, envir = exec_env)
-  }
-
   defaults <- list(
     timeframes = "1D",
-    mps_risk_value = 2,
-    mps = "pct",
+    ps_value = NULL,
+    initial_equity = 100000,
+    ps_type = NULL,
+    execution = "breakout",
     fee = "normal",
+    fee_value = NULL,
+    fee_type = NULL,
+    slip_value = NULL,
+    slip_type = NULL,
     long = TRUE,
     short = TRUE,
     invert_signals = FALSE,
@@ -2106,9 +1496,10 @@ bt_batch <- function(
     geometric = geometric,
     verbose = FALSE,
     hide_details = FALSE,
+    fail_on_error = TRUE,
     clean_di = TRUE,
+    reinvest = TRUE,
     exact_match = FALSE,
-    engine = engine,
     returns_type = "Log"
   )
 
@@ -2117,9 +1508,15 @@ bt_batch <- function(
   base_param_sources <- list(
     timeframes = timeframes,
     exact_match = exact_match,
-    mps_risk_value = mps_risk_value,
-    mps = mps,
+    ps_value = ps_value,
+    initial_equity = initial_equity,
+    ps_type = ps_type,
+    execution = execution,
     fee = fee,
+    fee_value = fee_value,
+    fee_type = fee_type,
+    slip_value = slip_value,
+    slip_type = slip_type,
     long = long,
     short = short,
     invert_signals = invert_signals,
@@ -2127,8 +1524,9 @@ bt_batch <- function(
     geometric = geometric,
     verbose = verbose,
     hide_details = hide_details,
+    fail_on_error = fail_on_error,
     clean_di = clean_di,
-    engine = engine,
+    reinvest = reinvest,
     returns_type = returns_type
   )
   recognized_override_fields <- names(base_param_sources)
@@ -2154,10 +1552,11 @@ bt_batch <- function(
     spec_label <- as.character(label_value)[1]
     overrides <- spec$overrides
     if (is.null(overrides)) overrides <- list()
+    if ("engine" %in% names(overrides)) {
+      stop("'engine' was removed; the native engine is now the only engine.", call. = FALSE)
+    }
 
     module_info <- resolve_module(spec$type)
-    module <- module_info$module
-    runner_symbol <- module_info$runner
     type_name <- module_info$type
 
     per_params <- base_param_sources
@@ -2179,12 +1578,16 @@ bt_batch <- function(
     }
 
     lens <- c(
-      length(per_params$timeframes), length(per_params$mps_risk_value), length(per_params$mps),
-      length(per_params$fee), length(per_params$long), length(per_params$short),
+      length(per_params$timeframes), length(per_params$ps_value), length(per_params$initial_equity), length(per_params$ps_type),
+      length(per_params$execution),
+      length(per_params$fee), length(per_params$fee_value), length(per_params$fee_type),
+      length(per_params$slip_value), length(per_params$slip_type),
+      length(per_params$long), length(per_params$short),
       length(per_params$invert_signals), length(per_params$normalize_risk),
       length(per_params$geometric), length(per_params$verbose),
-      length(per_params$hide_details), length(per_params$clean_di),
-      length(per_params$exact_match), length(per_params$engine),
+      length(per_params$hide_details), length(per_params$fail_on_error),
+      length(per_params$clean_di),
+      length(per_params$reinvest), length(per_params$exact_match),
       length(per_params$returns_type),
       if (length(indicator_vectors_local)) vapply(indicator_vectors_local, length, integer(1)) else integer(0)
     )
@@ -2209,14 +1612,20 @@ bt_batch <- function(
         }
       }
 
-      indicator_args_i <- module$resolve_indicator_args(indicator_candidates)
-      indicator_suffix <- if (!is.null(module$batch_suffix)) module$batch_suffix(indicator_args_i) else paste(indicator_args_i, collapse = "_")
+      indicator_args_i <- module_info$resolve_indicator_args(indicator_candidates)
+      indicator_suffix <- if (!is.null(module_info$batch_suffix)) module_info$batch_suffix(indicator_args_i) else paste(indicator_args_i, collapse = "_")
 
-      rV <- .bt_value_at(per_params$mps_risk_value, i, defaults$mps_risk_value)
+      rV <- .bt_value_at(per_params$ps_value, i, defaults$ps_value)
       rV_numeric <- suppressWarnings(as.numeric(rV))[1]
-      psV <- .bt_value_at(per_params$mps, i, defaults$mps)
+      initial_equityV <- .bt_value_at(per_params$initial_equity, i, defaults$initial_equity)
+      psV <- .bt_value_at(per_params$ps_type, i, defaults$ps_type)
+      executionV <- .bt_value_at(per_params$execution, i, defaults$execution)
       fee_raw <- .bt_value_at(per_params$fee, i, defaults$fee)
       feeV <- normalize_fee_mode(fee_raw)
+      fee_valueV <- .bt_value_at(per_params$fee_value, i, defaults$fee_value)
+      fee_typeV <- .bt_value_at(per_params$fee_type, i, defaults$fee_type)
+      slip_valueV <- .bt_value_at(per_params$slip_value, i, defaults$slip_value)
+      slip_typeV <- .bt_value_at(per_params$slip_type, i, defaults$slip_type)
       L <- isTRUE(.bt_value_at(per_params$long, i, defaults$long))
       S <- isTRUE(.bt_value_at(per_params$short, i, defaults$short))
       inv <- isTRUE(.bt_value_at(per_params$invert_signals, i, defaults$invert_signals))
@@ -2224,14 +1633,15 @@ bt_batch <- function(
       geom <- isTRUE(.bt_value_at(per_params$geometric, i, defaults$geometric))
       verb <- isTRUE(.bt_value_at(per_params$verbose, i, defaults$verbose))
       hide <- isTRUE(.bt_value_at(per_params$hide_details, i, defaults$hide_details))
+      fail <- isTRUE(.bt_value_at(per_params$fail_on_error, i, defaults$fail_on_error))
       clean <- isTRUE(.bt_value_at(per_params$clean_di, i, defaults$clean_di))
+      reinv <- isTRUE(.bt_value_at(per_params$reinvest, i, defaults$reinvest))
       exact <- isTRUE(.bt_value_at(per_params$exact_match, i, defaults$exact_match))
-      eng <- normalize_engine(.bt_value_at(per_params$engine, i, defaults$engine))
       rtyp <- normalize_rtype(.bt_value_at(per_params$returns_type, i, defaults$returns_type))
 
       data_symbol <- if (exact) spec_ticker else paste0(spec_ticker, "_", tf)
       label_tf <- if (exact) "exact" else tf
-      label <- build_label(spec_label, label_tf, type_name, indicator_suffix, psV, rV, L, S, feeV, inv, geom, nr, rtyp)
+      label <- build_label(spec_label, label_tf, type_name, indicator_suffix, psV, rV, initial_equityV, executionV, L, S, feeV, fee_valueV, fee_typeV, slip_valueV, slip_typeV, inv, geom, nr, rtyp, reinv)
       if (isTRUE(verbose) || verb) message(sprintf("Running %s ...", label))
 
       ensure_xts_or_remove(data_symbol)
@@ -2240,9 +1650,15 @@ bt_batch <- function(
       call_args <- c(
         list(
           ticker = data_symbol,
-          ps_risk_value = rV,
-          ps = psV,
+          ps_value = rV,
+          initial_equity = initial_equityV,
+          ps_type = psV,
+          execution = executionV,
           fee = feeV,
+          fee_value = fee_valueV,
+          fee_type = fee_typeV,
+          slip_value = slip_valueV,
+          slip_type = slip_typeV,
           start_date = start_date,
           end_date = end_date,
           long = L,
@@ -2251,16 +1667,14 @@ bt_batch <- function(
           normalize_risk = nr,
           geometric = geom,
           verbose = isTRUE(verbose) || verb,
-          only_returns = only_returns,
+          only_returns = FALSE,
           hide_details = hide,
           clean_di = clean,
-          engine = eng,
+          reinvest = reinv,
           plot = FALSE
         ),
         indicator_args_i
       )
-
-      expr_call <- as.call(c(list(runner_symbol), call_args))
 
       one_res <- NULL
       one_ret <- NULL
@@ -2270,12 +1684,28 @@ bt_batch <- function(
 
       tryCatch(
         {
-          res <- with_safe_future(expr_call)
+          res <- do.call(module_info$runner, call_args)
+            if (!is.null(res$spec$risk)) {
+              rV <- res$spec$risk$risk_pct
+              rV_numeric <- suppressWarnings(as.numeric(rV))[1]
+              if (is.null(psV)) {
+                psV <- res$spec$risk$ps_type %||% switch(res$spec$risk$mode,
+                  risk = "eldoc",
+                  notional = "notional",
+                  fixed = "contract",
+                  res$spec$risk$mode
+                )
+              }
+            }
           if (isTRUE(only_returns)) {
-            res_full <- res
+            res_full <- res$rets
             selected_plot <- tryCatch(extract_returns(res_full, rtyp, norm_risk_numeric = nr), error = function(e) NULL)
             if (is.null(selected_plot)) {
-              warning(sprintf("Could not extract returns type '%s' for %s; filling zeros.", rtyp, label))
+              msg <- sprintf("Could not extract returns type '%s' for %s.", rtyp, label)
+              if (isTRUE(fail)) {
+                stop(msg, call. = FALSE)
+              }
+              warning(sprintf("%s Filling with zeros.", msg), call. = FALSE)
               idx_warn <- index(res_full)
               selected_plot <- zero_returns_xts(idx_warn)
             }
@@ -2294,7 +1724,11 @@ bt_batch <- function(
       )
 
       if (!is.null(err_msg) || is.null(res_full)) {
-        warning(sprintf("Backtest failed for %s: %s. Filling with zeros.", label, if (is.null(err_msg)) "unknown error" else err_msg))
+        msg <- sprintf("Backtest failed for %s: %s.", label, if (is.null(err_msg)) "unknown error" else err_msg)
+        if (isTRUE(fail)) {
+          stop(msg, call. = FALSE)
+        }
+        warning(sprintf("%s Filling with zeros.", msg), call. = FALSE)
         idx <- fallback_index(data_symbol, base_sym = spec_ticker)
         nr_numeric <- first_finite_numeric(nr)
         res_full <- zero_full_returns_xts(idx, normalize_target = nr_numeric)
@@ -2333,12 +1767,20 @@ bt_batch <- function(
       base_adjusted <- if (is.finite(base_scale_val) && is.finite(rV_numeric)) rV_numeric * base_scale_val else rV_numeric
 
       formatted_original_risk <- format_risk_token(rV)
+      if (!length(formatted_original_risk) || is.na(formatted_original_risk) || !nzchar(formatted_original_risk)) {
+        formatted_original_risk <- "NA"
+      }
       formatted_adjusted_risk <- if (is.finite(base_scale_val) && is.finite(base_adjusted) && abs(base_adjusted - rV_numeric) > tol) format_risk_token(base_adjusted) else NA_character_
 
       output_label <- label
-      old_token <- sprintf("%s_%s", psV, formatted_original_risk)
+      ps_report_label <- .bt_normalize_ps_type(psV) %||% "ps"
+      resolved_token <- sprintf("%s_%s", ps_report_label, formatted_original_risk)
+      if (grepl("ps_meta", output_label, fixed = TRUE) && !identical(formatted_original_risk, "NA")) {
+        output_label <- sub("ps_meta", resolved_token, output_label, fixed = TRUE)
+      }
+      old_token <- resolved_token
       if (!is.na(formatted_adjusted_risk)) {
-        new_token <- sprintf("%s%s_aj%s", psV, formatted_original_risk, formatted_adjusted_risk)
+        new_token <- sprintf("%s%s_aj%s", ps_report_label, formatted_original_risk, formatted_adjusted_risk)
         if (grepl(old_token, output_label, fixed = TRUE)) {
           output_label <- sub(old_token, new_token, output_label, fixed = TRUE)
         } else {
@@ -2499,19 +1941,6 @@ bt_batch <- function(
     }
 
     data <- clean_xts(data)
-
-    if (is.null(data)) {
-      data <- try(
-        .bt_fetch_ticker_data(symbol,
-          data_env = data_env,
-          start_date = default_start_chr,
-          end_date = default_end_chr,
-          clean_di = TRUE
-        ),
-        silent = TRUE
-      )
-      if (inherits(data, "try-error")) data <- NULL
-    }
 
     data <- clean_xts(data)
     if (is.null(data) || NROW(data) < 2) {
@@ -2751,10 +2180,10 @@ bt_batch <- function(
       }
     }
   }
-  if (length(risk_report) > 0) {
+  if (length(risk_report) > 0 && isTRUE(verbose)) {
     cat("\nRisk normalization impact (position sizing):\n")
     for (rec in risk_report) {
-      descriptor <- if (isTRUE(rec$is_portfolio)) "portfolio risk" else "ps_risk_value"
+      descriptor <- if (isTRUE(rec$is_portfolio)) "portfolio risk" else "ps_value"
       orig_txt <- if (is.finite(rec$original)) format_risk_token(rec$original) else "NA"
       line <- sprintf(" - %s: %s %s", rec$label, descriptor, orig_txt)
 
