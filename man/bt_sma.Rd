@@ -26,6 +26,7 @@ bt_sma(
   geometric = TRUE,
   verbose = FALSE,
   hide_details = FALSE,
+  show_quarterly = FALSE,
   reinvest = TRUE,
   plot = FALSE,
   ...
@@ -94,6 +95,9 @@ normalized return columns to the output.}
 \item{verbose}{Logical, print detailed summaries to the console.}
 
 \item{hide_details}{Logical; if \code{TRUE}, simplifies internal object names.}
+
+\item{show_quarterly}{Logical; if \code{TRUE}, print quarterly returns and net
+profit tables in the console report.}
 
 \item{reinvest}{Logical; if \code{TRUE}, size new entries using current account
 equity. Open positions keep their original quantity until the next order.}

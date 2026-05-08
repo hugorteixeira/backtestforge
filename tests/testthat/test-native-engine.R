@@ -99,7 +99,30 @@ test_that("native Donchian engine returns finite shaped results", {
   expect_true(all(c("Discrete", "Log") %in% colnames(res$rets)))
   expect_true(all(is.finite(as.numeric(res$rets))))
   expect_true(all(c("trades", "positions", "mktdata", "stats") %in% names(res)))
+  expect_true(all(c("trade_episodes", "trade_excursions", "pyramid_events", "info_blocks") %in% names(res)))
   expect_true(NROW(res$positions) == NROW(x))
+  expect_s3_class(res$trade_episodes, "data.frame")
+  expect_s3_class(res$trade_excursions, "data.frame")
+  expect_true(all(c("entry_atr", "entry_atr_value_per_unit", "initial_stop_atr", "initial_risk_per_unit") %in% names(res$trade_episodes)))
+  expect_true(all(c("mfe_pct", "mae_pct", "mfe_atr", "mae_atr", "final_R", "hit_5_0_atr", "hit_10_0_atr", "hit_20_0_atr", "hit_40_0_atr", "post_5_0_atr_R", "post_20_0_atr_R", "post_40_0_atr_R") %in% names(res$trade_excursions)))
+  expect_true(all(is.finite(res$trade_excursions$mfe_pct)))
+  expect_true(all(res$trade_excursions$mfe_pct >= 0))
+  expect_true(any(vapply(res$info_blocks, function(block) identical(attr(block, "id"), "atr_stats"), logical(1))))
+  expect_equal(attr(res$info_blocks$atr_stats, "contexts"), "research")
+  expect_true("Mean Initial Stop ATR" %in% res$info_blocks$atr_stats$stat_name)
+  expect_true(any(grepl("Mean Initial Stop Value /", res$info_blocks$atr_stats$stat_name, fixed = TRUE)))
+  expect_true(any(grepl("Mean 20 ATR Value /", res$info_blocks$atr_stats$stat_name, fixed = TRUE)))
+  expect_true(any(vapply(res$info_blocks, function(block) identical(attr(block, "id"), "excursions"), logical(1))))
+  expect_true(any(vapply(res$info_blocks, function(block) identical(attr(block, "id"), "excursion_thresholds"), logical(1))))
+  expect_true("P90 MFE ATR" %in% res$info_blocks$excursions$stat_name)
+  expect_false(any(grepl("^Hit ", res$info_blocks$excursions$stat_name)))
+  expect_false(any(grepl("^Post ", res$info_blocks$excursions$stat_name)))
+  expect_true(all(c(
+    "ATRT", "Hits", "Hit %", "Med FR", "Mean FR",
+    "Med PR", "Mean PR", "PR Win %"
+  ) %in% names(res$info_blocks$excursion_thresholds)))
+  expect_true(any(res$info_blocks$excursion_thresholds$ATRT == "20"))
+  expect_true(any(res$info_blocks$excursion_thresholds$ATRT == "40"))
   expect_true(res$spec$risk$reinvest)
   expect_equal(res$spec$risk$initial_equity, 100000)
   expect_equal(as.numeric(res$equity$Equity[1]), 100000)
@@ -246,6 +269,32 @@ test_that("native return printer uses internal return math", {
   expect_true(all(c("Discrete", "Log") %in% colnames(printed)))
 })
 
+test_that("normalize_risk drives performance blocks while execution stats stay raw", {
+  x <- bt_test_ohlc(160)
+  raw <- bt_eldoc(x, up = 12, down = 8, fee = "nofee", hide_details = TRUE)
+  norm <- bt_eldoc(x, up = 12, down = 8, fee = "nofee", normalize_risk = 10, hide_details = TRUE)
+
+  expect_true(isTRUE(norm$stats$RiskNormalized[1]))
+  expect_false(isTRUE(norm$raw_stats$RiskNormalized[1]))
+  expect_equal(norm$raw_stats$net_profit, raw$raw_stats$net_profit)
+  expect_false(isTRUE(all.equal(norm$stats$total_return, norm$raw_stats$total_return)))
+  expect_equal(attr(norm$info_blocks$monthly_returns, "title"), "Monthly Returns Risk-Normalized 10% (Geometric)")
+  expect_equal(attr(norm$info_blocks$returns, "title"), "Returns Summary Risk-Normalized 10% (Geometric)")
+  expect_true(any(norm$info_blocks$performance$stat_name == "Return Source"))
+  expect_true(any(norm$info_blocks$risk_normalization$stat_name == "Execution/Costs"))
+
+  cost_net <- function(res) {
+    res$info_blocks$costs$value[match("Net P/L", res$info_blocks$costs$stat_name)]
+  }
+  expect_equal(cost_net(norm), cost_net(raw))
+
+  output <- capture.output(
+    bt_eldoc(x, up = 12, down = 8, fee = "nofee", normalize_risk = 10, hide_details = FALSE)
+  )
+  expect_true(any(grepl("Risk Normalization", output, fixed = TRUE)))
+  expect_true(any(grepl("Risk-Normalized 10%", output, fixed = TRUE)))
+})
+
 test_that("native metadata uses finharvest xts contract attrs", {
   x <- bt_test_ohlc()
   attr(x, "symbol") <- NULL
@@ -384,6 +433,14 @@ test_that("native metadata uses finharvest xts contract attrs", {
   expect_equal(cost_table["Slippage Impact", "Value"], "10.00%")
   expect_equal(cost_table["Total Cost Impact", "Value"], "20.00%")
   expect_equal(cost_table["Impact Basis", "Value"], "profit consumed")
+  expect_false("Contracts" %in% rownames(cost_table))
+
+  futures_cost_table <- .bt_native_cost_summary_table(
+    data.frame(num_trades = 4, contracts_traded = 9, IsFutures = TRUE, net_profit = 80, fees = 10, slippage = 10, total_cost = 20),
+    data.frame(x = seq_len(8))
+  )
+  expect_equal(rownames(futures_cost_table)[1:2], c("Trades", "Contracts"))
+  expect_equal(futures_cost_table["Contracts", "Value"], "9")
 
   loss_table <- .bt_native_cost_summary_table(
     data.frame(num_trades = 4, net_profit = -120, fees = 10, slippage = 10, total_cost = 20),
@@ -404,7 +461,7 @@ test_that("native report prints costs before returns summary", {
   x <- bt_test_ohlc(120)
 
   output <- capture.output(
-    bt_eldoc(
+    basic_res <- bt_eldoc(
       x,
       up = 12,
       down = 8,
@@ -413,18 +470,109 @@ test_that("native report prints costs before returns summary", {
       hide_details = FALSE
     )
   )
+  expect_s3_class(basic_res, "bt_native_result")
 
   cost_idx <- grep("Costs & Slippage Summary", output)
   returns_idx <- grep("Returns Summary", output)
   expect_length(cost_idx, 1)
   expect_length(returns_idx, 1)
   expect_lt(cost_idx, returns_idx)
-  expect_false(any(grepl("Orders", output, fixed = TRUE)))
+  expect_true(any(grepl("Trade Activity", output, fixed = TRUE)))
+  expect_true(any(grepl("Orders", output, fixed = TRUE)))
   expect_false(any(grepl("Total Fees", output, fixed = TRUE)))
   expect_false(any(grepl("Total Slippage", output, fixed = TRUE)))
   expect_false(any(grepl("Gross P/L Before Costs", output, fixed = TRUE)))
   expect_false(any(grepl("Avg Fee / Trade", output, fixed = TRUE)))
   expect_true(any(grepl("Total Cost Impact", output, fixed = TRUE)))
+  expect_true(any(grepl("Strategy", output, fixed = TRUE)))
+  expect_true(any(grepl("Position Sizing", output, fixed = TRUE)))
+  expect_true(any(grepl("Execution & Cost Settings", output, fixed = TRUE)))
+  expect_true(any(grepl("Slippage", output, fixed = TRUE)))
+  expect_true(any(grepl("Contracts", output, fixed = TRUE)))
+  expect_false(any(grepl("ATR Statistics", output, fixed = TRUE)))
+  expect_false(any(grepl("Mean Initial Stop ATR", output, fixed = TRUE)))
+  expect_false(any(grepl("Excursion Thresholds", output, fixed = TRUE)))
+  expect_false(any(grepl("ATRT", output, fixed = TRUE)))
+  expect_false(any(grepl("Quarterly Returns", output, fixed = TRUE)))
+  expect_false(any(grepl("Quarterly Net Profit", output, fixed = TRUE)))
+
+  exp_output <- capture.output(
+    exp_res <- bt_eldoc_exp(
+      x,
+      up = 12,
+      down = 8,
+      fee_value = 4,
+      slip_value = 0,
+      hide_details = FALSE
+    )
+  )
+  expect_s3_class(exp_res, "bt_native_result")
+
+  expect_true(any(grepl("ATR Statistics", exp_output, fixed = TRUE)))
+  expect_true(any(grepl("Mean Initial Stop ATR", exp_output, fixed = TRUE)))
+  expect_true(any(grepl("Excursion Thresholds", exp_output, fixed = TRUE)))
+  expect_true(any(grepl("ATRT", exp_output, fixed = TRUE)))
+})
+
+test_that("native report can omit quarterly tables", {
+  x <- bt_test_ohlc(120)
+
+  output <- capture.output(
+    bt_eldoc(
+      x,
+      up = 12,
+      down = 8,
+      fee = "nofee",
+      hide_details = FALSE,
+      show_quarterly = FALSE
+    )
+  )
+
+  expect_false(any(grepl("Quarterly Returns", output, fixed = TRUE)))
+  expect_false(any(grepl("Quarterly Net Profit", output, fixed = TRUE)))
+  expect_true(any(grepl("Monthly Returns", output, fixed = TRUE)))
+  expect_true(any(grepl("Strategy", output, fixed = TRUE)))
+})
+
+test_that("native report can print quarterly tables when requested", {
+  x <- bt_test_ohlc(120)
+
+  output <- capture.output(
+    bt_eldoc(
+      x,
+      up = 12,
+      down = 8,
+      fee = "nofee",
+      hide_details = FALSE,
+      show_quarterly = TRUE
+    )
+  )
+
+  expect_true(any(grepl("Quarterly Returns", output, fixed = TRUE)))
+  expect_true(any(grepl("Quarterly Net Profit", output, fixed = TRUE)))
+})
+
+test_that("bt_stats accepts a single native result", {
+  x <- bt_test_ohlc(160)
+  res <- bt_eldoc(
+    x,
+    up = 12,
+    down = 8,
+    fee = "nofee",
+    hide_details = TRUE
+  )
+
+  out <- capture.output(stats <- bt_stats(res, verbose = FALSE))
+  expect_s3_class(stats, "data.frame")
+  expect_true(length(out) > 0)
+  expect_true("BTTEST" %in% names(stats))
+  expect_true("Profit" %in% stats$stat_name)
+  expect_false(any(grepl("Excursion Thresholds", out, fixed = TRUE)))
+  expect_false("excursion_thresholds" %in% stats$block)
+
+  research_out <- capture.output(research_stats <- bt_stats(res, blocks = "excursion_thresholds", verbose = FALSE))
+  expect_true(any(grepl("Excursion Thresholds", research_out, fixed = TRUE)))
+  expect_true("excursion_thresholds" %in% research_stats$block)
 })
 
 test_that("native DI uses rate OHLC for signals and PU for execution", {
@@ -634,7 +782,7 @@ test_that("DI breakout converts exact rate line to PU and pyramids in rate space
   expect_true(is.finite(expected_pu) && expected_pu > 0)
   expect_equal(first_breakout$price, expected_pu)
 
-  pyramided <- bt_eldoc(
+  pyramided <- bt_eldoc_exp(
     x,
     up = 3,
     down = 3,
@@ -660,11 +808,20 @@ test_that("native moving-average wrappers run on synthetic data", {
 
   ema <- bt_ema(x, fast = 10, slow = 30, fee = "nofee", hide_details = TRUE)
   sma <- bt_sma(x, fast = 10, slow = 30, fee = "nofee", hide_details = TRUE)
+  tsmom <- bt_tsmom(x, lookback = 40, fee = "nofee", hide_details = TRUE)
 
   expect_s3_class(ema, "bt_native_result")
   expect_s3_class(sma, "bt_native_result")
+  expect_s3_class(tsmom, "bt_native_result")
+  expect_equal(ema$spec$strategy$type, "ema")
+  expect_equal(sma$spec$strategy$type, "sma")
+  expect_equal(tsmom$spec$strategy$type, "tsmom")
+  expect_equal(tsmom$spec$strategy$params$lookback, 40)
+  expect_equal(tsmom$spec$risk$ps_type, "notional")
+  expect_equal(tsmom$spec$risk$risk_pct, 100)
   expect_true(all(is.finite(as.numeric(ema$rets))))
   expect_true(all(is.finite(as.numeric(sma$rets))))
+  expect_true(all(is.finite(as.numeric(tsmom$rets))))
 })
 
 test_that("native Donchian stop mode can reverse twice in one bar", {
@@ -838,7 +995,7 @@ test_that("ElDoc pyramiding adds ATR-stepped units up to the cap", {
   attr(x, "fut_tick_size") <- 1
   attr(x, "fut_multiplier") <- 1
 
-  res <- bt_eldoc(
+  res <- bt_eldoc_exp(
     x,
     up = 3,
     down = 3,
@@ -858,6 +1015,86 @@ test_that("ElDoc pyramiding adds ATR-stepped units up to the cap", {
   expect_true(any(res$trades$reason == "long_pyramid"))
   expect_equal(max(as.numeric(res$positions$units), na.rm = TRUE), 3)
   expect_lte(max(abs(as.numeric(res$positions$qty)), na.rm = TRUE), 3)
+  expect_s3_class(res$pyramid_events, "data.frame")
+  expect_true(NROW(res$pyramid_events) > 0)
+  expect_true(all(c(
+    "trade_id", "unit_number", "trigger_atr", "initial_qty", "qty_added",
+    "position_after_add", "add_entry_qty_ratio", "position_entry_qty_ratio",
+    "stop_distance_atr_at_add", "add_fee_per_contract", "add_slip_per_contract",
+    "add_cost_per_contract", "add_cost_pct_notional", "entry_fee_per_contract",
+    "entry_slip_per_contract", "entry_cost_per_contract", "entry_cost_pct_notional"
+  ) %in% names(res$pyramid_events)))
+  expect_true(all(res$pyramid_events$qty_added > 0))
+  expect_true(all(res$pyramid_events$initial_qty > 0))
+  expect_true(all(res$pyramid_events$add_entry_qty_ratio > 0))
+  expect_true("Median Add / Entry Qty" %in% res$info_blocks$pyramiding$stat_name)
+  expect_true("P25 Add / Entry Qty" %in% res$info_blocks$pyramiding$stat_name)
+  expect_true("P75 Add / Entry Qty" %in% res$info_blocks$pyramiding$stat_name)
+  expect_true("Median Pos After Add / Entry Qty" %in% res$info_blocks$pyramiding$stat_name)
+  expect_true("Median Stop Distance ATR At Add" %in% res$info_blocks$pyramiding$stat_name)
+  expect_true("Median Entry Cost / Contract" %in% res$info_blocks$pyramiding$stat_name)
+  expect_true("Median Add Cost / Contract" %in% res$info_blocks$pyramiding$stat_name)
+  expect_true("Median Add Cost % Notional" %in% res$info_blocks$pyramiding$stat_name)
+  expect_equal(res$spec$strategy$params$pyramid_sizing, "risk")
+
+  delayed <- bt_eldoc_exp(
+    x,
+    up = 3,
+    down = 3,
+    ps_value = 1,
+    ps_type = "contract",
+    execution = "breakout",
+    atr_n = 3,
+    pyramid = TRUE,
+    pyramid_start = 3,
+    pyramid_step = 0.5,
+    max_units = 3,
+    fee = "nofee",
+    long = TRUE,
+    short = FALSE,
+    hide_details = TRUE
+  )
+
+  expect_equal(delayed$spec$strategy$params$pyramid_start, 3)
+  expect_equal(delayed$spec$strategy$params$pyramid_step, 0.5)
+  expect_lte(NROW(delayed$pyramid_events), NROW(res$pyramid_events))
+  if (NROW(delayed$pyramid_events) > 0) {
+    expect_gte(delayed$pyramid_events$event_time[1], res$pyramid_events$event_time[1])
+  }
+
+  entry_qty <- bt_eldoc_exp(
+    x,
+    up = 3,
+    down = 3,
+    ps_value = 10,
+    ps_type = "contract",
+    execution = "breakout",
+    atr_n = 3,
+    pyramid = TRUE,
+    pyramid_start = 2,
+    pyramid_step = 1,
+    pyramid_sizing = "entry_qty",
+    pyramid_qty_pct = 0.5,
+    max_units = 3,
+    fee = "nofee",
+    long = TRUE,
+    short = FALSE,
+    hide_details = TRUE
+  )
+
+  add_qty <- abs(entry_qty$trades$qty_delta[entry_qty$trades$reason == "long_pyramid"])
+  expect_true(length(add_qty) > 0)
+  expect_true(all(add_qty == 5))
+  expect_equal(entry_qty$spec$strategy$params$pyramid_sizing, "entry_qty")
+  expect_equal(entry_qty$spec$strategy$params$pyramid_qty_pct, 0.5)
+  expect_equal(
+    entry_qty$info_blocks$strategy$value[match("Pyramid Sizing", entry_qty$info_blocks$strategy$stat_name)],
+    "entry_qty"
+  )
+  expect_equal(
+    entry_qty$info_blocks$strategy$value[match("Pyramid Qty %", entry_qty$info_blocks$strategy$stat_name)],
+    "50.00%"
+  )
 })
 
 test_that("native search evaluates and sorts parameter grids", {
@@ -900,6 +1137,30 @@ test_that("bt_batch uses the native engine with exact-match preloaded data", {
   expect_true(all(is.finite(as.numeric(out))))
 })
 
+test_that("bt_batch runs time-series momentum grids", {
+  x <- bt_test_ohlc()
+  assign("BT_NATIVE_TSMOM_BATCH", x, envir = .GlobalEnv)
+  on.exit(rm("BT_NATIVE_TSMOM_BATCH", envir = .GlobalEnv), add = TRUE)
+
+  out <- bt_batch(
+    type = "tsmom",
+    tickers = "BT_NATIVE_TSMOM_BATCH",
+    exact_match = TRUE,
+    lookback = c(40, 80),
+    threshold = 0,
+    fee = "nofee",
+    only_returns = TRUE,
+    returns_type = "Log",
+    hide_details = TRUE,
+    verbose = FALSE
+  )
+
+  expect_s3_class(out, "xts")
+  expect_equal(NCOL(out), 2)
+  expect_true(all(grepl("tsmom_lb", colnames(out), fixed = TRUE)))
+  expect_true(all(is.finite(as.numeric(out))))
+})
+
 test_that("bt_batch passes starting equity through specs", {
   x <- bt_test_ohlc(160)
   assign("BT_NATIVE_EQUITY_BATCH", x, envir = .GlobalEnv)
@@ -912,6 +1173,12 @@ test_that("bt_batch passes starting equity through specs", {
     mup = 12,
     mdown = 8,
     initial_equity = 250000,
+    pyramid = TRUE,
+    pyramid_start = 2,
+    pyramid_step = 0.75,
+    pyramid_sizing = "entry_qty",
+    pyramid_qty_pct = 0.5,
+    max_units = 3,
     fee = "nofee",
     hide_details = TRUE,
     verbose = FALSE
@@ -921,6 +1188,10 @@ test_that("bt_batch passes starting equity through specs", {
   expect_length(out, 1)
   expect_true(any(grepl("eq_250000", names(out), fixed = TRUE)))
   expect_equal(out[[1]]$spec$risk$initial_equity, 250000)
+  expect_equal(out[[1]]$spec$strategy$params$pyramid_start, 2)
+  expect_equal(out[[1]]$spec$strategy$params$pyramid_step, 0.75)
+  expect_equal(out[[1]]$spec$strategy$params$pyramid_sizing, "entry_qty")
+  expect_equal(out[[1]]$spec$strategy$params$pyramid_qty_pct, 0.5)
   expect_equal(as.numeric(out[[1]]$equity$Equity[1]), 250000)
 })
 

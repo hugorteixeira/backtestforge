@@ -2,7 +2,7 @@
 % Please edit documentation in R/main_functions.R
 \name{bt_eldoc}
 \alias{bt_eldoc}
-\title{Run an ElDoc (Donchian) backtest}
+\title{Run a basic ElDoc (Donchian) backtest}
 \usage{
 bt_eldoc(
   ticker,
@@ -14,9 +14,6 @@ bt_eldoc(
   execution = "breakout",
   atr_n = 20,
   atr_mult = 2,
-  pyramid = FALSE,
-  pyramid_step = 0.5,
-  max_units = if (isTRUE(pyramid)) 4L else 1L,
   fee = "normal",
   fee_value = NULL,
   fee_type = NULL,
@@ -31,6 +28,7 @@ bt_eldoc(
   geometric = TRUE,
   verbose = FALSE,
   hide_details = FALSE,
+  show_quarterly = FALSE,
   reinvest = TRUE,
   plot = FALSE,
   ...
@@ -64,16 +62,10 @@ channel price. \code{"exact_price"} is an alias for \code{"breakout"}.
 \code{"next_close"}, and \code{"next_avg"} use the next candle open, close, or OHLC
 average.}
 
-\item{atr_n}{Integer ATR lookback used by ATR sizing and pyramiding.}
+\item{atr_n}{Integer ATR lookback used when ATR sizing is selected and for
+diagnostic columns.}
 
 \item{atr_mult}{ATR multiple used when \code{ps_type = "atr"}.}
-
-\item{pyramid}{Logical; if \code{TRUE}, add units as the position moves in favor.}
-
-\item{pyramid_step}{Favorable movement in ATR units required before each
-add.}
-
-\item{max_units}{Maximum number of entry/add units in one position.}
 
 \item{fee}{Either \code{"normal"} (use instrument fees/slippage if available) or
 \code{"nofee"} to disable fees.}
@@ -111,50 +103,21 @@ normalized return columns to the output.}
 
 \item{hide_details}{Logical; if \code{TRUE}, simplifies internal object names.}
 
+\item{show_quarterly}{Logical; if \code{TRUE}, print quarterly returns and net
+profit tables in the console report.}
+
 \item{reinvest}{Logical; if \code{TRUE}, size new entries using current account
 equity. Open positions keep their original quantity until the next order.}
 
 \item{plot}{Logical; if \code{TRUE}, plots the portfolio using \code{rTradingPlots::tplot}.}
 
 \item{...}{Advanced options. Currently supports \code{only_returns} (return only
-the returns \code{xts}) and \code{clean_di} (apply DI-specific bad-row filtering).}
-}
-\value{
-If \code{only_returns = TRUE}, returns an \code{xts} with discrete and log
-returns. Otherwise, returns a named list with elements:
-\itemize{
-\item \code{rets}: equity/account returns \code{xts}
-\item \code{stats}: native summary statistics
-\item \code{trades}: native transactions \code{data.frame}; \code{fees} is commission only,
-\code{slippage} is slippage cost, and \code{total_cost} is their sum
-\item \code{rets_acct}: account-level returns \code{xts}
-\item \code{mktdata}: market data with indicator columns
-\item \code{positions}: native position/equity path
-\item \code{equity}: native account equity curve
-}
+the returns \code{xts}) and \code{clean_di} (apply DI-specific bad-row filtering).
+Pyramiding/research arguments are intentionally rejected; use
+\code{bt_eldoc_exp()} for that surface.}
 }
 \description{
-Configures a simple Donchian breakout system using the native in-memory
-simulator.
-}
-\details{
-Data is fetched from \code{finharvest::finget()} if the symbol is not
-found in the global environment; otherwise the preloaded object is used.
-
-The function builds the strategy, runs the backtest, prints key summaries, and
-returns a list of results.
-
-ElDoc can size positions from its opposite channel (\code{ps_type = "eldoc"}),
-ATR distance (\code{ps_type = "atr"}), notional percent of equity
-(\code{ps_type = "notional"}), or fixed contracts/shares
-(\code{ps_type = "contract"}).
-Pyramiding currently uses ATR steps and sizes each add independently.
-
-If the symbol starts with \code{"DI1"}, the native engine keeps rate OHLC columns
-for indicators/signals and uses PU columns for execution and mark-to-market
-when available. It can enrich rate OHLC data through \code{brfutures} when
-installed. Instrument metadata (multiplier, tick size, maturity) is
-propagated when available. Transaction costs are charged in account currency:
-\verb{fee_value = 4, fee_type = "contract"} means 4 per contract/share, while
-\code{fee_type = "order"} means 4 for the whole executed order.
+Runs the baseline Donchian breakout system without pyramiding or experimental
+research blocks in the default printout. Experimental diagnostics are still
+computed internally and can be requested explicitly through \code{bt_stats(..., blocks = ...)}; use \code{bt_eldoc_exp()} for the full research surface.
 }

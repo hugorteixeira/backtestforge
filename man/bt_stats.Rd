@@ -11,6 +11,7 @@ bt_stats(
   col = 8,
   align_to_shortest = TRUE,
   sharpe_scale = 365,
+  blocks = NULL,
   verbose = TRUE
 )
 }
@@ -29,6 +30,9 @@ Supported: \code{gray}, \code{red}, \code{green}, \code{blue}, \code{cyan}, \cod
 trading window across inputs.}
 
 \item{sharpe_scale}{Numeric; scaling factor for daily Sharpe (e.g. 252/365).}
+
+\item{blocks}{Optional character vector of info block ids to print. When
+\code{NULL}, prints all blocks marked for \code{bt_stats()}.}
 
 \item{verbose}{Logical; print alignment diagnostics.}
 }

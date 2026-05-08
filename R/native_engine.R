@@ -1,13 +1,14 @@
 #' Build a serializable trend-following strategy specification
 #'
-#' @param type Strategy type. Use `"eldoc"`/`"donchian"`, `"ema"`, or `"sma"`.
+#' @param type Strategy type. Use `"eldoc"`/`"donchian"`, `"ema"`, `"sma"`, or
+#'   `"tsmom"`.
 #' @param ... Indicator parameters (`up`/`down` for ElDoc, `fast`/`slow` for
-#'   moving averages), plus ElDoc ATR/pyramiding settings.
+#'   moving averages, `lookback` for TSMOM), plus advanced ElDoc settings.
 #' @param long,short Logical flags enabling long and short trades.
 #' @param invert_signals Logical; swaps entry and exit signals for experiments.
 #' @return A list with class `bt_strategy_spec`.
 #' @export
-bt_strategy_spec <- function(type = c("donchian", "eldoc", "ema", "sma"),
+bt_strategy_spec <- function(type = c("donchian", "eldoc", "ema", "sma", "tsmom"),
                              ...,
                              long = TRUE,
                              short = TRUE,
@@ -18,19 +19,39 @@ bt_strategy_spec <- function(type = c("donchian", "eldoc", "ema", "sma"),
     donchian = "donchian",
     ema = "ema",
     sma = "sma",
+    tsmom = "tsmom",
+    timeseriesmomentum = "tsmom",
+    time_series_momentum = "tsmom",
     stop(sprintf("Unsupported native strategy type '%s'.", raw_type), call. = FALSE)
   )
   args <- list(...)
   params <- switch(canonical,
-    donchian = list(
-      up = as.integer(.bt_first_non_null(args$up, args$mup, 40L)),
-      down = as.integer(.bt_first_non_null(args$down, args$mdown, 40L)),
-      atr_n = as.integer(.bt_first_non_null(args$atr_n, args$atr, 20L)),
-      atr_mult = as.numeric(.bt_first_non_null(args$atr_mult, 2)),
-      pyramid = isTRUE(.bt_first_non_null(args$pyramid, FALSE)),
-      pyramid_step = as.numeric(.bt_first_non_null(args$pyramid_step, 0.5)),
-      max_units = as.integer(.bt_first_non_null(args$max_units, if (isTRUE(args$pyramid)) 4L else 1L))
-    ),
+    donchian = {
+      pyramid <- isTRUE(.bt_first_non_null(args$pyramid, FALSE))
+      pyramid_step <- as.numeric(.bt_first_non_null(args$pyramid_step, 0.5))
+      pyramid_start <- as.numeric(.bt_first_non_null(args$pyramid_start, pyramid_step))
+      pyramid_sizing <- tolower(as.character(.bt_first_non_null(args$pyramid_sizing, "risk"))[1])
+      pyramid_sizing <- switch(pyramid_sizing,
+        risk = "risk",
+        entry = "entry_qty",
+        entry_qty = "entry_qty",
+        entryqty = "entry_qty",
+        stop(sprintf("Unsupported pyramid_sizing '%s'. Use 'risk' or 'entry_qty'.", pyramid_sizing), call. = FALSE)
+      )
+      pyramid_qty_pct <- as.numeric(.bt_first_non_null(args$pyramid_qty_pct, 1))
+      list(
+        up = as.integer(.bt_first_non_null(args$up, args$mup, 40L)),
+        down = as.integer(.bt_first_non_null(args$down, args$mdown, 40L)),
+        atr_n = as.integer(.bt_first_non_null(args$atr_n, args$atr, 20L)),
+        atr_mult = as.numeric(.bt_first_non_null(args$atr_mult, 2)),
+        pyramid = pyramid,
+        pyramid_start = pyramid_start,
+        pyramid_step = pyramid_step,
+        pyramid_sizing = pyramid_sizing,
+        pyramid_qty_pct = pyramid_qty_pct,
+        max_units = as.integer(.bt_first_non_null(args$max_units, if (isTRUE(pyramid)) 4L else 1L))
+      )
+    },
     ema = list(
       fast = as.integer(.bt_first_non_null(args$fast, args$mup, args$up, 20L)),
       slow = as.integer(.bt_first_non_null(args$slow, args$mdown, args$down, 50L))
@@ -38,11 +59,20 @@ bt_strategy_spec <- function(type = c("donchian", "eldoc", "ema", "sma"),
     sma = list(
       fast = as.integer(.bt_first_non_null(args$fast, args$mup, args$up, 20L)),
       slow = as.integer(.bt_first_non_null(args$slow, args$mdown, args$down, 50L))
+    ),
+    tsmom = list(
+      lookback = as.integer(.bt_first_non_null(args$lookback, args$mup, args$up, 252L)),
+      threshold = as.numeric(.bt_first_non_null(args$threshold, 0)),
+      atr_n = as.integer(.bt_first_non_null(args$atr_n, args$atr, 20L))
     )
   )
-  numeric_params <- unlist(params[!names(params) %in% "pyramid"], use.names = FALSE)
+  numeric_params <- unlist(params[!names(params) %in% c("pyramid", "pyramid_sizing", "threshold")], use.names = FALSE)
   if (any(!is.finite(numeric_params)) || any(numeric_params <= 0)) {
-    stop("Strategy window parameters must be positive finite integers.", call. = FALSE)
+    stop("Strategy numeric parameters must be positive finite values.", call. = FALSE)
+  }
+  if ("threshold" %in% names(params) &&
+      (!is.finite(params$threshold) || params$threshold < 0)) {
+    stop("'threshold' must be a non-negative finite value.", call. = FALSE)
   }
   spec <- list(
     type = canonical,
@@ -554,9 +584,16 @@ bt_execution_spec <- function(execution = c("breakout", "same_close", "next_open
 #' @param verbose If `TRUE`, print detailed stats and transactions.
 #' @param clean_di If `TRUE`, apply DI cleanup before running.
 #' @param report If `TRUE`, print the standard console performance tables.
+#' @param show_quarterly If `TRUE`, print quarterly return and net-profit
+#'   tables in the console report.
+#' @param research_blocks If `TRUE`, include experimental diagnostic blocks
+#'   such as excursion thresholds in default reports and `bt_stats()`.
 #' @return A `bt_native_result` list, or an `xts` returns object when
 #'   `only_returns = TRUE`. In `trades`, `fees` is commission only,
 #'   `slippage` is slippage cost, and `total_cost` is their sum.
+#'   When `normalize_risk` is supplied, `rets`, `stats`, and report performance
+#'   blocks use the risk-normalized return stream; `raw_rets`, `raw_stats`,
+#'   trades, positions, and cost blocks keep the unnormalised execution path.
 #' @export
 bt_run_native <- function(ticker,
                           data = NULL,
@@ -574,7 +611,9 @@ bt_run_native <- function(ticker,
                           only_returns = FALSE,
                           verbose = FALSE,
                           clean_di = TRUE,
-                          report = TRUE) {
+                          report = TRUE,
+                          show_quarterly = FALSE,
+                          research_blocks = TRUE) {
   start_t <- Sys.time()
   if (is.character(strategy)) {
     strategy <- bt_strategy_spec(strategy)
@@ -643,8 +682,22 @@ bt_run_native <- function(ticker,
 
   raw_rets <- .bt_native_returns(sim$equity, normalize_risk = NULL)
   rets <- .bt_native_returns(sim$equity, normalize_risk = normalize_risk)
-  stats <- .bt_native_stats(
+  raw_stats <- .bt_native_stats(
     equity = sim$equity,
+    rets = raw_rets,
+    trades = sim$trades,
+    risk = risk,
+    execution = execution,
+    metadata = metadata,
+    strategy = strategy
+  )
+  performance_equity <- .bt_native_performance_equity(
+    raw_equity = sim$equity,
+    rets = rets,
+    initial_equity = risk$initial_equity
+  )
+  performance_stats <- .bt_native_stats(
+    equity = performance_equity,
     rets = rets,
     trades = sim$trades,
     risk = risk,
@@ -653,22 +706,47 @@ bt_run_native <- function(ticker,
     strategy = strategy
   )
   mktdata <- .bt_native_mktdata(prepared$data, indicators, signals)
+  trade_diagnostics <- .bt_native_trade_diagnostics(
+    trades = sim$trades,
+    positions = sim$positions,
+    mktdata = mktdata,
+    strategy = strategy,
+    risk = risk,
+    metadata = metadata
+  )
+  info_blocks <- .bt_native_info_blocks(
+    symbol = prepared$symbol,
+    strategy = strategy,
+    risk = risk,
+    execution = execution,
+    metadata = metadata,
+    raw_stats = raw_stats,
+    performance_stats = performance_stats,
+    trades = sim$trades,
+    raw_rets = raw_rets,
+    rets = rets,
+    equity = sim$equity,
+    performance_equity = performance_equity,
+    episodes = trade_diagnostics$episodes,
+    excursions = trade_diagnostics$excursions,
+    pyramid_events = trade_diagnostics$pyramid_events,
+    geometric = geometric,
+    research_blocks = research_blocks
+  )
 
   attr(rets, "backtest") <- TRUE
   attr(rets, "local") <- TRUE
   attr(rets, "fee_mode") <- execution$fee
+  attr(rets, "info_blocks") <- info_blocks
 
   if (isTRUE(report)) {
     .bt_native_report(
       symbol = prepared$symbol,
       strategy = strategy,
-      raw_rets = raw_rets,
-      rets = rets,
-      equity = sim$equity,
-      stats = stats,
-      trades = sim$trades,
+      info_blocks = info_blocks,
       geometric = geometric,
       verbose = verbose,
+      show_quarterly = show_quarterly,
       start_time = start_t
     )
   }
@@ -678,13 +756,21 @@ bt_run_native <- function(ticker,
 
   out <- list(
     rets = rets,
-    stats = stats,
+    stats = performance_stats,
+    raw_stats = raw_stats,
+    performance_stats = performance_stats,
     trades = sim$trades,
     rets_acct = rets,
+    raw_rets = raw_rets,
     mktdata = mktdata,
     positions = sim$positions,
     equity = sim$equity,
+    performance_equity = performance_equity,
+    trade_episodes = trade_diagnostics$episodes,
+    trade_excursions = trade_diagnostics$excursions,
+    pyramid_events = trade_diagnostics$pyramid_events,
     spec = list(strategy = strategy, risk = risk, execution = execution),
+    info_blocks = info_blocks,
     symbol = prepared$symbol
   )
   class(out) <- c("bt_native_result", "list")
@@ -876,6 +962,17 @@ bt_search_native <- function(ticker,
 .bt_native_metadata <- function(data, symbol) {
   meta <- .collect_instrument_metadata(data)
   di <- .bt_is_di_symbol(symbol)
+  attr_names <- names(attributes(data))
+  attr_names <- attr_names[!is.na(attr_names)]
+  base_symbol <- .bt_base_contract_symbol(symbol)
+  has_futures_metadata <- any(c(
+    "fut_multiplier", "fut_tick_size", "fut_tick_value",
+    "ticksize", "tickvalue", "contract_symbol", "contract_year",
+    "contract_month", "maturity"
+  ) %in% attr_names)
+  is_futures <- isTRUE(di) ||
+    has_futures_metadata ||
+    grepl("(^DI1|FUT)", base_symbol, ignore.case = TRUE)
   first_num <- function(...) {
     vals <- unlist(list(...), use.names = FALSE)
     vals <- suppressWarnings(as.numeric(vals))
@@ -987,6 +1084,9 @@ bt_search_native <- function(ticker,
     slippage_ticks = slippage_ticks,
     slippage_points = slippage_points,
     slippage_unit = slippage_unit,
+    is_futures = is_futures,
+    is_di = isTRUE(di),
+    maturity = meta$maturity %||% attr(data, "maturity", exact = TRUE),
     symbol = symbol,
     root = .bt_native_root(symbol)
   )
@@ -1060,6 +1160,24 @@ bt_search_native <- function(ticker,
       order.by = idx
     )
     out <- xts::lag.xts(raw)
+  } else if (identical(type, "tsmom")) {
+    lookback <- strategy$params$lookback
+    momentum <- rep(NA_real_, n)
+    if (is.finite(lookback) && lookback > 0 && lookback < n) {
+      lagged_close <- c(rep(NA_real_, lookback), utils::head(prices$close, -lookback))
+      momentum <- prices$close / lagged_close - 1
+    }
+    atr_n <- strategy$params$atr_n %||% 20L
+    hlc <- cbind(High = prices$high, Low = prices$low, Close = prices$close)
+    atr_raw <- if (is.finite(atr_n) && atr_n > 0 && atr_n <= n) {
+      suppressWarnings(as.numeric(TTR::ATR(hlc, n = atr_n)[, "atr"]))
+    } else {
+      rep(NA_real_, n)
+    }
+    out <- xts::xts(
+      cbind(TSMOMReturn = momentum, ATR = atr_raw),
+      order.by = idx
+    )
   } else {
     fast_n <- strategy$params$fast
     slow_n <- strategy$params$slow
@@ -1097,6 +1215,29 @@ bt_search_native <- function(ticker,
     long_exit <- cross_to_true(prices$low <= lower)
     short_entry <- long_exit
     short_exit <- long_entry
+  } else if (identical(strategy$type, "tsmom")) {
+    state_entry <- function(condition) {
+      condition <- as.logical(condition)
+      condition[is.na(condition)] <- FALSE
+      prev <- c(FALSE, utils::head(condition, -1L))
+      prev[is.na(prev)] <- FALSE
+      condition & !prev
+    }
+    state_exit <- function(condition) {
+      condition <- as.logical(condition)
+      condition[is.na(condition)] <- FALSE
+      prev <- c(FALSE, utils::head(condition, -1L))
+      prev[is.na(prev)] <- FALSE
+      !condition & prev
+    }
+    ret <- as.numeric(indicators[, "TSMOMReturn"])
+    threshold <- strategy$params$threshold %||% 0
+    long_state <- ret > threshold
+    short_state <- ret < -threshold
+    long_entry <- state_entry(long_state)
+    long_exit <- state_exit(long_state)
+    short_entry <- state_entry(short_state)
+    short_exit <- state_exit(short_state)
   } else {
     fast <- as.numeric(indicators[, 1])
     slow <- as.numeric(indicators[, 2])
@@ -1477,6 +1618,7 @@ bt_search_native <- function(ticker,
   di_calendar <- if (uses_pu) tryCatch(.generate_calendar(), error = function(e) NULL) else NULL
   qty <- 0
   unit_count <- 0L
+  entry_qty_abs <- NA_real_
   last_add_price <- NA_real_
   last_add_signal_price <- NA_real_
   equity <- numeric(n)
@@ -1545,6 +1687,21 @@ bt_search_native <- function(ticker,
     }
     tick_value <- .bt_native_tick_value_at(data, sig_i, metadata)
     .bt_native_size(side, size_px, stop_px, eq, risk, metadata, tick_value = tick_value)
+  }
+
+  pyramid_order_qty <- function(side) {
+    sizing <- strategy$params$pyramid_sizing %||% "risk"
+    if (!identical(sizing, "entry_qty")) {
+      return(NA_real_)
+    }
+    qty_abs <- abs(entry_qty_abs) * (strategy$params$pyramid_qty_pct %||% 1)
+    if (isTRUE(risk$integer_qty)) {
+      qty_abs <- floor(qty_abs)
+    }
+    if (!is.finite(qty_abs) || qty_abs <= 0) {
+      return(0)
+    }
+    if (identical(side, "long")) qty_abs else -qty_abs
   }
 
   signal_mode <- identical(execution_mode, "breakout") && identical(strategy$type, "donchian")
@@ -1620,6 +1777,7 @@ bt_search_native <- function(ticker,
         costs <- txn_cost(delta, px, i)
         qty <<- 0
         unit_count <<- 0L
+        entry_qty_abs <<- NA_real_
         last_add_price <<- NA_real_
         last_add_signal_price <<- NA_real_
         eq <- eq - costs[["total_cost"]]
@@ -1631,6 +1789,7 @@ bt_search_native <- function(ticker,
           costs <- txn_cost(delta, px, i)
           qty <<- qty + delta
           unit_count <<- 1L
+          entry_qty_abs <<- abs(delta)
           last_add_price <<- px
           last_add_signal_price <<- add_signal_basis(sig_i, px, event)
           eq <- eq - costs[["total_cost"]]
@@ -1643,6 +1802,7 @@ bt_search_native <- function(ticker,
         costs <- txn_cost(delta, px, i)
         qty <<- 0
         unit_count <<- 0L
+        entry_qty_abs <<- NA_real_
         last_add_price <<- NA_real_
         last_add_signal_price <<- NA_real_
         eq <- eq - costs[["total_cost"]]
@@ -1654,6 +1814,7 @@ bt_search_native <- function(ticker,
           costs <- txn_cost(delta, px, i)
           qty <<- qty + delta
           unit_count <<- 1L
+          entry_qty_abs <<- abs(delta)
           last_add_price <<- px
           last_add_signal_price <<- add_signal_basis(sig_i, px, event)
           eq <- eq - costs[["total_cost"]]
@@ -1684,10 +1845,18 @@ bt_search_native <- function(ticker,
     if (!is.finite(atr) || atr <= 0) {
       return(NA_real_)
     }
-    if (qty > 0) {
-      basis + strategy$params$pyramid_step * atr
+    step <- if (unit_count <= 1L) {
+      strategy$params$pyramid_start %||% strategy$params$pyramid_step
     } else {
-      basis - strategy$params$pyramid_step * atr
+      strategy$params$pyramid_step
+    }
+    if (!is.finite(step) || step <= 0) {
+      return(NA_real_)
+    }
+    if (qty > 0) {
+      basis + step * atr
+    } else {
+      basis - step * atr
     }
   }
 
@@ -1716,7 +1885,10 @@ bt_search_native <- function(ticker,
       return(eq)
     }
     side <- if (qty > 0) "long" else "short"
-    delta <- maybe_enter(i, sig_i, side, eq, px)
+    delta <- pyramid_order_qty(side)
+    if (!is.finite(delta)) {
+      delta <- maybe_enter(i, sig_i, side, eq, px)
+    }
     if (delta == 0 || !is.finite(delta)) {
       return(eq)
     }
@@ -1785,7 +1957,11 @@ bt_search_native <- function(ticker,
           }
         }
         eq <- mark_to_price(eq, last_px, pyr_px)
+        unit_before <- unit_count
         eq <- process_pyramid(i, i, eq, pyr_px, signal_px = pyr[["signal_price"]])
+        if (unit_count <= unit_before) {
+          break
+        }
         last_px <- pyr_px
       }
       eq <- mark_to_price(eq, last_px, close_i)
@@ -1818,6 +1994,7 @@ bt_search_native <- function(ticker,
         costs <- txn_cost(delta, px, i)
         qty <- 0
         unit_count <- 0L
+        entry_qty_abs <- NA_real_
         last_add_price <- NA_real_
         last_add_signal_price <- NA_real_
         eq <- eq - costs[["total_cost"]]
@@ -1829,6 +2006,7 @@ bt_search_native <- function(ticker,
         costs <- txn_cost(delta, px, i)
         qty <- 0
         unit_count <- 0L
+        entry_qty_abs <- NA_real_
         last_add_price <- NA_real_
         last_add_signal_price <- NA_real_
         eq <- eq - costs[["total_cost"]]
@@ -1862,6 +2040,7 @@ bt_search_native <- function(ticker,
             costs <- txn_cost(delta, px, i)
             qty <- qty + delta
             unit_count <- 1L
+            entry_qty_abs <- abs(delta)
             last_add_price <- px
             last_add_signal_price <- add_signal_basis(sig_i, px)
             eq <- eq - costs[["total_cost"]]
@@ -1894,6 +2073,7 @@ bt_search_native <- function(ticker,
       costs <- txn_cost(delta, px, n)
       qty <- 0
       unit_count <- 0L
+      entry_qty_abs <- NA_real_
       last_add_price <- NA_real_
       last_add_signal_price <- NA_real_
       equity[n] <- equity[n] - costs[["total_cost"]]
@@ -1950,23 +2130,82 @@ bt_search_native <- function(ticker,
   out
 }
 
-.bt_native_report <- function(symbol, strategy, raw_rets, rets, equity, stats, trades,
-                              geometric = TRUE, verbose = FALSE, start_time = Sys.time()) {
+.bt_native_is_risk_normalized <- function(rets) {
+  target <- suppressWarnings(as.numeric(attr(rets, "risk_target", exact = TRUE))[1])
+  scale <- suppressWarnings(as.numeric(attr(rets, "risk_scale", exact = TRUE))[1])
+  is.finite(target) && target > 0 && is.finite(scale) && scale > 0
+}
+
+.bt_native_risk_target <- function(rets) {
+  target <- suppressWarnings(as.numeric(attr(rets, "risk_target", exact = TRUE))[1])
+  if (is.finite(target) && target > 0) target else NA_real_
+}
+
+.bt_native_risk_label <- function(rets) {
+  if (!.bt_native_is_risk_normalized(rets)) {
+    return("Raw simulation")
+  }
+  paste0("Risk-normalized ", .bt_native_format_plain_num(.bt_native_risk_target(rets)), "% vol")
+}
+
+.bt_native_risk_title_suffix <- function(rets) {
+  if (!.bt_native_is_risk_normalized(rets)) {
+    return("")
+  }
+  paste0(" Risk-Normalized ", .bt_native_format_plain_num(.bt_native_risk_target(rets)), "%")
+}
+
+.bt_native_performance_equity <- function(raw_equity, rets, initial_equity) {
+  if (!.bt_native_is_risk_normalized(rets) || is.null(rets) || !"Discrete" %in% colnames(rets)) {
+    return(raw_equity)
+  }
+  start <- suppressWarnings(as.numeric(initial_equity)[1])
+  if (!is.finite(start) || start <= 0) {
+    start <- suppressWarnings(as.numeric(raw_equity[1]))
+  }
+  if (!is.finite(start) || start <= 0) {
+    start <- 1
+  }
+  discrete <- suppressWarnings(as.numeric(rets$Discrete))
+  discrete[!is.finite(discrete)] <- 0
+  values <- start * cumprod(1 + discrete)
+  out <- xts::xts(values, order.by = zoo::index(rets))
+  colnames(out) <- colnames(raw_equity)[1] %||% "Equity"
+  out
+}
+
+.bt_native_risk_normalization_block <- function(rets) {
+  if (!.bt_native_is_risk_normalized(rets)) {
+    return(.bt_info_block("risk_normalization", "Risk Normalization", list(), order = 55, contexts = c("report", "stats")))
+  }
+  target <- .bt_native_risk_target(rets)
+  scale <- suppressWarnings(as.numeric(attr(rets, "risk_scale", exact = TRUE))[1])
+  original <- suppressWarnings(as.numeric(attr(rets, "risk_original", exact = TRUE))[1])
+  rows <- list(
+    "Performance Source" = .bt_native_risk_label(rets),
+    "Target Annual Vol" = .bt_native_format_pct(target / 100),
+    "Original Annual Vol" = if (is.finite(original)) .bt_native_format_pct(original / 100) else NULL,
+    "Return Scale" = .bt_native_format_plain_num(scale),
+    "Execution/Costs" = "Raw simulation"
+  )
+  .bt_info_block("risk_normalization", "Risk Normalization", rows, order = 55, contexts = c("report", "stats"))
+}
+
+.bt_native_report <- function(symbol, strategy, info_blocks,
+                              geometric = TRUE, verbose = FALSE,
+                              show_quarterly = FALSE,
+                              start_time = Sys.time()) {
   .dbg("Results for ", symbol, " - ", .bt_native_report_type(strategy), "\n")
   if (isTRUE(verbose)) {
-    print(stats)
-    cat("\n")
-    print(trades)
-    cat("\n")
+    full_blocks <- .bt_filter_info_blocks(info_blocks, context = NULL)
+    print(full_blocks)
   }
 
-  tab <- .bt_native_table_monthly_returns(raw_rets$Discrete, geometric = geometric)
-  cat("--- Monthly Returns (Geometric) ---\n")
-  print(tab)
-  .table_quarterly_returns(raw_rets$Discrete, return_data = TRUE, geometric = geometric)
-  .table_quarterly_profit(.bt_native_profit_object(equity), return_data = TRUE)
-  .bt_native_print_cost_summary(stats, trades)
-  .bt_native_print_returns_summary(rets, geometric = geometric)
+  .bt_print_info_blocks(
+    info_blocks,
+    context = "report",
+    include = if (isTRUE(show_quarterly)) c("quarterly_returns", "quarterly_profit") else NULL
+  )
 
   total_secs <- round(as.numeric(difftime(Sys.time(), start_time, units = "secs")))
   hrs <- total_secs %/% 3600
@@ -1978,6 +2217,1077 @@ bt_search_native <- function(ticker,
   cat("\n-----------------------------------\n\n")
 
   invisible(NULL)
+}
+
+.bt_info_block <- function(id, title, rows, order = 100, contexts = c("report", "stats")) {
+  rows <- rows[!vapply(rows, is.null, logical(1))]
+  if (!length(rows)) {
+    out <- data.frame(stat_name = character(), value = character(), stringsAsFactors = FALSE)
+  } else {
+    values <- vapply(rows, function(x) {
+      if (length(x) == 0 || is.na(x[1])) {
+        ""
+      } else {
+        as.character(x[1])
+      }
+    }, character(1))
+    keep <- nzchar(values)
+    out <- data.frame(
+      stat_name = names(values)[keep],
+      value = unname(values[keep]),
+      stringsAsFactors = FALSE
+    )
+  }
+  attr(out, "id") <- id
+  attr(out, "title") <- title
+  attr(out, "order") <- order
+  attr(out, "contexts") <- contexts
+  attr(out, "type") <- "key_value"
+  class(out) <- c("bt_info_block", "data.frame")
+  out
+}
+
+.bt_info_block_from_matrix <- function(id, title, mat, order = 100, contexts = c("report", "stats")) {
+  if (is.null(mat) || !length(mat)) {
+    rows <- list()
+  } else if (NCOL(mat) == 1) {
+    vals <- as.character(mat[, 1])
+    rows <- as.list(vals)
+    names(rows) <- rownames(mat)
+  } else {
+    rows <- list()
+  }
+  .bt_info_block(id, title, rows, order = order, contexts = contexts)
+}
+
+.bt_info_table_block <- function(id, title, table, order = 100, contexts = "report") {
+  out <- as.data.frame(table, stringsAsFactors = FALSE)
+  attr(out, "id") <- id
+  attr(out, "title") <- title
+  attr(out, "order") <- order
+  attr(out, "contexts") <- contexts
+  attr(out, "type") <- "table"
+  class(out) <- c("bt_info_table_block", "data.frame")
+  out
+}
+
+.bt_info_block_id <- function(block) attr(block, "id", exact = TRUE) %||% ""
+.bt_info_block_title <- function(block) attr(block, "title", exact = TRUE) %||% .bt_info_block_id(block)
+.bt_info_block_contexts <- function(block) attr(block, "contexts", exact = TRUE) %||% character()
+.bt_info_block_order <- function(block) attr(block, "order", exact = TRUE) %||% 100
+.bt_info_block_type <- function(block) attr(block, "type", exact = TRUE) %||% "key_value"
+
+.bt_filter_info_blocks <- function(blocks, context = "report", include = NULL, type = NULL) {
+  if (is.null(blocks) || !length(blocks)) {
+    return(list())
+  }
+  keep <- vapply(blocks, function(block) {
+    id <- .bt_info_block_id(block)
+    context_ok <- is.null(context) || context %in% .bt_info_block_contexts(block)
+    include_ok <- !is.null(include) && id %in% include
+    type_ok <- is.null(type) || identical(.bt_info_block_type(block), type)
+    has_rows <- NROW(block) > 0
+    (context_ok || include_ok) && type_ok && has_rows
+  }, logical(1))
+  out <- blocks[keep]
+  if (!length(out)) {
+    return(out)
+  }
+  out[order(vapply(out, .bt_info_block_order, numeric(1)))]
+}
+
+.bt_print_info_blocks <- function(blocks, context = "report", include = NULL) {
+  selected <- .bt_filter_info_blocks(blocks, context = context, include = include)
+  for (block in selected) {
+    title <- .bt_info_block_title(block)
+    cat(sprintf("\n--- %s ---\n", title))
+    if (identical(.bt_info_block_type(block), "key_value")) {
+      mat <- matrix(block$value, ncol = 1, dimnames = list(block$stat_name, "Value"))
+      print(mat, quote = FALSE, right = TRUE)
+    } else {
+      print(as.data.frame(block), quote = FALSE, right = TRUE)
+    }
+    cat("\n")
+  }
+  invisible(selected)
+}
+
+.bt_native_pick_stat_chr <- function(stats, name, default = "") {
+  if (is.null(stats) || !name %in% names(stats)) {
+    return(default)
+  }
+  value <- as.character(stats[[name]][1])
+  if (is.na(value) || !nzchar(value)) default else value
+}
+
+.bt_native_pick_stat_num <- function(stats, name, default = NA_real_) {
+  if (is.null(stats) || !name %in% names(stats)) {
+    return(default)
+  }
+  value <- suppressWarnings(as.numeric(stats[[name]][1]))
+  if (is.finite(value)) value else default
+}
+
+.bt_native_format_plain_num <- function(x, digits = 4) {
+  x <- suppressWarnings(as.numeric(x)[1])
+  if (!is.finite(x)) {
+    return("")
+  }
+  out <- format(round(x, digits), trim = TRUE, scientific = FALSE)
+  out <- sub("(\\.[0-9]*?)0+$", "\\1", out)
+  sub("\\.$", "", out)
+}
+
+.bt_native_position_sizing_label <- function(stats) {
+  ps_type <- .bt_native_pick_stat_chr(stats, "PosSiz", "unknown")
+  ps_value <- .bt_native_pick_stat_num(stats, "PsValue")
+  value <- .bt_native_format_plain_num(ps_value)
+  if (!nzchar(value)) {
+    return(ps_type)
+  }
+  if (identical(ps_type, "contract")) {
+    return(paste(value, "contracts/shares"))
+  }
+  if (identical(ps_type, "notional")) {
+    return(paste0(value, "% equity notional"))
+  }
+  if (identical(ps_type, "atr")) {
+    return(paste0(value, "% equity risk to ATR stop"))
+  }
+  if (identical(ps_type, "eldoc")) {
+    return(paste0(value, "% equity risk to ElDoc stop"))
+  }
+  paste(ps_type, value)
+}
+
+.bt_native_cost_setting_label <- function(value, type) {
+  value_chr <- .bt_native_format_plain_num(value)
+  type_chr <- if (is.null(type) || is.na(type) || !nzchar(type)) "" else as.character(type)
+  if (!nzchar(value_chr) && !nzchar(type_chr)) {
+    return("")
+  }
+  if (!nzchar(type_chr)) {
+    return(value_chr)
+  }
+  paste(value_chr, type_chr)
+}
+
+.bt_native_config_summary_table <- function(stats) {
+  fee <- .bt_native_cost_setting_label(
+    .bt_native_pick_stat_num(stats, "FeeValue"),
+    .bt_native_pick_stat_chr(stats, "FeeType")
+  )
+  slippage <- .bt_native_cost_setting_label(
+    .bt_native_pick_stat_num(stats, "SlipValue"),
+    .bt_native_pick_stat_chr(stats, "SlipType")
+  )
+  rows <- c(
+    "Strategy",
+    "Execution",
+    "Position Sizing",
+    "Initial Equity",
+    "Reinvest",
+    "Fee Mode",
+    "Fee",
+    "Slippage",
+    "Multiplier",
+    "Tick Size"
+  )
+  vals <- c(
+    .bt_native_pick_stat_chr(stats, "Indicator"),
+    .bt_native_pick_stat_chr(stats, "Execution"),
+    .bt_native_position_sizing_label(stats),
+    .bt_native_format_money(.bt_native_pick_stat_num(stats, "InitialEquity")),
+    .bt_native_pick_stat_chr(stats, "Reinvest"),
+    .bt_native_pick_stat_chr(stats, "FeeMode"),
+    fee,
+    slippage,
+    .bt_native_format_plain_num(.bt_native_pick_stat_num(stats, "Multiplier")),
+    .bt_native_format_plain_num(.bt_native_pick_stat_num(stats, "TickSize"))
+  )
+  matrix(vals, ncol = 1, dimnames = list(rows, "Value"))
+}
+
+.bt_native_print_config_summary <- function(stats) {
+  cat("\n--- Backtest Configuration ---\n")
+  print(.bt_native_config_summary_table(stats), quote = FALSE, right = TRUE)
+  cat("\n")
+  invisible(NULL)
+}
+
+.bt_native_empty_trade_episodes <- function() {
+  data.frame(
+    trade_id = integer(),
+    symbol = character(),
+    side = character(),
+    entry_time = as.POSIXct(character()),
+    exit_time = as.POSIXct(character()),
+    entry_price = numeric(),
+    exit_price = numeric(),
+    entry_qty = numeric(),
+    max_qty = numeric(),
+    units_max = integer(),
+    bars_held = integer(),
+    gross_pnl = numeric(),
+    net_pnl = numeric(),
+    fees = numeric(),
+    slippage = numeric(),
+    total_cost = numeric(),
+    entry_atr = numeric(),
+    entry_atr_value_per_unit = numeric(),
+    initial_risk_price = numeric(),
+    initial_risk_pct = numeric(),
+    initial_risk_cash = numeric(),
+    initial_stop_atr = numeric(),
+    initial_risk_per_unit = numeric(),
+    final_R = numeric(),
+    exit_reason = character(),
+    stringsAsFactors = FALSE
+  )
+}
+
+.bt_native_excursion_thresholds <- function() {
+  c(5, 10, 15, 20, 25, 30, 35, 40)
+}
+
+.bt_native_threshold_col <- function(prefix, threshold, suffix = "") {
+  paste0(prefix, "_", gsub("\\.", "_", sprintf("%.1f", threshold)), suffix)
+}
+
+.bt_native_empty_trade_excursions <- function() {
+  out <- data.frame(
+    trade_id = integer(),
+    symbol = character(),
+    side = character(),
+    entry_time = as.POSIXct(character()),
+    exit_time = as.POSIXct(character()),
+    entry_price = numeric(),
+    exit_price = numeric(),
+    entry_atr = numeric(),
+    mfe_price = numeric(),
+    mae_price = numeric(),
+    mfe_pct = numeric(),
+    mae_pct = numeric(),
+    mfe_atr = numeric(),
+    mae_atr = numeric(),
+    mfe_R = numeric(),
+    mae_R = numeric(),
+    final_R = numeric(),
+    bars_to_mfe = integer(),
+    bars_to_mae = integer(),
+    stringsAsFactors = FALSE
+  )
+  for (threshold in .bt_native_excursion_thresholds()) {
+    out[[.bt_native_threshold_col("hit", threshold, "_atr")]] <- logical()
+    out[[.bt_native_threshold_col("post", threshold, "_atr_R")]] <- numeric()
+  }
+  out
+}
+
+.bt_native_empty_pyramid_events <- function() {
+  data.frame(
+    trade_id = integer(),
+    event_time = as.POSIXct(character()),
+    side = character(),
+    unit_number = integer(),
+    trigger_atr = numeric(),
+    fill_price = numeric(),
+    initial_qty = numeric(),
+    qty_added = numeric(),
+    position_after_add = numeric(),
+    add_entry_qty_ratio = numeric(),
+    position_entry_qty_ratio = numeric(),
+    atr_at_add = numeric(),
+    risk_price_at_add = numeric(),
+    stop_distance_atr_at_add = numeric(),
+    fees = numeric(),
+    slippage = numeric(),
+    total_cost = numeric(),
+    add_fee_per_contract = numeric(),
+    add_slip_per_contract = numeric(),
+    add_cost_per_contract = numeric(),
+    add_cost_pct_notional = numeric(),
+    entry_fee_per_contract = numeric(),
+    entry_slip_per_contract = numeric(),
+    entry_cost_per_contract = numeric(),
+    entry_cost_pct_notional = numeric(),
+    stringsAsFactors = FALSE
+  )
+}
+
+.bt_native_price_columns_for_excursion <- function(mktdata) {
+  cn <- colnames(mktdata)
+  pick <- function(cands) {
+    hit <- intersect(cands, cn)
+    if (length(hit)) hit[1] else NA_character_
+  }
+  high_col <- pick(c("PU_High", "PU_H", "exec_high", "High", "high", "Hi"))
+  low_col <- pick(c("PU_Low", "PU_L", "exec_low", "Low", "low", "Lo"))
+  close_col <- pick(c("PU_Close", "PU_C", "exec_close", "Close", "close", "Cl"))
+  list(
+    high = high_col,
+    low = low_col,
+    close = close_col,
+    ok = !any(is.na(c(high_col, low_col, close_col)))
+  )
+}
+
+.bt_native_which_index <- function(idx, time) {
+  if (!length(idx) || is.null(time) || is.na(time)) {
+    return(NA_integer_)
+  }
+  time <- as.POSIXct(time, tz = "UTC")
+  idx_posix <- as.POSIXct(idx, tz = "UTC")
+  hit <- which(idx_posix == time)
+  if (length(hit)) {
+    return(hit[1])
+  }
+  before <- which(idx_posix <= time)
+  if (length(before)) {
+    return(utils::tail(before, 1))
+  }
+  NA_integer_
+}
+
+.bt_native_trade_risk_price <- function(i, side, entry_price, mktdata, strategy, risk) {
+  if (!is.finite(entry_price) || entry_price <= 0 || !is.finite(i) || i < 1) {
+    return(NA_real_)
+  }
+  source <- risk$stop_source %||% if (identical(risk$ps_type, "atr")) "atr" else "eldoc"
+  if (identical(source, "atr") && "ATR" %in% colnames(mktdata)) {
+    atr <- suppressWarnings(as.numeric(mktdata[i, "ATR"]))
+    mult <- risk$atr_mult %||% strategy$params$atr_mult %||% 2
+    if (is.finite(atr) && atr > 0 && is.finite(mult) && mult > 0) {
+      return(atr * mult)
+    }
+  }
+  if (identical(strategy$type, "donchian")) {
+    stop_col <- if (identical(side, "long")) "DonchianLower" else "DonchianUpper"
+    if (stop_col %in% colnames(mktdata)) {
+      stop_price <- suppressWarnings(as.numeric(mktdata[i, stop_col]))
+      if (is.finite(stop_price) && stop_price > 0) {
+        return(abs(entry_price - stop_price))
+      }
+    }
+  }
+  NA_real_
+}
+
+.bt_native_trade_diagnostics <- function(trades, positions, mktdata, strategy, risk, metadata) {
+  empty <- list(
+    episodes = .bt_native_empty_trade_episodes(),
+    excursions = .bt_native_empty_trade_excursions(),
+    pyramid_events = .bt_native_empty_pyramid_events()
+  )
+  if (is.null(trades) || !NROW(trades) || is.null(mktdata) || !NROW(mktdata)) {
+    return(empty)
+  }
+
+  entry_reasons <- c("long_entry", "short_entry")
+  exit_reasons <- c("long_exit", "short_exit", "end_exit")
+  pyramid_reasons <- c("long_pyramid", "short_pyramid")
+  idx <- zoo::index(mktdata)
+  price_cols <- .bt_native_price_columns_for_excursion(mktdata)
+  if (!isTRUE(price_cols$ok)) {
+    return(empty)
+  }
+  high <- suppressWarnings(as.numeric(mktdata[, price_cols$high]))
+  low <- suppressWarnings(as.numeric(mktdata[, price_cols$low]))
+  atr <- if ("ATR" %in% colnames(mktdata)) suppressWarnings(as.numeric(mktdata[, "ATR"])) else rep(NA_real_, NROW(mktdata))
+  multiplier <- abs(suppressWarnings(as.numeric(metadata$multiplier)[1]))
+  if (!is.finite(multiplier) || multiplier <= 0) multiplier <- 1
+  pnl_multiplier <- multiplier * if (isTRUE(metadata$is_di) && grepl("^PU_", price_cols$close)) -1 else 1
+
+  episodes <- list()
+  excursions <- list()
+  pyramid_events <- list()
+  current <- NULL
+  trade_id <- 0L
+
+  close_episode <- function(exit_row) {
+    if (is.null(current)) {
+      return(NULL)
+    }
+    entry_i <- .bt_native_which_index(idx, current$entry_time)
+    exit_i <- .bt_native_which_index(idx, exit_row$timestamp)
+    if (!is.finite(entry_i) || !is.finite(exit_i) || exit_i < entry_i) {
+      return(NULL)
+    }
+    window <- entry_i:exit_i
+    side_sign <- if (identical(current$side, "long")) 1 else -1
+    entry_price <- current$entry_price
+    exit_price <- suppressWarnings(as.numeric(exit_row$price)[1])
+    window_high <- high[window]
+    window_low <- low[window]
+
+    if (identical(current$side, "long")) {
+      mfe_i_rel <- which.max(window_high)
+      mae_i_rel <- which.min(window_low)
+      mfe_price <- max(window_high, na.rm = TRUE) - entry_price
+      mae_price <- entry_price - min(window_low, na.rm = TRUE)
+    } else {
+      mfe_i_rel <- which.min(window_low)
+      mae_i_rel <- which.max(window_high)
+      mfe_price <- entry_price - min(window_low, na.rm = TRUE)
+      mae_price <- max(window_high, na.rm = TRUE) - entry_price
+    }
+    mfe_price <- max(0, mfe_price)
+    mae_price <- max(0, mae_price)
+    entry_atr <- atr[entry_i]
+    if (!is.finite(entry_atr) || entry_atr <= 0) entry_atr <- NA_real_
+    risk_price <- .bt_native_trade_risk_price(entry_i, current$side, entry_price, mktdata, strategy, risk)
+    if (!is.finite(risk_price) || risk_price <= 0) risk_price <- NA_real_
+    gross_pnl <- -sum(current$rows$qty_delta * current$rows$price, na.rm = TRUE) * pnl_multiplier
+    fees <- sum(current$rows$fees, na.rm = TRUE)
+    slippage <- sum(current$rows$slippage, na.rm = TRUE)
+    total_cost <- sum(current$rows$total_cost, na.rm = TRUE)
+    net_pnl <- gross_pnl - total_cost
+    initial_risk_cash <- risk_price * abs(current$entry_qty) * abs(pnl_multiplier)
+    if (!is.finite(initial_risk_cash) || initial_risk_cash <= 0) initial_risk_cash <- NA_real_
+    entry_atr_value_per_unit <- if (is.finite(entry_atr)) entry_atr * abs(pnl_multiplier) else NA_real_
+    initial_stop_atr <- if (is.finite(entry_atr) && is.finite(risk_price) && entry_atr > 0) risk_price / entry_atr else NA_real_
+    initial_risk_per_unit <- if (is.finite(initial_risk_cash) && abs(current$entry_qty) > 0) {
+      initial_risk_cash / abs(current$entry_qty)
+    } else if (is.finite(risk_price)) {
+      risk_price * abs(pnl_multiplier)
+    } else {
+      NA_real_
+    }
+    final_R <- if (is.finite(initial_risk_cash)) net_pnl / initial_risk_cash else NA_real_
+    max_qty <- max(abs(current$rows$qty), na.rm = TRUE)
+    units_max <- max(current$rows$units, na.rm = TRUE)
+
+    episodes[[length(episodes) + 1L]] <<- data.frame(
+      trade_id = current$trade_id,
+      symbol = current$symbol,
+      side = current$side,
+      entry_time = current$entry_time,
+      exit_time = as.POSIXct(exit_row$timestamp, tz = "UTC"),
+      entry_price = entry_price,
+      exit_price = exit_price,
+      entry_qty = abs(current$entry_qty),
+      max_qty = max_qty,
+      units_max = units_max,
+      bars_held = length(window) - 1L,
+      gross_pnl = gross_pnl,
+      net_pnl = net_pnl,
+      fees = fees,
+      slippage = slippage,
+      total_cost = total_cost,
+      entry_atr = entry_atr,
+      entry_atr_value_per_unit = entry_atr_value_per_unit,
+      initial_risk_price = risk_price,
+      initial_risk_pct = if (is.finite(risk_price)) risk_price / entry_price else NA_real_,
+      initial_risk_cash = initial_risk_cash,
+      initial_stop_atr = initial_stop_atr,
+      initial_risk_per_unit = initial_risk_per_unit,
+      final_R = final_R,
+      exit_reason = as.character(exit_row$reason),
+      stringsAsFactors = FALSE
+    )
+
+    thresholds <- .bt_native_excursion_thresholds()
+    hit_cols <- .bt_native_threshold_col("hit", thresholds, "_atr")
+    post_cols <- .bt_native_threshold_col("post", thresholds, "_atr_R")
+    hit_vals <- if (is.finite(entry_atr)) mfe_price / entry_atr >= thresholds else rep(NA, length(thresholds))
+    names(hit_vals) <- hit_cols
+    post_threshold_R <- function(threshold) {
+      if (!isTRUE(hit_vals[[.bt_native_threshold_col("hit", threshold, "_atr")]]) ||
+          !is.finite(entry_atr) || !is.finite(risk_price) || risk_price <= 0 ||
+          !is.finite(exit_price)) {
+        return(NA_real_)
+      }
+      threshold_price <- entry_price + side_sign * threshold * entry_atr
+      side_sign * (exit_price - threshold_price) / risk_price
+    }
+    excursion_row <- data.frame(
+      trade_id = current$trade_id,
+      symbol = current$symbol,
+      side = current$side,
+      entry_time = current$entry_time,
+      exit_time = as.POSIXct(exit_row$timestamp, tz = "UTC"),
+      entry_price = entry_price,
+      exit_price = exit_price,
+      entry_atr = entry_atr,
+      mfe_price = mfe_price,
+      mae_price = mae_price,
+      mfe_pct = mfe_price / entry_price,
+      mae_pct = mae_price / entry_price,
+      mfe_atr = if (is.finite(entry_atr)) mfe_price / entry_atr else NA_real_,
+      mae_atr = if (is.finite(entry_atr)) mae_price / entry_atr else NA_real_,
+      mfe_R = if (is.finite(risk_price)) mfe_price / risk_price else NA_real_,
+      mae_R = if (is.finite(risk_price)) mae_price / risk_price else NA_real_,
+      final_R = final_R,
+      bars_to_mfe = if (length(mfe_i_rel)) mfe_i_rel[1] - 1L else NA_integer_,
+      bars_to_mae = if (length(mae_i_rel)) mae_i_rel[1] - 1L else NA_integer_,
+      stringsAsFactors = FALSE
+    )
+    for (j in seq_along(thresholds)) {
+      excursion_row[[hit_cols[[j]]]] <- hit_vals[[j]]
+      excursion_row[[post_cols[[j]]]] <- post_threshold_R(thresholds[[j]])
+    }
+    excursions[[length(excursions) + 1L]] <<- excursion_row
+    invisible(NULL)
+  }
+
+  for (row_i in seq_len(NROW(trades))) {
+    row <- trades[row_i, , drop = FALSE]
+    reason <- as.character(row$reason[1])
+    if (reason %in% entry_reasons) {
+      trade_id <- trade_id + 1L
+      current <- list(
+        trade_id = trade_id,
+        symbol = as.character(row$symbol[1]),
+        side = if (grepl("^long", reason)) "long" else "short",
+        entry_time = as.POSIXct(row$timestamp[1], tz = "UTC"),
+        entry_price = suppressWarnings(as.numeric(row$price[1])),
+        entry_qty = suppressWarnings(as.numeric(row$qty_delta[1])),
+        rows = row
+      )
+    } else if (reason %in% pyramid_reasons && !is.null(current)) {
+      current$rows <- rbind(current$rows, row)
+      event_i <- .bt_native_which_index(idx, row$timestamp[1])
+      event_atr <- if (is.finite(event_i)) atr[event_i] else NA_real_
+      trigger_atr <- if (is.finite(event_atr) && event_atr > 0 && is.finite(current$entry_price)) {
+        abs(suppressWarnings(as.numeric(row$price[1])) - current$entry_price) / event_atr
+      } else {
+        NA_real_
+      }
+      risk_at_add <- if (is.finite(event_i)) {
+        .bt_native_trade_risk_price(event_i, current$side, suppressWarnings(as.numeric(row$price[1])), mktdata, strategy, risk)
+      } else {
+        NA_real_
+      }
+      initial_qty <- abs(suppressWarnings(as.numeric(current$entry_qty[1])))
+      qty_added <- abs(suppressWarnings(as.numeric(row$qty_delta[1])))
+      position_after_add <- abs(suppressWarnings(as.numeric(row$qty[1])))
+      add_entry_qty_ratio <- if (is.finite(initial_qty) && initial_qty > 0) qty_added / initial_qty else NA_real_
+      position_entry_qty_ratio <- if (is.finite(initial_qty) && initial_qty > 0) position_after_add / initial_qty else NA_real_
+      stop_distance_atr_at_add <- if (is.finite(risk_at_add) && risk_at_add > 0 &&
+                                      is.finite(event_atr) && event_atr > 0) {
+        risk_at_add / event_atr
+      } else {
+        NA_real_
+      }
+      entry_row <- current$rows[1, , drop = FALSE]
+      add_fees <- suppressWarnings(as.numeric(row$fees[1]))
+      add_slippage <- suppressWarnings(as.numeric(row$slippage[1]))
+      add_total_cost <- suppressWarnings(as.numeric(row$total_cost[1]))
+      entry_fees <- suppressWarnings(as.numeric(entry_row$fees[1]))
+      entry_slippage <- suppressWarnings(as.numeric(entry_row$slippage[1]))
+      entry_total_cost <- suppressWarnings(as.numeric(entry_row$total_cost[1]))
+      entry_price <- suppressWarnings(as.numeric(entry_row$price[1]))
+      add_price <- suppressWarnings(as.numeric(row$price[1]))
+      add_notional <- if (is.finite(add_price) && add_price > 0 && qty_added > 0) {
+        add_price * multiplier * qty_added
+      } else {
+        NA_real_
+      }
+      entry_notional <- if (is.finite(entry_price) && entry_price > 0 && initial_qty > 0) {
+        entry_price * multiplier * initial_qty
+      } else {
+        NA_real_
+      }
+      per_unit <- function(value, qty_abs) {
+        if (is.finite(value) && is.finite(qty_abs) && qty_abs > 0) value / qty_abs else NA_real_
+      }
+      pct_notional <- function(value, notional) {
+        if (is.finite(value) && is.finite(notional) && notional > 0) value / notional else NA_real_
+      }
+      pyramid_events[[length(pyramid_events) + 1L]] <- data.frame(
+        trade_id = current$trade_id,
+        event_time = as.POSIXct(row$timestamp[1], tz = "UTC"),
+        side = current$side,
+        unit_number = suppressWarnings(as.integer(row$units[1])),
+        trigger_atr = trigger_atr,
+        fill_price = suppressWarnings(as.numeric(row$price[1])),
+        initial_qty = initial_qty,
+        qty_added = qty_added,
+        position_after_add = position_after_add,
+        add_entry_qty_ratio = add_entry_qty_ratio,
+        position_entry_qty_ratio = position_entry_qty_ratio,
+        atr_at_add = event_atr,
+        risk_price_at_add = risk_at_add,
+        stop_distance_atr_at_add = stop_distance_atr_at_add,
+        fees = add_fees,
+        slippage = add_slippage,
+        total_cost = add_total_cost,
+        add_fee_per_contract = per_unit(add_fees, qty_added),
+        add_slip_per_contract = per_unit(add_slippage, qty_added),
+        add_cost_per_contract = per_unit(add_total_cost, qty_added),
+        add_cost_pct_notional = pct_notional(add_total_cost, add_notional),
+        entry_fee_per_contract = per_unit(entry_fees, initial_qty),
+        entry_slip_per_contract = per_unit(entry_slippage, initial_qty),
+        entry_cost_per_contract = per_unit(entry_total_cost, initial_qty),
+        entry_cost_pct_notional = pct_notional(entry_total_cost, entry_notional),
+        stringsAsFactors = FALSE
+      )
+    } else if (reason %in% exit_reasons && !is.null(current)) {
+      current$rows <- rbind(current$rows, row)
+      close_episode(row)
+      current <- NULL
+    }
+  }
+
+  list(
+    episodes = if (length(episodes)) do.call(rbind, episodes) else empty$episodes,
+    excursions = if (length(excursions)) do.call(rbind, excursions) else empty$excursions,
+    pyramid_events = if (length(pyramid_events)) do.call(rbind, pyramid_events) else empty$pyramid_events
+  )
+}
+
+.bt_native_bool_label <- function(x) {
+  if (isTRUE(x)) "TRUE" else "FALSE"
+}
+
+.bt_native_strategy_block <- function(symbol, strategy) {
+  rows <- list(
+    Symbol = symbol,
+    Strategy = .bt_native_strategy_label(strategy),
+    Type = toupper(strategy$type),
+    Long = .bt_native_bool_label(strategy$long),
+    Short = .bt_native_bool_label(strategy$short),
+    "Invert Signals" = .bt_native_bool_label(strategy$invert_signals)
+  )
+  if (identical(strategy$type, "donchian")) {
+    rows <- c(rows, list(
+      "Upper Channel" = strategy$params$up,
+      "Lower Channel" = strategy$params$down
+    ))
+    if (isTRUE(strategy$params$pyramid)) {
+      rows <- c(rows, list(
+        Pyramid = "TRUE",
+        "ATR Lookback" = strategy$params$atr_n,
+        "Pyramid Start ATR" = .bt_native_format_plain_num(strategy$params$pyramid_start),
+        "Pyramid Step ATR" = .bt_native_format_plain_num(strategy$params$pyramid_step),
+        "Pyramid Sizing" = strategy$params$pyramid_sizing %||% "risk",
+        "Pyramid Qty %" = if (identical(strategy$params$pyramid_sizing %||% "risk", "entry_qty")) {
+          .bt_native_format_pct(strategy$params$pyramid_qty_pct %||% 1)
+        } else {
+          NULL
+        },
+        "Max Units" = strategy$params$max_units
+      ))
+    }
+  } else if (identical(strategy$type, "tsmom")) {
+    rows <- c(rows, list(
+      "Lookback Bars" = strategy$params$lookback,
+      Threshold = .bt_native_format_pct(strategy$params$threshold),
+      "ATR Lookback" = strategy$params$atr_n
+    ))
+  } else {
+    rows <- c(rows, list(
+      "Fast Window" = strategy$params$fast,
+      "Slow Window" = strategy$params$slow
+    ))
+  }
+  .bt_info_block("strategy", "Strategy", rows, order = 10, contexts = c("report", "stats"))
+}
+
+.bt_native_sizing_block <- function(risk, stats) {
+  finite_or_null <- function(x) {
+    x <- suppressWarnings(as.numeric(x)[1])
+    if (is.finite(x)) .bt_native_format_plain_num(x) else NULL
+  }
+  rows <- list(
+    "Position Sizing" = .bt_native_position_sizing_label(stats),
+    "Sizing Type" = risk$ps_type %||% risk$mode,
+    "Sizing Value" = .bt_native_format_plain_num(if (identical(risk$mode, "fixed")) risk$fixed_qty else risk$risk_pct),
+    "Sizing Mode" = risk$mode,
+    "Stop Source" = risk$stop_source,
+    "ATR Lookback" = if (!is.null(risk$stop_source) && identical(risk$stop_source, "atr")) stats$AtrLookback[1] else NULL,
+    "ATR Multiple" = if (!is.null(risk$stop_source) && identical(risk$stop_source, "atr")) .bt_native_format_plain_num(risk$atr_mult) else NULL,
+    "Initial Equity" = .bt_native_format_money(risk$initial_equity),
+    Reinvest = .bt_native_bool_label(risk$reinvest),
+    "Integer Qty" = .bt_native_bool_label(risk$integer_qty),
+    "Max Qty" = finite_or_null(risk$max_qty),
+    "Max Leverage" = finite_or_null(risk$max_leverage),
+    "Min Risk Pct" = finite_or_null(risk$min_risk_pct)
+  )
+  .bt_info_block("sizing", "Position Sizing", rows, order = 20, contexts = c("report", "stats"))
+}
+
+.bt_native_execution_block <- function(execution) {
+  rows <- list(
+    Execution = execution$execution,
+    "Close On End" = .bt_native_bool_label(execution$close_on_end),
+    "Fee Mode" = execution$fee,
+    "Fee Value" = .bt_native_format_plain_num(execution$fee_value),
+    "Fee Type" = execution$fee_type,
+    "Slippage Value" = .bt_native_format_plain_num(execution$slip_value),
+    "Slippage Type" = execution$slip_type
+  )
+  .bt_info_block("execution", "Execution & Cost Settings", rows, order = 30, contexts = c("report", "stats"))
+}
+
+.bt_native_instrument_block <- function(metadata) {
+  rows <- list(
+    "Is Futures" = .bt_native_bool_label(metadata$is_futures),
+    "Is DI" = .bt_native_bool_label(metadata$is_di),
+    Root = metadata$root,
+    Multiplier = .bt_native_format_plain_num(metadata$multiplier),
+    "Tick Size" = .bt_native_format_plain_num(metadata$tick_size),
+    "Tick Value" = .bt_native_format_plain_num(metadata$tick_value),
+    Maturity = if (!is.null(metadata$maturity) && !is.na(metadata$maturity)) as.character(metadata$maturity) else NULL
+  )
+  .bt_info_block("instrument", "Instrument", rows, order = 40, contexts = c("report", "stats"))
+}
+
+.bt_native_trade_activity_block <- function(trades, stats, strategy) {
+  count_reason <- function(reason) {
+    if (is.null(trades) || !"reason" %in% names(trades)) {
+      return(0L)
+    }
+    sum(trades$reason == reason, na.rm = TRUE)
+  }
+  contracts <- .bt_native_pick_stat_num(stats, "contracts_traded")
+  rows <- list(
+    Trades = .bt_native_format_plain_num(.bt_native_pick_stat_num(stats, "num_trades", 0), digits = 0),
+    Orders = if (!is.null(trades)) .bt_native_format_plain_num(NROW(trades), digits = 0) else "0",
+    Contracts = if (isTRUE(.bt_native_pick_stat_chr(stats, "IsFutures") %in% "TRUE") && is.finite(contracts)) .bt_native_format_plain_num(contracts, digits = 2) else NULL,
+    "Long Entries" = count_reason("long_entry"),
+    "Short Entries" = count_reason("short_entry"),
+    "Long Exits" = count_reason("long_exit"),
+    "Short Exits" = count_reason("short_exit"),
+    Pyramids = if (identical(strategy$type, "donchian") && isTRUE(strategy$params$pyramid)) count_reason("long_pyramid") + count_reason("short_pyramid") else NULL
+  )
+  .bt_info_block("trade_activity", "Trade Activity", rows, order = 50, contexts = c("report", "stats"))
+}
+
+.bt_native_performance_block <- function(stats, rets = NULL) {
+  risk_normalized <- isTRUE(.bt_native_pick_stat_chr(stats, "ReturnSource") == "risk_normalized") ||
+    .bt_native_is_risk_normalized(rets)
+  target <- .bt_native_pick_stat_num(stats, "RiskTarget")
+  scale <- .bt_native_pick_stat_num(stats, "RiskScale")
+  source_label <- if (isTRUE(risk_normalized)) {
+    paste0("Risk-normalized ", .bt_native_format_plain_num(target), "% vol")
+  } else {
+    NULL
+  }
+  rows <- list(
+    "Return Source" = source_label,
+    "Risk Scale" = if (isTRUE(risk_normalized)) .bt_native_format_plain_num(scale) else NULL,
+    "Original Vol" = if (isTRUE(risk_normalized)) .bt_native_format_pct(.bt_native_pick_stat_num(stats, "RiskOriginal") / 100) else NULL,
+    "Target Vol" = if (isTRUE(risk_normalized)) .bt_native_format_pct(target / 100) else NULL,
+    Profit = .bt_native_format_money(.bt_native_pick_stat_num(stats, "net_profit")),
+    "Total Return" = .bt_native_format_pct(.bt_native_pick_stat_num(stats, "total_return")),
+    "Annualized Return" = .bt_native_format_pct(.bt_native_pick_stat_num(stats, "annualized_return")),
+    "Annualized Vol" = .bt_native_format_pct(.bt_native_pick_stat_num(stats, "annualized_vol")),
+    Sharpe = .bt_native_format_plain_num(.bt_native_pick_stat_num(stats, "sharpe")),
+    "Max Drawdown" = .bt_native_format_pct(.bt_native_pick_stat_num(stats, "max_drawdown"))
+  )
+  .bt_info_block("performance", "Performance", rows, order = 80, contexts = c("report", "stats"))
+}
+
+.bt_native_summary_num <- function(x, fun = stats::median) {
+  x <- suppressWarnings(as.numeric(x))
+  x <- x[is.finite(x)]
+  if (!length(x)) {
+    return(NA_real_)
+  }
+  fun(x)
+}
+
+.bt_native_summary_pct <- function(x) {
+  .bt_native_format_pct(.bt_native_summary_num(x))
+}
+
+.bt_native_quantile_num <- function(x, prob) {
+  .bt_native_summary_num(x, function(vals) stats::quantile(vals, prob, names = FALSE, na.rm = TRUE))
+}
+
+.bt_native_threshold_label <- function(threshold) {
+  .bt_native_format_plain_num(threshold, digits = 1)
+}
+
+.bt_native_hit_rate <- function(x) {
+  x <- x[!is.na(x)]
+  if (!length(x)) {
+    return("")
+  }
+  .bt_native_format_pct(mean(as.logical(x)))
+}
+
+.bt_native_hit_rate_count <- function(x) {
+  if (!length(x)) {
+    return("")
+  }
+  hits <- sum(as.logical(x), na.rm = TRUE)
+  paste0(.bt_native_format_pct(hits / length(x)), " (", hits, "/", length(x), ")")
+}
+
+.bt_native_post_threshold_win_rate <- function(x) {
+  x <- suppressWarnings(as.numeric(x))
+  x <- x[is.finite(x)]
+  if (!length(x)) {
+    return("")
+  }
+  .bt_native_format_pct(mean(x > 0))
+}
+
+.bt_native_unit_label <- function(metadata) {
+  if (isTRUE(metadata$is_futures)) "Contract" else "Unit"
+}
+
+.bt_native_atr_stats_block <- function(episodes, excursions, metadata) {
+  if (is.null(episodes) || !NROW(episodes)) {
+    return(.bt_info_block("atr_stats", "ATR Statistics", list(), order = 84, contexts = c("report", "stats")))
+  }
+  diag <- episodes
+  if (!"entry_atr" %in% names(diag) &&
+      !is.null(excursions) &&
+      all(c("trade_id", "entry_atr") %in% names(excursions))) {
+    diag <- merge(diag, excursions[, c("trade_id", "entry_atr"), drop = FALSE], by = "trade_id", all.x = TRUE)
+  }
+
+  entry_atr <- if ("entry_atr" %in% names(diag)) suppressWarnings(as.numeric(diag$entry_atr)) else rep(NA_real_, NROW(diag))
+  initial_risk_price <- if ("initial_risk_price" %in% names(diag)) suppressWarnings(as.numeric(diag$initial_risk_price)) else rep(NA_real_, NROW(diag))
+  initial_stop_atr <- if ("initial_stop_atr" %in% names(diag)) {
+    suppressWarnings(as.numeric(diag$initial_stop_atr))
+  } else {
+    initial_risk_price / entry_atr
+  }
+
+  multiplier <- abs(suppressWarnings(as.numeric(metadata$multiplier)[1]))
+  if (!is.finite(multiplier) || multiplier <= 0) {
+    multiplier <- 1
+  }
+  entry_atr_value <- if ("entry_atr_value_per_unit" %in% names(diag)) {
+    suppressWarnings(as.numeric(diag$entry_atr_value_per_unit))
+  } else {
+    entry_atr * multiplier
+  }
+  initial_risk_value <- if ("initial_risk_per_unit" %in% names(diag)) {
+    suppressWarnings(as.numeric(diag$initial_risk_per_unit))
+  } else {
+    initial_risk_price * multiplier
+  }
+
+  unit <- .bt_native_unit_label(metadata)
+  rows <- list(
+    Episodes = NROW(episodes),
+    "Mean Entry ATR Price" = .bt_native_format_plain_num(.bt_native_summary_num(entry_atr, mean)),
+    "Median Entry ATR Price" = .bt_native_format_plain_num(.bt_native_summary_num(entry_atr)),
+    "Mean Initial Stop ATR" = .bt_native_format_plain_num(.bt_native_summary_num(initial_stop_atr, mean)),
+    "Median Initial Stop ATR" = .bt_native_format_plain_num(.bt_native_summary_num(initial_stop_atr)),
+    "P75 Initial Stop ATR" = .bt_native_format_plain_num(.bt_native_quantile_num(initial_stop_atr, 0.75)),
+    "P90 Initial Stop ATR" = .bt_native_format_plain_num(.bt_native_quantile_num(initial_stop_atr, 0.90))
+  )
+  rows[[paste0("Mean 1 ATR Value / ", unit)]] <- .bt_native_format_money(.bt_native_summary_num(entry_atr_value, mean))
+  rows[[paste0("Median 1 ATR Value / ", unit)]] <- .bt_native_format_money(.bt_native_summary_num(entry_atr_value))
+  rows[[paste0("Mean 10 ATR Value / ", unit)]] <- .bt_native_format_money(.bt_native_summary_num(entry_atr_value * 10, mean))
+  rows[[paste0("Mean 20 ATR Value / ", unit)]] <- .bt_native_format_money(.bt_native_summary_num(entry_atr_value * 20, mean))
+  rows[[paste0("Mean Initial Stop Value / ", unit)]] <- .bt_native_format_money(.bt_native_summary_num(initial_risk_value, mean))
+  rows[[paste0("Median Initial Stop Value / ", unit)]] <- .bt_native_format_money(.bt_native_summary_num(initial_risk_value))
+
+  .bt_info_block("atr_stats", "ATR Statistics", rows, order = 84, contexts = c("report", "stats"))
+}
+
+.bt_native_excursion_block <- function(excursions) {
+  if (is.null(excursions) || !NROW(excursions)) {
+    return(.bt_info_block("excursions", "Trade Excursions", list(), order = 85, contexts = c("report", "stats")))
+  }
+  wins <- excursions[is.finite(excursions$final_R) & excursions$final_R > 0, , drop = FALSE]
+  losses <- excursions[is.finite(excursions$final_R) & excursions$final_R <= 0, , drop = FALSE]
+  rows <- list(
+    Episodes = NROW(excursions),
+    "Avg MFE %" = .bt_native_format_pct(mean(excursions$mfe_pct, na.rm = TRUE)),
+    "Median MFE %" = .bt_native_summary_pct(excursions$mfe_pct),
+    "Median MAE %" = .bt_native_summary_pct(excursions$mae_pct),
+    "Median MFE ATR" = .bt_native_format_plain_num(.bt_native_summary_num(excursions$mfe_atr)),
+    "Median MAE ATR" = .bt_native_format_plain_num(.bt_native_summary_num(excursions$mae_atr)),
+    "P75 MFE ATR" = .bt_native_format_plain_num(.bt_native_quantile_num(excursions$mfe_atr, 0.75)),
+    "P85 MFE ATR" = .bt_native_format_plain_num(.bt_native_quantile_num(excursions$mfe_atr, 0.85)),
+    "P90 MFE ATR" = .bt_native_format_plain_num(.bt_native_quantile_num(excursions$mfe_atr, 0.90)),
+    "P95 MFE ATR" = .bt_native_format_plain_num(.bt_native_quantile_num(excursions$mfe_atr, 0.95)),
+    "P75 MAE ATR" = .bt_native_format_plain_num(.bt_native_quantile_num(excursions$mae_atr, 0.75)),
+    "Win Median MFE ATR" = if (NROW(wins)) .bt_native_format_plain_num(.bt_native_summary_num(wins$mfe_atr)) else NULL,
+    "Loss Median MFE ATR" = if (NROW(losses)) .bt_native_format_plain_num(.bt_native_summary_num(losses$mfe_atr)) else NULL,
+    "Median Final R" = .bt_native_format_plain_num(.bt_native_summary_num(excursions$final_R))
+  )
+  .bt_info_block("excursions", "Trade Excursions", rows, order = 85, contexts = c("report", "stats"))
+}
+
+.bt_native_excursion_threshold_table <- function(excursions) {
+  if (is.null(excursions) || !NROW(excursions)) {
+    return(data.frame())
+  }
+  thresholds <- .bt_native_excursion_thresholds()
+  threshold_rows <- lapply(thresholds, function(threshold) {
+    hit_col <- .bt_native_threshold_col("hit", threshold, "_atr")
+    post_col <- .bt_native_threshold_col("post", threshold, "_atr_R")
+    hits <- if (hit_col %in% names(excursions)) {
+      excursions[[hit_col]]
+    } else {
+      suppressWarnings(as.numeric(excursions$mfe_atr)) >= threshold
+    }
+    hits <- as.logical(hits)
+    total_n <- length(hits)
+    hit_n <- sum(hits, na.rm = TRUE)
+    hit_subset <- if (total_n && hit_n) excursions[!is.na(hits) & hits, , drop = FALSE] else excursions[FALSE, , drop = FALSE]
+    post_vals <- if (post_col %in% names(excursions)) suppressWarnings(as.numeric(excursions[[post_col]])) else numeric()
+    data.frame(
+      ATRT = .bt_native_threshold_label(threshold),
+      Hits = if (total_n) paste0(hit_n, "/", total_n) else "",
+      `Hit %` = if (total_n) .bt_native_format_pct(hit_n / total_n) else "",
+      `Med FR` = if (NROW(hit_subset)) .bt_native_format_plain_num(.bt_native_summary_num(hit_subset$final_R)) else "",
+      `Mean FR` = if (NROW(hit_subset)) .bt_native_format_plain_num(.bt_native_summary_num(hit_subset$final_R, mean)) else "",
+      `Med PR` = .bt_native_format_plain_num(.bt_native_summary_num(post_vals)),
+      `Mean PR` = .bt_native_format_plain_num(.bt_native_summary_num(post_vals, mean)),
+      `PR Win %` = .bt_native_post_threshold_win_rate(post_vals),
+      check.names = FALSE,
+      stringsAsFactors = FALSE
+    )
+  })
+  do.call(rbind, threshold_rows)
+}
+
+.bt_native_excursion_threshold_block <- function(excursions) {
+  .bt_info_table_block(
+    "excursion_thresholds",
+    "Excursion Thresholds",
+    .bt_native_excursion_threshold_table(excursions),
+    order = 85.5,
+    contexts = c("report", "stats")
+  )
+}
+
+.bt_native_pyramid_block <- function(pyramid_events) {
+  if (is.null(pyramid_events) || !NROW(pyramid_events)) {
+    return(.bt_info_block("pyramiding", "Pyramiding", list(), order = 86, contexts = character()))
+  }
+  add_entry_ratio <- pyramid_events$add_entry_qty_ratio
+  if (is.null(add_entry_ratio) && all(c("qty_added", "initial_qty") %in% names(pyramid_events))) {
+    add_entry_ratio <- pyramid_events$qty_added / pyramid_events$initial_qty
+  }
+  position_entry_ratio <- pyramid_events$position_entry_qty_ratio
+  if (is.null(position_entry_ratio) && all(c("position_after_add", "initial_qty") %in% names(pyramid_events))) {
+    position_entry_ratio <- pyramid_events$position_after_add / pyramid_events$initial_qty
+  }
+  stop_distance_atr <- pyramid_events$stop_distance_atr_at_add
+  if (is.null(stop_distance_atr) && all(c("risk_price_at_add", "atr_at_add") %in% names(pyramid_events))) {
+    stop_distance_atr <- pyramid_events$risk_price_at_add / pyramid_events$atr_at_add
+  }
+  add_fee_per_contract <- pyramid_events$add_fee_per_contract
+  if (is.null(add_fee_per_contract) && all(c("fees", "qty_added") %in% names(pyramid_events))) {
+    add_fee_per_contract <- pyramid_events$fees / pyramid_events$qty_added
+  }
+  add_slip_per_contract <- pyramid_events$add_slip_per_contract
+  if (is.null(add_slip_per_contract) && all(c("slippage", "qty_added") %in% names(pyramid_events))) {
+    add_slip_per_contract <- pyramid_events$slippage / pyramid_events$qty_added
+  }
+  add_cost_per_contract <- pyramid_events$add_cost_per_contract
+  if (is.null(add_cost_per_contract) && all(c("total_cost", "qty_added") %in% names(pyramid_events))) {
+    add_cost_per_contract <- pyramid_events$total_cost / pyramid_events$qty_added
+  }
+  entry_fee_per_contract <- pyramid_events$entry_fee_per_contract
+  entry_slip_per_contract <- pyramid_events$entry_slip_per_contract
+  entry_cost_per_contract <- pyramid_events$entry_cost_per_contract
+  add_cost_pct_notional <- pyramid_events$add_cost_pct_notional
+  entry_cost_pct_notional <- pyramid_events$entry_cost_pct_notional
+  rows <- list(
+    "Pyramid Adds" = NROW(pyramid_events),
+    "Trades With Adds" = length(unique(pyramid_events$trade_id)),
+    "Median Add Trigger ATR" = .bt_native_format_plain_num(.bt_native_summary_num(pyramid_events$trigger_atr)),
+    "Median Initial Qty" = .bt_native_format_plain_num(.bt_native_summary_num(pyramid_events$initial_qty)),
+    "Median Qty Added" = .bt_native_format_plain_num(.bt_native_summary_num(pyramid_events$qty_added)),
+    "Median Add / Entry Qty" = .bt_native_format_plain_num(.bt_native_summary_num(add_entry_ratio)),
+    "P25 Add / Entry Qty" = .bt_native_format_plain_num(.bt_native_quantile_num(add_entry_ratio, 0.25)),
+    "P75 Add / Entry Qty" = .bt_native_format_plain_num(.bt_native_quantile_num(add_entry_ratio, 0.75)),
+    "Median Pos After Add / Entry Qty" = .bt_native_format_plain_num(.bt_native_summary_num(position_entry_ratio)),
+    "Median Stop Distance ATR At Add" = .bt_native_format_plain_num(.bt_native_summary_num(stop_distance_atr)),
+    "Median Entry Fee / Contract" = .bt_native_format_money(.bt_native_summary_num(entry_fee_per_contract)),
+    "Median Entry Slip / Contract" = .bt_native_format_money(.bt_native_summary_num(entry_slip_per_contract)),
+    "Median Entry Cost / Contract" = .bt_native_format_money(.bt_native_summary_num(entry_cost_per_contract)),
+    "Median Add Fee / Contract" = .bt_native_format_money(.bt_native_summary_num(add_fee_per_contract)),
+    "Median Add Slip / Contract" = .bt_native_format_money(.bt_native_summary_num(add_slip_per_contract)),
+    "Median Add Cost / Contract" = .bt_native_format_money(.bt_native_summary_num(add_cost_per_contract)),
+    "Median Entry Cost % Notional" = .bt_native_format_pct(.bt_native_summary_num(entry_cost_pct_notional)),
+    "Median Add Cost % Notional" = .bt_native_format_pct(.bt_native_summary_num(add_cost_pct_notional)),
+    "Total Added Qty" = .bt_native_format_plain_num(sum(abs(pyramid_events$qty_added), na.rm = TRUE), digits = 2),
+    "Add Fees" = .bt_native_format_money(sum(pyramid_events$fees, na.rm = TRUE)),
+    "Add Slippage" = .bt_native_format_money(sum(pyramid_events$slippage, na.rm = TRUE))
+  )
+  .bt_info_block("pyramiding", "Pyramiding", rows, order = 86, contexts = c("report", "stats"))
+}
+
+.bt_native_info_blocks <- function(symbol, strategy, risk, execution, metadata, raw_stats,
+                                   performance_stats, trades, raw_rets, rets, equity,
+                                   performance_equity, episodes, excursions, pyramid_events,
+                                   geometric = TRUE, research_blocks = TRUE) {
+  monthly_title <- paste0(
+    "Monthly Returns",
+    .bt_native_risk_title_suffix(rets),
+    " (",
+    if (isTRUE(geometric)) "Geometric" else "Simple",
+    ")"
+  )
+  quarterly_title <- paste0(
+    "Quarterly Returns",
+    .bt_native_risk_title_suffix(rets),
+    " (",
+    if (isTRUE(geometric)) "Geometric" else "Simple",
+    ")"
+  )
+  quarterly_profit_title <- paste0("Quarterly Net Profit", .bt_native_risk_title_suffix(rets))
+  blocks <- list(
+    strategy = .bt_native_strategy_block(symbol, strategy),
+    sizing = .bt_native_sizing_block(risk, raw_stats),
+    execution = .bt_native_execution_block(execution),
+    instrument = .bt_native_instrument_block(metadata),
+    trade_activity = .bt_native_trade_activity_block(trades, raw_stats, strategy),
+    risk_normalization = .bt_native_risk_normalization_block(rets),
+    monthly_returns = .bt_info_table_block(
+      "monthly_returns",
+      monthly_title,
+      .bt_native_table_monthly_returns(rets$Discrete, geometric = geometric),
+      order = 60,
+      contexts = "report"
+    ),
+    quarterly_returns = .bt_info_table_block(
+      "quarterly_returns",
+      quarterly_title,
+      .table_quarterly_returns(rets$Discrete, return_data = TRUE, geometric = geometric, print_table = FALSE),
+      order = 61,
+      contexts = "quarterly"
+    ),
+    quarterly_profit = .bt_info_table_block(
+      "quarterly_profit",
+      quarterly_profit_title,
+      .table_quarterly_profit(.bt_native_profit_object(performance_equity), return_data = TRUE, print_table = FALSE),
+      order = 62,
+      contexts = "quarterly"
+    ),
+    costs = .bt_info_block_from_matrix(
+      "costs",
+      "Costs & Slippage Summary",
+      .bt_native_cost_summary_table(raw_stats, trades),
+      order = 70,
+      contexts = c("report", "stats")
+    ),
+    performance = .bt_native_performance_block(performance_stats, rets = rets),
+    atr_stats = .bt_native_atr_stats_block(episodes, excursions, metadata),
+    excursions = .bt_native_excursion_block(excursions),
+    excursion_thresholds = .bt_native_excursion_threshold_block(excursions),
+    pyramiding = .bt_native_pyramid_block(pyramid_events),
+    returns = .bt_info_table_block(
+      "returns",
+      paste0("Returns Summary", .bt_native_risk_title_suffix(rets), " ", if (isTRUE(geometric)) "(Geometric)" else "(Simple)"),
+      .bt_native_returns_summary_table(rets, geometric = geometric),
+      order = 90,
+      contexts = "report"
+    )
+  )
+  if (!isTRUE(research_blocks)) {
+    for (id in c("atr_stats", "excursions", "excursion_thresholds", "pyramiding")) {
+      if (!is.null(blocks[[id]])) {
+        attr(blocks[[id]], "contexts") <- "research"
+      }
+    }
+  }
+  attr(blocks, "label") <- symbol
+  class(blocks) <- c("bt_info_blocks", "list")
+  blocks
 }
 
 .bt_native_format_money <- function(x, digits = 2) {
@@ -2017,6 +3327,11 @@ bt_search_native <- function(ticker,
   net_profit <- pick_stat("net_profit")
   gross_before_costs <- net_profit + total_cost
   trade_count <- pick_stat("num_trades", NROW(trades))
+  is_futures <- FALSE
+  if (!is.null(stats) && "IsFutures" %in% names(stats)) {
+    is_futures <- isTRUE(stats$IsFutures[1])
+  }
+  contracts_traded <- pick_stat("contracts_traded", NA_real_)
   impact_den <- abs(gross_before_costs)
   impact <- function(cost) {
     if (is.finite(impact_den) && impact_den > 0) cost / impact_den else NA_real_
@@ -2029,8 +3344,14 @@ bt_search_native <- function(ticker,
     "loss worsened"
   }
 
+  rows <- "Trades"
+  vals <- format(trade_count, big.mark = ".", decimal.mark = ",", scientific = FALSE)
+  if (isTRUE(is_futures) && is.finite(contracts_traded)) {
+    rows <- c(rows, "Contracts")
+    vals <- c(vals, .bt_native_format_plain_num(contracts_traded, digits = 2))
+  }
   rows <- c(
-    "Trades",
+    rows,
     "Fees",
     "Slippage",
     "Gross P/L",
@@ -2041,7 +3362,7 @@ bt_search_native <- function(ticker,
     "Total Cost Impact"
   )
   vals <- c(
-    format(trade_count, big.mark = ".", decimal.mark = ",", scientific = FALSE),
+    vals,
     .bt_native_format_money(total_fees),
     .bt_native_format_money(total_slippage),
     .bt_native_format_money(gross_before_costs),
@@ -2104,6 +3425,7 @@ bt_search_native <- function(ticker,
     donchian = "ELDOC",
     ema = "EMA",
     sma = "SMA",
+    tsmom = "TSMOM",
     toupper(strategy$type)
   )
 }
@@ -2115,16 +3437,20 @@ bt_search_native <- function(ticker,
   list(summary = summary)
 }
 
-.bt_native_print_returns_summary <- function(rets, geometric = TRUE) {
+.bt_native_returns_summary_table <- function(rets, geometric = TRUE) {
   ppy <- .bt_native_periods_per_year(rets)
   disc <- .bt_native_return_summary_values(as.numeric(rets$Discrete), ppy, geometric = geometric)
   log_ret <- .bt_native_return_summary_values(as.numeric(rets$Log), ppy, geometric = geometric)
 
-  res_table <- matrix(
+  matrix(
     sprintf("%.4f%%", c(disc$annualized, log_ret$annualized, disc$cumulative, log_ret$cumulative) * 100),
     nrow = 2,
     dimnames = list(c("Discrete", "Log"), c("Annual", "Total"))
   )
+}
+
+.bt_native_print_returns_summary <- function(rets, geometric = TRUE) {
+  res_table <- .bt_native_returns_summary_table(rets, geometric = geometric)
 
   cat(paste0("\n--- Returns Summary ", if (geometric) "(Geometric)" else "(Simple)", " ---\n"))
   print(res_table, quote = FALSE, right = TRUE)
@@ -2152,9 +3478,36 @@ bt_search_native <- function(ticker,
     if (!name %in% names(trades)) return(0)
     sum(suppressWarnings(as.numeric(trades[[name]])), na.rm = TRUE)
   }
+  contracts_traded <- trade_sum("qty_delta")
+  contracts_traded <- abs(contracts_traded)
+  if ("qty_delta" %in% names(trades)) {
+    contracts_traded <- sum(abs(suppressWarnings(as.numeric(trades$qty_delta))), na.rm = TRUE)
+  }
   fees <- trade_sum("fees")
   slippage <- trade_sum("slippage")
   total_cost <- if ("total_cost" %in% names(trades)) trade_sum("total_cost") else fees + slippage
+  resolved_slip_value <- .bt_native_first_num(
+    execution$slip_value,
+    execution$slippage_bps,
+    execution$slippage_ticks,
+    execution$slippage_points,
+    execution$slippage_per_contract
+  )
+  resolved_slip_type <- execution$slip_type %||% if (is.finite(.bt_native_first_num(execution$slippage_bps))) {
+    "bps"
+  } else if (is.finite(.bt_native_first_num(execution$slippage_ticks))) {
+    "ticks"
+  } else if (is.finite(.bt_native_first_num(execution$slippage_points))) {
+    "points"
+  } else if (is.finite(.bt_native_first_num(execution$slippage_per_contract))) {
+    "cash"
+  } else {
+    NA_character_
+  }
+  risk_normalized <- .bt_native_is_risk_normalized(rets)
+  risk_target <- if (isTRUE(risk_normalized)) .bt_native_risk_target(rets) else NA_real_
+  risk_scale <- if (isTRUE(risk_normalized)) suppressWarnings(as.numeric(attr(rets, "risk_scale", exact = TRUE))[1]) else NA_real_
+  risk_original <- if (isTRUE(risk_normalized)) suppressWarnings(as.numeric(attr(rets, "risk_original", exact = TRUE))[1]) else NA_real_
   data.frame(
     num_trades = sum(trades$reason %in% c("long_entry", "short_entry")),
     total_return = total_return,
@@ -2166,15 +3519,28 @@ bt_search_native <- function(ticker,
     fees = fees,
     slippage = slippage,
     total_cost = total_cost,
+    contracts_traded = contracts_traded,
+    IsFutures = isTRUE(metadata$is_futures),
     InitialEquity = risk$initial_equity,
     PosSiz = risk$ps_type %||% risk$mode,
     PsValue = if (identical(risk$mode, "fixed")) risk$fixed_qty else risk$risk_pct,
     RiskPct = risk$risk_pct,
+    Reinvest = risk$reinvest,
+    Execution = execution$execution,
+    AtrLookback = strategy$params$atr_n %||% NA_integer_,
     FeeMode = execution$fee,
-    FeeType = execution$fee_type,
+    FeeType = execution$fee_type %||% NA_character_,
+    FeeValue = execution$fee_value %||% NA_real_,
+    SlipType = resolved_slip_type,
+    SlipValue = if (is.finite(resolved_slip_value)) resolved_slip_value else NA_real_,
     Multiplier = metadata$multiplier,
     TickSize = metadata$tick_size,
     Indicator = .bt_native_strategy_label(strategy),
+    RiskNormalized = risk_normalized,
+    RiskTarget = risk_target,
+    RiskScale = risk_scale,
+    RiskOriginal = risk_original,
+    ReturnSource = if (isTRUE(risk_normalized)) "risk_normalized" else "raw",
     stringsAsFactors = FALSE
   )
 }
@@ -2186,6 +3552,8 @@ bt_search_native <- function(ticker,
 .bt_native_strategy_label <- function(strategy) {
   if (identical(strategy$type, "donchian")) {
     paste0("ElDoc ", strategy$params$up, "/", strategy$params$down)
+  } else if (identical(strategy$type, "tsmom")) {
+    paste0("TSMOM ", strategy$params$lookback)
   } else {
     paste0(toupper(strategy$type), " ", strategy$params$fast, "/", strategy$params$slow)
   }

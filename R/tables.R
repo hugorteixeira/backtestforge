@@ -1,4 +1,4 @@
-.table_quarterly_returns <- function(returns_xts, return_data = TRUE, geometric = TRUE) {
+.table_quarterly_returns <- function(returns_xts, return_data = TRUE, geometric = TRUE, print_table = TRUE) {
   # Ensure input is xts
   if (!xts::is.xts(returns_xts)) stop("Input must be an xts object.")
 
@@ -43,9 +43,11 @@
   }
 
   # 4. Visual Output (Console)
-  cat(paste0("\n--- Quarterly Returns (", if (geometric) "Geometric" else "Simple", ") ---\n"))
-  print(mat, quote = FALSE, right = TRUE)
-  cat("\n")
+  if (isTRUE(print_table)) {
+    cat(paste0("\n--- Quarterly Returns (", if (geometric) "Geometric" else "Simple", ") ---\n"))
+    print(mat, quote = FALSE, right = TRUE)
+    cat("\n")
+  }
 
   # 5. Return data if requested
   if (return_data) {
@@ -53,7 +55,7 @@
   }
 }
 
-.table_quarterly_profit <- function(object_name, return_data = TRUE) {
+.table_quarterly_profit <- function(object_name, return_data = TRUE, print_table = TRUE) {
   # 1. Extract P&L
   # Check if summary table and specific column exist
   if (is.null(object_name$summary) || !"Net.Trading.PL" %in% colnames(object_name$summary)) {
@@ -120,9 +122,11 @@
   }
 
   # 5. Visual Output (Console)
-  cat("\n--- Quarterly Net Profit ---\n")
-  print(mat_char, quote = FALSE, right = TRUE)
-  cat("\n")
+  if (isTRUE(print_table)) {
+    cat("\n--- Quarterly Net Profit ---\n")
+    print(mat_char, quote = FALSE, right = TRUE)
+    cat("\n")
+  }
 
   # 6. Return data if requested
   if (return_data) {
@@ -145,33 +149,261 @@
 #' @param align_to_shortest Logical; align all stats to the shortest active
 #'   trading window across inputs.
 #' @param sharpe_scale Numeric; scaling factor for daily Sharpe (e.g. 252/365).
+#' @param blocks Optional character vector of info block ids to print. When
+#'   `NULL`, prints all blocks marked for `bt_stats()`.
 #' @param verbose Logical; print alignment diagnostics.
 #'
 #' @return Invisibly returns a wide data.frame of statistics used for display.
 #' @keywords internal
 #' @export
-bt_stats <- function(objects, colored_lines = list(1:3, 4:7, 8:10, 11:13, 14:16, 17:26), lines_colors = c("gray", "gray", "red", "green", "blue", "gray"), col = 8, align_to_shortest = TRUE, sharpe_scale = 365, verbose = TRUE) {
-  if (!is.list(objects)) objects <- as.list(objects)
+bt_stats <- function(objects, colored_lines = list(1:3, 4:7, 8:10, 11:13, 14:16, 17:26), lines_colors = c("gray", "gray", "red", "green", "blue", "gray"), col = 8, align_to_shortest = TRUE, sharpe_scale = 365, blocks = NULL, verbose = TRUE) {
+  is_backtest_result <- function(x) {
+    inherits(x, "bt_native_result") ||
+      (is.list(x) && any(c("trades", "rets", "equity", "positions", "spec") %in% names(x)) &&
+        (!is.null(x$trades) || !is.null(x$rets) || !is.null(x$equity)))
+  }
+  input_names <- if (is.list(objects) && !is_backtest_result(objects)) names(objects) else NULL
+  if (is_backtest_result(objects) || xts::is.xts(objects) || is.data.frame(objects)) {
+    objects <- list(objects)
+  } else if (!is.list(objects)) {
+    objects <- as.list(objects)
+  }
+  if (!is.null(input_names) && length(input_names) == length(objects)) {
+    names(objects) <- input_names
+  }
+
+  get_info_blocks <- function(obj) {
+    if (is.list(obj) && !is.null(obj$info_blocks)) {
+      return(obj$info_blocks)
+    }
+    attr(obj, "info_blocks", exact = TRUE)
+  }
+
+  get_object_label <- function(obj, obj_blocks, fallback) {
+    label <- attr(obj_blocks, "label", exact = TRUE)
+    if (!is.null(label) && length(label) && nzchar(as.character(label)[1])) {
+      return(as.character(label)[1])
+    }
+    if (is.list(obj) && !is.null(obj$symbol)) {
+      return(as.character(obj$symbol)[1])
+    }
+    fallback
+  }
+
+  print_info_stats <- function(object_list, blocks_list, block_filter = NULL, page_col = col) {
+    labels <- character(length(object_list))
+    for (i in seq_along(object_list)) {
+      fallback <- names(object_list)[i]
+      if (is.null(fallback) || is.na(fallback) || !nzchar(fallback)) fallback <- paste0("Backtest_", i)
+      labels[i] <- get_object_label(object_list[[i]], blocks_list[[i]], fallback)
+    }
+    labels <- make.unique(labels, sep = "_")
+
+    keyed <- lapply(blocks_list, function(obj_blocks) {
+      .bt_filter_info_blocks(obj_blocks, context = "stats", include = block_filter, type = "key_value")
+    })
+    tabled <- lapply(blocks_list, function(obj_blocks) {
+      .bt_filter_info_blocks(obj_blocks, context = "stats", include = block_filter, type = "table")
+    })
+    all_ids <- unique(unlist(lapply(keyed, function(obj_blocks) {
+      vapply(obj_blocks, .bt_info_block_id, character(1))
+    }), use.names = FALSE))
+    table_ids <- unique(unlist(lapply(tabled, function(obj_blocks) {
+      vapply(obj_blocks, .bt_info_block_id, character(1))
+    }), use.names = FALSE))
+    if (!is.null(block_filter)) {
+      all_ids <- intersect(block_filter, all_ids)
+      table_ids <- intersect(block_filter, table_ids)
+    }
+    if (!length(all_ids) && !length(table_ids)) {
+      return(NULL)
+    }
+
+    block_order <- function(id) {
+      orders <- unlist(lapply(c(keyed, tabled), function(obj_blocks) {
+        hit <- obj_blocks[vapply(obj_blocks, .bt_info_block_id, character(1)) == id]
+        if (length(hit)) .bt_info_block_order(hit[[1]]) else NULL
+      }), use.names = FALSE)
+      if (length(orders)) min(orders) else 100
+    }
+    if (length(all_ids)) {
+      all_ids <- all_ids[order(vapply(all_ids, block_order, numeric(1)))]
+    }
+    if (length(table_ids)) {
+      table_ids <- table_ids[order(vapply(table_ids, block_order, numeric(1)))]
+    }
+
+    print_wide_block <- function(title, df) {
+      cat(sprintf("\n--- %s ---\n", title))
+      fixed_col <- "stat_name"
+      value_cols <- setdiff(names(df), fixed_col)
+      if (is.null(page_col)) {
+        print(df, row.names = FALSE, quote = FALSE, right = TRUE)
+        cat("\n")
+        return(invisible(NULL))
+      }
+      n_blocks <- ceiling(length(value_cols) / page_col)
+      for (block_i in seq_len(n_blocks)) {
+        start_idx <- (block_i - 1) * page_col + 1
+        end_idx <- min(block_i * page_col, length(value_cols))
+        cols_i <- value_cols[start_idx:end_idx]
+        print(df[, c(fixed_col, cols_i), drop = FALSE], row.names = FALSE, quote = FALSE, right = TRUE)
+        cat("\n")
+      }
+      invisible(NULL)
+    }
+
+    out <- list()
+    for (id in all_ids) {
+      blocks_i <- lapply(keyed, function(obj_blocks) {
+        hit <- obj_blocks[vapply(obj_blocks, .bt_info_block_id, character(1)) == id]
+        if (length(hit)) hit[[1]] else NULL
+      })
+      blocks_i <- blocks_i[!vapply(blocks_i, is.null, logical(1))]
+      if (!length(blocks_i)) next
+      title <- .bt_info_block_title(blocks_i[[1]])
+      metrics <- unique(unlist(lapply(blocks_i, `[[`, "stat_name"), use.names = FALSE))
+      wide <- data.frame(stat_name = metrics, stringsAsFactors = FALSE)
+      for (i in seq_along(object_list)) {
+        block_i <- keyed[[i]][vapply(keyed[[i]], .bt_info_block_id, character(1)) == id]
+        vals <- rep("", length(metrics))
+        if (length(block_i)) {
+          match_idx <- match(metrics, block_i[[1]]$stat_name)
+          vals[!is.na(match_idx)] <- block_i[[1]]$value[match_idx[!is.na(match_idx)]]
+        }
+        wide[[labels[i]]] <- vals
+      }
+      print_wide_block(title, wide)
+      out[[length(out) + 1]] <- cbind(block = id, wide, stringsAsFactors = FALSE)
+    }
+    for (id in table_ids) {
+      for (i in seq_along(object_list)) {
+        block_i <- tabled[[i]][vapply(tabled[[i]], .bt_info_block_id, character(1)) == id]
+        if (!length(block_i)) next
+        table_block <- as.data.frame(block_i[[1]], stringsAsFactors = FALSE)
+        title <- .bt_info_block_title(block_i[[1]])
+        cat(sprintf("\n--- %s [%s] ---\n", title, labels[i]))
+        print(table_block, row.names = FALSE, quote = FALSE, right = TRUE)
+        cat("\n")
+        out[[length(out) + 1]] <- cbind(block = id, label = labels[i], table_block, stringsAsFactors = FALSE)
+      }
+    }
+    if (!length(out)) {
+      return(NULL)
+    }
+    invisible(dplyr::bind_rows(out))
+  }
+
+  info_blocks <- lapply(objects, get_info_blocks)
+  if (any(vapply(info_blocks, function(x) !is.null(x) && length(x) > 0, logical(1)))) {
+    block_stats <- print_info_stats(objects, info_blocks, block_filter = blocks)
+    if (!is.null(block_stats)) {
+      return(invisible(block_stats))
+    }
+  }
 
   # Find trades xts inside the object
-  get_trades_xts <- function(obj) {
-    if (!is.null(obj$trades) && xts::is.xts(obj$trades)) {
-      return(obj$trades)
+  native_trades_to_xts <- function(trades, obj = NULL) {
+    if (!is.data.frame(trades) || !NROW(trades)) {
+      return(NULL)
     }
-    for (nm in c("txn", "transactions", "Trades", "TXN")) {
-      if (!is.null(obj[[nm]]) && xts::is.xts(obj[[nm]])) {
-        return(obj[[nm]])
+    time_col <- intersect(names(trades), c("timestamp", "Timestamp", "datetime", "Datetime", "time", "Time", "date", "Date"))[1]
+    if (is.na(time_col)) {
+      return(NULL)
+    }
+    idx <- trades[[time_col]]
+    if (inherits(idx, "Date")) {
+      idx <- as.POSIXct(idx)
+    } else {
+      idx <- as.POSIXct(idx, tz = "UTC")
+    }
+    if (any(is.na(idx))) {
+      return(NULL)
+    }
+
+    pick_num <- function(cands, default = 0) {
+      hit <- intersect(cands, names(trades))[1]
+      if (is.na(hit)) {
+        if (length(default) == NROW(trades)) {
+          return(default)
+        }
+        return(rep(default, NROW(trades)))
+      }
+      out <- suppressWarnings(as.numeric(trades[[hit]]))
+      out[is.na(out)] <- default
+      out
+    }
+
+    qty_delta <- pick_num(c("Txn.Qty", "qty_delta", "Qty", "Quantity", "Order.Qty"))
+    price <- pick_num(c("Txn.Price", "price", "Price"), default = NA_real_)
+    fees <- pick_num(c("Txn.Fees", "fees", "Fees", "Commission", "CommissionAmt"))
+    slippage <- pick_num(c("slippage", "Slippage"))
+    total_cost <- pick_num(c("total_cost", "Fee.n.Slip", "TotalCost"), default = fees + slippage)
+    equity_after <- pick_num(c("equity", "Equity", "equity_after"), default = NA_real_)
+
+    initial_equity <- NA_real_
+    if (is.list(obj) && !is.null(obj$spec$risk$initial_equity)) {
+      initial_equity <- suppressWarnings(as.numeric(obj$spec$risk$initial_equity)[1])
+    }
+    if (!is.finite(initial_equity) && is.list(obj) && !is.null(obj$stats) && "InitialEquity" %in% names(obj$stats)) {
+      initial_equity <- suppressWarnings(as.numeric(obj$stats$InitialEquity[1]))
+    }
+    pl <- rep(0, NROW(trades))
+    if (any(is.finite(equity_after))) {
+      previous_equity <- c(if (is.finite(initial_equity)) initial_equity else equity_after[1], utils::head(equity_after, -1))
+      pl <- equity_after - previous_equity
+      pl[!is.finite(pl)] <- 0
+    }
+
+    out <- xts::xts(
+      cbind(
+        Txn.Qty = qty_delta,
+        Qty = qty_delta,
+        Price = price,
+        Net.Txn.Realized.PL = pl,
+        Fees = fees,
+        Slippage = slippage,
+        Fee.n.Slip = total_cost,
+        Equity = equity_after
+      ),
+      order.by = idx
+    )
+    if (is.list(obj) && !is.null(obj$symbol)) {
+      attr(out, "symbol") <- as.character(obj$symbol)[1]
+    } else if (!is.null(attr(trades, "symbol", exact = TRUE))) {
+      attr(out, "symbol") <- as.character(attr(trades, "symbol", exact = TRUE))[1]
+    }
+    out
+  }
+
+  get_trades_xts <- function(obj) {
+    if (is.list(obj) && "trades" %in% names(obj)) {
+      if (xts::is.xts(obj$trades)) {
+        return(obj$trades)
+      }
+      if (is.data.frame(obj$trades)) {
+        return(native_trades_to_xts(obj$trades, obj))
+      }
+    }
+    if (is.list(obj)) {
+      for (nm in c("txn", "transactions", "Trades", "TXN")) {
+        if (nm %in% names(obj) && xts::is.xts(obj[[nm]])) {
+          return(obj[[nm]])
+        }
       }
     }
     if (xts::is.xts(obj)) {
       return(obj)
+    }
+    if (is.data.frame(obj)) {
+      return(native_trades_to_xts(obj, NULL))
     }
     NULL
   }
 
   # Optional: get stats df for constants
   get_stats_df <- function(obj) {
-    if (!is.null(obj$stats)) {
+    if (is.list(obj) && !is.null(obj$stats)) {
       return(as.data.frame(obj$stats))
     }
     st_attr <- attr(obj, "stats", exact = TRUE)
@@ -196,7 +428,7 @@ bt_stats <- function(objects, colored_lines = list(1:3, 4:7, 8:10, 11:13, 14:16,
     }
     list(
       qty = pick(c("Txn.Qty", "Qty", "Quantity", "Pos.Qty", "Position.Qty", "Position", "Pos", "Units", "Size", "Order.Qty")),
-      pl = pick(c("Net.Txn.Realized.PL", "Net.Txn.PL", "Txn.Realized.PL", "Realized.PL", "Net.Realized.PL", "RealizedPL", "PL")),
+      pl = pick(c("Net.Txn.Realized.PL", "Net.Txn.PL", "Txn.Realized.PL", "Realized.PL", "Net.Realized.PL", "RealizedPL", "EquityChange", "PL")),
       fees = pick(c("Txn.Fees", "Txn.Fee", "Fees", "Commission", "CommissionAmt")),
       price = pick(c("Txn.Price", "Price")),
       value = pick(c("Txn.Value", "Value"))
@@ -239,6 +471,9 @@ bt_stats <- function(objects, colored_lines = list(1:3, 4:7, 8:10, 11:13, 14:16,
 
   # Labels
   get_symbol <- function(obj, tr) {
+    if (is.list(obj) && !is.null(obj$symbol)) {
+      return(as.character(obj$symbol)[1])
+    }
     st <- get_stats_df(obj)
     if (!is.null(st) && "Symbol" %in% names(st)) {
       sym <- unique(as.character(st$Symbol))
@@ -274,11 +509,30 @@ bt_stats <- function(objects, colored_lines = list(1:3, 4:7, 8:10, 11:13, 14:16,
     if (is.null(st)) {
       return(NULL)
     }
+    out <- list()
+    if ("Indicator" %in% names(st)) {
+      out$elDoc <- as.character(st$Indicator[1])
+    }
+    if ("PosSiz" %in% names(st)) {
+      ps <- as.character(st$PosSiz[1])
+      if ("PsValue" %in% names(st)) {
+        ps <- paste(ps, as.character(st$PsValue[1]))
+      }
+      out$PosSiz <- ps
+    }
+    if ("Multiplier" %in% names(st)) out$Multiplier <- st$Multiplier[1]
+    if ("TickSize" %in% names(st)) out$TickSize <- st$TickSize[1]
+    if ("slippage" %in% names(st)) out$Slippage <- st$slippage[1]
+    if ("fees" %in% names(st)) out$Fees <- st$fees[1]
+    if ("total_cost" %in% names(st)) out$Fee.n.Slip <- st$total_cost[1]
     have <- intersect(names(st), constant_fields)
-    if (length(have) == 0) {
+    if (length(have) > 0) {
+      out[names(st[1, have, drop = FALSE])] <- as.list(st[1, have, drop = FALSE])
+    }
+    if (length(out) == 0) {
       return(NULL)
     }
-    as.list(st[1, have, drop = FALSE])
+    out
   }
 
   # Sign with tolerance

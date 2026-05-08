@@ -23,8 +23,8 @@ backtesting stack. For the current state and verification commands, read
    - Inner loop: local vectors only; no database and no mutable package globals.
 
 3. Service layer
-   - Wrappers (`bt_eldoc()`, `bt_sma()`, `bt_ema()`, `bt_batch()`) call the
-     native simulator directly.
+   - Wrappers (`bt_eldoc()`, `bt_eldoc_exp()`, `bt_sma()`, `bt_ema()`,
+     `bt_tsmom()`, `bt_batch()`) call the native simulator directly.
    - Server jobs should store immutable specs, data hashes, seeds, status,
      logs, and result artifacts outside the inner simulation loop.
 
@@ -40,20 +40,21 @@ backtesting stack. For the current state and verification commands, read
 
 ## ElDoc-First Scope
 
-The immediate product target is an impeccable ElDoc backtester. Do not broaden
-the package into a general indicator framework before this path is stable.
-Moving-average wrappers may remain for compatibility, but current development
-priority is:
+The immediate product target is still an impeccable baseline ElDoc backtester.
+`bt_eldoc()` should stay simple. Moving-average and TSMOM wrappers may remain as
+compact native systems, while exploratory ElDoc research lives in
+`bt_eldoc_exp()`.
 
 1. ElDoc entries and exits.
 2. Explicit execution timing for those entries and exits.
 3. Position sizing that can use ElDoc channel risk, ATR risk, notional
    allocation, or fixed contract/share counts.
-4. Generic pyramiding on top of the ElDoc event loop.
+4. Experimental pyramiding on top of the ElDoc event loop, exposed through
+   `bt_eldoc_exp()`.
 5. Clear trade/cost/result audit output.
 
 Turtle-style behavior should be expressible as a preset/wrapper around
-`bt_eldoc()`, not as a separate primary engine.
+`bt_eldoc_exp()`, not as a separate primary engine.
 
 Execution modes for ElDoc:
 
@@ -73,10 +74,13 @@ Position-sizing modes for ElDoc:
 - `notional`: allocate a percent of equity to notional exposure.
 - `contract`: trade a fixed number of contracts/shares per entry/add.
 
-Pyramiding belongs in the native ElDoc path. The initial implementation should
-add units at ATR-based intervals (`pyramid_step` in ATR units), cap the number
-of units with `max_units`, and size each add independently at the time of the
-add.
+Pyramiding belongs in the experimental native ElDoc path. The first add can use
+its own ATR-based threshold (`pyramid_start` in ATR units); when omitted, it
+falls back to `pyramid_step` for backward-compatible behavior. Later adds use
+`pyramid_step`, and the number of units is capped by `max_units`. The default
+`pyramid_sizing = "risk"` sizes each add independently at the time of the add;
+`pyramid_sizing = "entry_qty"` instead adds `pyramid_qty_pct` times the initial
+entry quantity.
 
 DI pyramiding must preserve the DI contract model:
 
@@ -89,14 +93,17 @@ DI pyramiding must preserve the DI contract model:
 
 ## Core Public Specs
 
-- `bt_strategy_spec()` accepts `type = "donchian"`, `"eldoc"`, `"ema"`, or
-  `"sma"`, indicator parameters, side flags, and inversion flags.
+- `bt_strategy_spec()` accepts `type = "donchian"`, `"eldoc"`, `"ema"`,
+  `"sma"`, or `"tsmom"`, indicator parameters, side flags, and inversion flags.
 - `bt_risk_spec()` stores initial equity, position-sizing value/type, sizing
   mode, max quantity, max leverage, integer quantity behavior, minimum risk,
   ATR risk settings, and `reinvest`.
 - `bt_execution_spec()` stores execution mode and cost assumptions.
 - `bt_run_native()` accepts a symbol or `xts`, computes indicators/signals, runs
   the event loop, and returns a `bt_native_result`.
+- `normalize_risk` belongs to the returned/performance return stream. Performance
+  stats and return tables should use normalized returns when supplied; execution
+  facts and cost blocks should keep the raw simulated order path.
 - `bt_search_native()` evaluates serializable parameter grids and returns a
   sorted data frame with full results attached as an attribute.
 
@@ -144,8 +151,9 @@ Minimum test coverage:
   per-contract risk.
 - DI cost tests cover fee type and slippage units (`bps`, `ticks`, `points`,
   and `cash`).
-- DI pyramiding adds ATR-stepped units in rate space while filling in PU space.
-- EMA/SMA wrappers run on synthetic data.
+- Experimental DI pyramiding adds ATR-stepped units in rate space while filling
+  in PU space.
+- EMA/SMA/TSMOM wrappers run on synthetic data.
 - `bt_search_native()` evaluates and sorts a small search space.
 - `bt_batch()` works with exact-match preloaded data.
 - Passing removed `engine` inputs fails explicitly.
@@ -156,6 +164,8 @@ tests and use local `finharvest` data when available:
 - `CCMFUT_1H_AGG`, `BGIFUT_1H_AGG`, `WDOFUT_1H_AGG`, and `DI1F28`.
 - `bt_eldoc()` with `breakout`, `same_close`, `next_open`, `next_close`, and
   `next_avg`.
+- `bt_eldoc_exp()` for pyramiding and research diagnostics.
+- `bt_tsmom()` with the horizon converted to the selected data frequency.
 - Assertions: no metadata fallback warning, at least one trade when signals are
   present, finite returns, finite equity, and nonnegative costs.
 - Command: `Rscript scripts/smoke-native-real-data.R`.

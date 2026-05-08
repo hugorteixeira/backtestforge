@@ -21,7 +21,9 @@ bt_run_native(
   only_returns = FALSE,
   verbose = FALSE,
   clean_di = TRUE,
-  report = TRUE
+  report = TRUE,
+  show_quarterly = FALSE,
+  research_blocks = TRUE
 )
 }
 \arguments{
@@ -56,11 +58,20 @@ resolved from arguments or ticker metadata.}
 \item{clean_di}{If \code{TRUE}, apply DI cleanup before running.}
 
 \item{report}{If \code{TRUE}, print the standard console performance tables.}
+
+\item{show_quarterly}{If \code{TRUE}, print quarterly return and net-profit
+tables in the console report.}
+
+\item{research_blocks}{If \code{TRUE}, include experimental diagnostic blocks
+such as excursion thresholds in default reports and \code{bt_stats()}.}
 }
 \value{
 A \code{bt_native_result} list, or an \code{xts} returns object when
 \code{only_returns = TRUE}. In \code{trades}, \code{fees} is commission only,
 \code{slippage} is slippage cost, and \code{total_cost} is their sum.
+When \code{normalize_risk} is supplied, \code{rets}, \code{stats}, and report performance
+blocks use the risk-normalized return stream; \code{raw_rets}, \code{raw_stats},
+trades, positions, and cost blocks keep the unnormalised execution path.
 }
 \description{
 Run a native in-memory backtest

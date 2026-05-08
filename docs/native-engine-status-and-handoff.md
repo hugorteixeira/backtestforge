@@ -9,8 +9,10 @@ portfolio/instrument stack.
 ## Public Surface
 
 - `bt_eldoc()`
+- `bt_eldoc_exp()`
 - `bt_ema()`
 - `bt_sma()`
+- `bt_tsmom()`
 - `bt_batch()`
 - `bt_strategy_spec()`
 - `bt_risk_spec()`
@@ -31,11 +33,46 @@ There is no `engine` argument. Passing `engine` through `bt_batch()` specs or
   `next_open`, `next_close`, and `next_avg`.
 - Risk sizing uses `reinvest = TRUE` by default: new entries use current equity,
   while open positions keep their original quantity until another order.
+- `normalize_risk` is a comparison layer on returns, not a rewrite of the
+  executed order path. When set, `rets`, `stats`, monthly/quarterly returns,
+  returns summaries, and performance blocks use the risk-normalized stream;
+  `raw_rets`, `raw_stats`, trades, positions, and cost/activity blocks preserve
+  the unnormalised simulated execution.
+- `bt_eldoc()` is the baseline Donchian wrapper: no pyramiding arguments and no
+  research-heavy diagnostics in the default console/stat printout.
+- `bt_eldoc_exp()` is the experimental Donchian surface. It keeps pyramiding,
+  ATR statistics, trade excursions, excursion-threshold tables, and pyramiding
+  diagnostics visible by default.
 - ElDoc position sizing supports `ps_type = "eldoc"` for channel-risk sizing,
   `"atr"` for ATR-risk sizing, `"notional"` for percent-of-equity notional
   allocation, and `"contract"` for fixed contracts/shares.
-- Pyramiding is part of the ElDoc path, not a separate Turtle engine. Turtle-like
-  behavior should be represented as a preset around `bt_eldoc()`.
+- Pyramiding is part of the experimental ElDoc path, not a separate Turtle
+  engine. Turtle-like behavior should be represented as a preset around
+  `bt_eldoc_exp()`.
+- With `pyramid = TRUE`, the first add triggers after `pyramid_start` ATR from
+  the entry price; `NULL` uses `pyramid_step` to keep the old behavior. Later
+  adds trigger every `pyramid_step` ATR from the previous add until `max_units`.
+- Pyramiding defaults to `pyramid_sizing = "risk"`, which sizes each add from
+  the active stop/risk distance. `pyramid_sizing = "entry_qty"` uses
+  `pyramid_qty_pct` times the initial entry quantity for each add.
+- `bt_tsmom()` implements a simple native time-series momentum strategy:
+  trailing return over `lookback` bars above `threshold` is long, below
+  `-threshold` is short. Defaults are `ps_type = "notional"`, `ps_value = 100`,
+  and `execution = "next_open"`.
+- Trade excursion diagnostics are descriptive. In `bt_eldoc()` they are stored
+  but hidden from default `bt_stats()`/report output; request a block explicitly
+  with `bt_stats(x, blocks = "excursion_thresholds")`. In `bt_eldoc_exp()`, they
+  print by default. `ATR Statistics` summarizes the
+  entry ATR scale, initial stop distance in ATR units, and ATR/initial-stop value
+  per contract or unit. `Trade Excursions` summarizes MFE/MAE and MFE ATR
+  percentiles; `Excursion Thresholds` focuses on large continuation levels
+  (`5, 10, 15, 20, 25, 30, 35, 40` ATR) and carries hit rates with counts plus
+  median/mean final and post-threshold R diagnostics. Do not treat top-tail
+  percentiles as automatic pyramiding rules without cross-market validation. The
+  console table uses short headers such as `ATRT`, `Med FR`, and `Med PR` to stay
+  compact.
+- The `Pyramiding` block reports add size versus entry size, stop distance at
+  add, and entry/add cost diagnostics per contract and percent of notional.
 - Results include returns, stats, trades, positions, equity, annotated market
   data, and the spec used to run the backtest.
 
@@ -117,10 +154,10 @@ For DI-like symbols, the simulator:
 - prefers PU columns (`PU_o`, `PU_h`, `PU_l`, `PU_c`, or equivalent names) for
   execution and mark-to-market.
 
-DI pyramiding follows the same split: ATR and favorable-move triggers are
-calculated in rate space, then each add is filled and marked in PU space. Long
-DI positions gain when PU falls, so the simulator keeps the negative PU P/L
-multiplier for positive long quantity.
+Experimental DI pyramiding follows the same split: ATR and favorable-move
+triggers are calculated in rate space, then each add is filled and marked in PU
+space. Long DI positions gain when PU falls, so the simulator keeps the negative
+PU P/L multiplier for positive long quantity.
 
 The preferred data-layer improvement is to have `finharvest` or `brfutures`
 return DI PU columns and contract metadata as attrs before the backtest starts.

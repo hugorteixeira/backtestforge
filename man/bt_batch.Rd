@@ -5,7 +5,7 @@
 \title{Run multiple backtests in batch}
 \usage{
 bt_batch(
-  type = c("eldoc", "ema", "sma"),
+  type = c("eldoc", "ema", "sma", "tsmom"),
   tickers,
   timeframes = "1D",
   exact_match = FALSE,
@@ -18,7 +18,10 @@ bt_batch(
   atr_n = 20,
   atr_mult = 2,
   pyramid = FALSE,
+  pyramid_start = NULL,
   pyramid_step = 0.5,
+  pyramid_sizing = "risk",
+  pyramid_qty_pct = 1,
   max_units = if (isTRUE(pyramid)) 4L else 1L,
   fee = "normal",
   fee_value = NULL,
@@ -35,6 +38,7 @@ bt_batch(
   verbose = FALSE,
   only_returns = FALSE,
   hide_details = FALSE,
+  show_quarterly = FALSE,
   fail_on_error = TRUE,
   clean_di = TRUE,
   reinvest = TRUE,
@@ -48,7 +52,7 @@ bt_batch(
 }
 \arguments{
 \item{type}{Character scalar selecting the indicator module. One of
-\code{"eldoc"} (Donchian), \code{"ema"}, or \code{"sma"}.}
+\code{"eldoc"} (Donchian), \code{"ema"}, \code{"sma"}, or \code{"tsmom"}.}
 
 \item{tickers}{Character vector of base symbols to backtest, or a (named)
 list where each element describes overrides for a specific ticker (e.g.
@@ -79,7 +83,10 @@ used.}
 
 \item{atr_n, atr_mult}{ATR settings for ElDoc ATR sizing and pyramiding.}
 
-\item{pyramid, pyramid_step, max_units}{ElDoc pyramiding controls.}
+\item{pyramid, pyramid_start, pyramid_step, pyramid_sizing, pyramid_qty_pct, max_units}{ElDoc pyramiding controls. \code{pyramid_start} is the favorable ATR movement
+required before the first add; \code{pyramid_step} is used for each later add.
+\code{pyramid_sizing = "entry_qty"} uses \code{pyramid_qty_pct} times the initial
+entry quantity for each add.}
 
 \item{fee}{Fee handling mode per test (\code{"normal"} or \code{"nofee"}).}
 
@@ -111,6 +118,9 @@ metadata.}
 instead of the full backtest objects.}
 
 \item{hide_details}{Logical flag propagated to the underlying backtest.}
+
+\item{show_quarterly}{Logical flag propagated to the underlying console
+report; if \code{FALSE}, quarterly tables are omitted.}
 
 \item{fail_on_error}{Logical; if \code{TRUE} (default), any failed individual
 backtest stops the batch. Set to \code{FALSE} only when you explicitly want the
@@ -153,7 +163,7 @@ labels.
 }
 \description{
 Vectorises the single-ticker backtest wrappers (\code{bt_eldoc()}, \code{bt_ema()},
-\code{bt_sma()}) across symbols, timeframes, and parameter grids. Indicator-specific
+\code{bt_sma()}, \code{bt_tsmom()}) across symbols, timeframes, and parameter grids. Indicator-specific
 parameters can be supplied through \code{mup}/\code{mdown} for Donchian runs or via
 \code{...} when using other modules.
 }

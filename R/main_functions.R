@@ -154,7 +154,7 @@
   )
 }
 
-#' Run an ElDoc (Donchian) backtest
+#' Run an experimental ElDoc (Donchian) backtest
 #'
 #' Configures a simple Donchian breakout system using the native in-memory
 #' simulator.
@@ -188,8 +188,17 @@
 #' @param atr_n Integer ATR lookback used by ATR sizing and pyramiding.
 #' @param atr_mult ATR multiple used when `ps_type = "atr"`.
 #' @param pyramid Logical; if `TRUE`, add units as the position moves in favor.
+#' @param pyramid_start Favorable movement in ATR units required before the
+#'   first pyramid add. `NULL` uses `pyramid_step` for backward-compatible
+#'   behavior.
 #' @param pyramid_step Favorable movement in ATR units required before each
-#'   add.
+#'   add after the first pyramid add.
+#' @param pyramid_sizing Sizing method for pyramid adds. `"risk"` keeps the
+#'   current behavior and sizes each add from the active stop/risk distance;
+#'   `"entry_qty"` sizes each add as a fraction of the initial entry quantity.
+#' @param pyramid_qty_pct Fraction of the initial entry quantity to add when
+#'   `pyramid_sizing = "entry_qty"`. For example, `0.5` adds half the original
+#'   entry size at each pyramid trigger.
 #' @param max_units Maximum number of entry/add units in one position.
 #' @param fee Either `"normal"` (use instrument fees/slippage if available) or
 #'   `"nofee"` to disable fees.
@@ -213,6 +222,11 @@
 #' @param geometric Logical, use geometric returns when reporting performance.
 #' @param verbose Logical, print detailed summaries to the console.
 #' @param hide_details Logical; if `TRUE`, simplifies internal object names.
+#' @param show_quarterly Logical; if `TRUE`, print quarterly returns and net
+#'   profit tables in the console report.
+#' @param research_blocks Logical; if `TRUE`, include experimental diagnostics
+#'   such as ATR statistics, excursions, threshold tables, and pyramiding details
+#'   in the default report and `bt_stats()` output.
 #' @param reinvest Logical; if `TRUE`, size new entries using current account
 #'   equity. Open positions keep their original quantity until the next order.
 #' @param plot Logical; if `TRUE`, plots the portfolio using `rTradingPlots::tplot`.
@@ -222,20 +236,36 @@
 #' @return If `only_returns = TRUE`, returns an `xts` with discrete and log
 #'   returns. Otherwise, returns a named list with elements:
 #'   - `rets`: equity/account returns `xts`
-#'   - `stats`: native summary statistics
+#'   - `stats`: performance summary statistics on the same scale as `rets`
+#'   - `raw_stats`: unnormalised execution and cost summary statistics
 #'   - `trades`: native transactions `data.frame`; `fees` is commission only,
 #'     `slippage` is slippage cost, and `total_cost` is their sum
 #'   - `rets_acct`: account-level returns `xts`
+#'   - `raw_rets`: unnormalised account-level returns `xts`
 #'   - `mktdata`: market data with indicator columns
 #'   - `positions`: native position/equity path
 #'   - `equity`: native account equity curve
+#'   - `performance_equity`: equity curve rebuilt from `rets`, risk-normalized
+#'     when `normalize_risk` is supplied
+#'   - `trade_episodes`: one row per complete trade episode
+#'   - `trade_excursions`: per-trade MFE/MAE diagnostics in percent, ATR, and R units
+#'   - `pyramid_events`: one row per pyramid add when pyramiding is active,
+#'     including add quantity, entry-quantity ratios, stop distance at add, and
+#'     add/entry cost diagnostics
+#'   - `info_blocks`: modular report/stat blocks consumed by `bt_stats()`
 #'
 #' @details
 #' ElDoc can size positions from its opposite channel (`ps_type = "eldoc"`),
 #' ATR distance (`ps_type = "atr"`), notional percent of equity
 #' (`ps_type = "notional"`), or fixed contracts/shares
 #' (`ps_type = "contract"`).
-#' Pyramiding currently uses ATR steps and sizes each add independently.
+#' Pyramiding uses ATR trigger steps. By default (`pyramid_sizing = "risk"`), each
+#' add is sized independently from the active stop/risk distance. With
+#' `pyramid_sizing = "entry_qty"`, each add uses `pyramid_qty_pct` times the
+#' initial entry quantity instead. The returned `pyramid_events` and `Pyramiding`
+#' report block show how large adds were relative to the entry quantity, how wide
+#' the sizing stop was at add, and whether add costs are proportional to entry
+#' costs.
 #'
 #' If the symbol starts with `"DI1"`, the native engine keeps rate OHLC columns
 #' for indicators/signals and uses PU columns for execution and mark-to-market
@@ -245,7 +275,7 @@
 #' `fee_value = 4, fee_type = "contract"` means 4 per contract/share, while
 #' `fee_type = "order"` means 4 for the whole executed order.
 #' @export
-bt_eldoc <- function(ticker, up = 40, down = 40, ps_value = NULL, initial_equity = 100000, ps_type = NULL, execution = "breakout", atr_n = 20, atr_mult = 2, pyramid = FALSE, pyramid_step = 0.5, max_units = if (isTRUE(pyramid)) 4L else 1L, fee = "normal", fee_value = NULL, fee_type = NULL, slip_value = NULL, slip_type = NULL, start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, normalize_risk = NULL, geometric = TRUE, verbose = FALSE, hide_details = FALSE, reinvest = TRUE, plot = FALSE, ...) {
+bt_eldoc_exp <- function(ticker, up = 40, down = 40, ps_value = NULL, initial_equity = 100000, ps_type = NULL, execution = "breakout", atr_n = 20, atr_mult = 2, pyramid = FALSE, pyramid_start = NULL, pyramid_step = 0.5, pyramid_sizing = "risk", pyramid_qty_pct = 1, max_units = if (isTRUE(pyramid)) 4L else 1L, fee = "normal", fee_value = NULL, fee_type = NULL, slip_value = NULL, slip_type = NULL, start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, normalize_risk = NULL, geometric = TRUE, verbose = FALSE, hide_details = FALSE, show_quarterly = FALSE, reinvest = TRUE, plot = FALSE, research_blocks = TRUE, ...) {
   opts <- .bt_wrapper_options(list(...), ps_value = ps_value, ps_type = ps_type, slip_value = slip_value)
   ticker_input <- .bt_resolve_ticker_input(ticker, substitute(ticker))
   res <- bt_run_native(
@@ -258,7 +288,10 @@ bt_eldoc <- function(ticker, up = 40, down = 40, ps_value = NULL, initial_equity
       atr_n = atr_n,
       atr_mult = atr_mult,
       pyramid = pyramid,
+      pyramid_start = pyramid_start,
       pyramid_step = pyramid_step,
+      pyramid_sizing = pyramid_sizing,
+      pyramid_qty_pct = pyramid_qty_pct,
       max_units = max_units,
       long = long,
       short = short,
@@ -283,10 +316,80 @@ bt_eldoc <- function(ticker, up = 40, down = 40, ps_value = NULL, initial_equity
     only_returns = opts$only_returns,
     verbose = verbose,
     clean_di = opts$clean_di,
-    report = !isTRUE(hide_details)
+    report = !isTRUE(hide_details),
+    show_quarterly = show_quarterly,
+    research_blocks = research_blocks
   )
   if (isTRUE(plot) && !isTRUE(opts$only_returns)) .bt_tplot(res$rets)
   res
+}
+
+#' Run a basic ElDoc (Donchian) backtest
+#'
+#' Runs the baseline Donchian breakout system without pyramiding or experimental
+#' research blocks in the default printout. Experimental diagnostics are still
+#' computed internally and can be requested explicitly through `bt_stats(...,
+#' blocks = ...)`; use `bt_eldoc_exp()` for the full research surface.
+#'
+#' @inheritParams bt_eldoc_exp
+#' @param atr_n Integer ATR lookback used when ATR sizing is selected and for
+#'   diagnostic columns.
+#' @param ... Advanced options. Currently supports `only_returns` (return only
+#'   the returns `xts`) and `clean_di` (apply DI-specific bad-row filtering).
+#'   Pyramiding/research arguments are intentionally rejected; use
+#'   `bt_eldoc_exp()` for that surface.
+#' @export
+bt_eldoc <- function(ticker, up = 40, down = 40, ps_value = NULL, initial_equity = 100000, ps_type = NULL, execution = "breakout", atr_n = 20, atr_mult = 2, fee = "normal", fee_value = NULL, fee_type = NULL, slip_value = NULL, slip_type = NULL, start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, normalize_risk = NULL, geometric = TRUE, verbose = FALSE, hide_details = FALSE, show_quarterly = FALSE, reinvest = TRUE, plot = FALSE, ...) {
+  extra_args <- list(...)
+  experimental_args <- intersect(
+    names(extra_args),
+    c("pyramid", "pyramid_start", "pyramid_step", "pyramid_sizing", "pyramid_qty_pct", "max_units", "research_blocks")
+  )
+  if (length(experimental_args)) {
+    stop(
+      sprintf(
+        "Pyramiding/research argument(s) moved out of bt_eldoc(): %s. Use bt_eldoc_exp() for the experimental surface.",
+        paste(experimental_args, collapse = ", ")
+      ),
+      call. = FALSE
+    )
+  }
+  bt_eldoc_exp(
+    ticker = ticker,
+    up = up,
+    down = down,
+    ps_value = ps_value,
+    initial_equity = initial_equity,
+    ps_type = ps_type,
+    execution = execution,
+    atr_n = atr_n,
+    atr_mult = atr_mult,
+    pyramid = FALSE,
+    pyramid_start = NULL,
+    pyramid_step = 0.5,
+    pyramid_sizing = "risk",
+    pyramid_qty_pct = 1,
+    max_units = 1L,
+    fee = fee,
+    fee_value = fee_value,
+    fee_type = fee_type,
+    slip_value = slip_value,
+    slip_type = slip_type,
+    start_date = start_date,
+    end_date = end_date,
+    long = long,
+    short = short,
+    invert_signals = invert_signals,
+    normalize_risk = normalize_risk,
+    geometric = geometric,
+    verbose = verbose,
+    hide_details = hide_details,
+    show_quarterly = show_quarterly,
+    reinvest = reinvest,
+    plot = plot,
+    research_blocks = FALSE,
+    ...
+  )
 }
 
 #' Run an EMA crossover backtest
@@ -299,8 +402,10 @@ bt_eldoc <- function(ticker, up = 40, down = 40, ps_value = NULL, initial_equity
 #' @inheritParams bt_eldoc
 #' @param fast Integer length of the fast EMA (default 20).
 #' @param slow Integer length of the slow EMA (default 50).
+#' @param ... Advanced options. Currently supports `only_returns` (return only
+#'   the returns `xts`) and `clean_di` (apply DI-specific bad-row filtering).
 #' @export
-bt_ema <- function(ticker, fast = 20, slow = 50, ps_value = NULL, initial_equity = 100000, ps_type = NULL, execution = "same_close", fee = "normal", fee_value = NULL, fee_type = NULL, slip_value = NULL, slip_type = NULL, start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, normalize_risk = NULL, geometric = TRUE, verbose = FALSE, hide_details = FALSE, reinvest = TRUE, plot = FALSE, ...) {
+bt_ema <- function(ticker, fast = 20, slow = 50, ps_value = NULL, initial_equity = 100000, ps_type = NULL, execution = "same_close", fee = "normal", fee_value = NULL, fee_type = NULL, slip_value = NULL, slip_type = NULL, start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, normalize_risk = NULL, geometric = TRUE, verbose = FALSE, hide_details = FALSE, show_quarterly = FALSE, reinvest = TRUE, plot = FALSE, ...) {
   opts <- .bt_wrapper_options(list(...), ps_value = ps_value, ps_type = ps_type, slip_value = slip_value)
   ticker_input <- .bt_resolve_ticker_input(ticker, substitute(ticker))
   res <- bt_run_native(
@@ -333,7 +438,8 @@ bt_ema <- function(ticker, fast = 20, slow = 50, ps_value = NULL, initial_equity
     only_returns = opts$only_returns,
     verbose = verbose,
     clean_di = opts$clean_di,
-    report = !isTRUE(hide_details)
+    report = !isTRUE(hide_details),
+    show_quarterly = show_quarterly
   )
   if (isTRUE(plot) && !isTRUE(opts$only_returns)) .bt_tplot(res$rets)
   res
@@ -347,7 +453,7 @@ bt_ema <- function(ticker, fast = 20, slow = 50, ps_value = NULL, initial_equity
 #'
 #' @inheritParams bt_ema
 #' @export
-bt_sma <- function(ticker, fast = 20, slow = 50, ps_value = NULL, initial_equity = 100000, ps_type = NULL, execution = "same_close", fee = "normal", fee_value = NULL, fee_type = NULL, slip_value = NULL, slip_type = NULL, start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, normalize_risk = NULL, geometric = TRUE, verbose = FALSE, hide_details = FALSE, reinvest = TRUE, plot = FALSE, ...) {
+bt_sma <- function(ticker, fast = 20, slow = 50, ps_value = NULL, initial_equity = 100000, ps_type = NULL, execution = "same_close", fee = "normal", fee_value = NULL, fee_type = NULL, slip_value = NULL, slip_type = NULL, start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, normalize_risk = NULL, geometric = TRUE, verbose = FALSE, hide_details = FALSE, show_quarterly = FALSE, reinvest = TRUE, plot = FALSE, ...) {
   opts <- .bt_wrapper_options(list(...), ps_value = ps_value, ps_type = ps_type, slip_value = slip_value)
   ticker_input <- .bt_resolve_ticker_input(ticker, substitute(ticker))
   res <- bt_run_native(
@@ -380,7 +486,68 @@ bt_sma <- function(ticker, fast = 20, slow = 50, ps_value = NULL, initial_equity
     only_returns = opts$only_returns,
     verbose = verbose,
     clean_di = opts$clean_di,
-    report = !isTRUE(hide_details)
+    report = !isTRUE(hide_details),
+    show_quarterly = show_quarterly
+  )
+  if (isTRUE(plot) && !isTRUE(opts$only_returns)) .bt_tplot(res$rets)
+  res
+}
+
+#' Run a time-series momentum backtest
+#'
+#' Implements a compact academic-style time-series momentum rule: go long when
+#' the instrument's own trailing return over `lookback` bars is positive, go
+#' short when it is negative, and rebalance on signal flips. The default uses
+#' notional sizing and next-open execution to avoid same-close lookahead.
+#'
+#' @inheritParams bt_eldoc
+#' @param lookback Integer number of bars used to compute trailing return.
+#' @param threshold Non-negative return threshold. The default `0` trades on the
+#'   sign of trailing return.
+#' @param atr_n Integer ATR lookback used when ATR sizing is selected and for
+#'   diagnostic columns.
+#' @param ... Advanced options. Currently supports `only_returns` (return only
+#'   the returns `xts`) and `clean_di` (apply DI-specific bad-row filtering).
+#' @export
+bt_tsmom <- function(ticker, lookback = 252, threshold = 0, ps_value = 100, initial_equity = 100000, ps_type = "notional", execution = "next_open", atr_n = 20, fee = "normal", fee_value = NULL, fee_type = NULL, slip_value = NULL, slip_type = NULL, start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, normalize_risk = NULL, geometric = TRUE, verbose = FALSE, hide_details = FALSE, show_quarterly = FALSE, reinvest = TRUE, plot = FALSE, ...) {
+  if (is.null(ps_value)) ps_value <- 100
+  if (is.null(ps_type)) ps_type <- "notional"
+  opts <- .bt_wrapper_options(list(...), ps_value = ps_value, ps_type = ps_type, slip_value = slip_value)
+  ticker_input <- .bt_resolve_ticker_input(ticker, substitute(ticker))
+  res <- bt_run_native(
+    ticker = ticker_input$symbol,
+    data = ticker_input$data,
+    strategy = bt_strategy_spec(
+      "tsmom",
+      lookback = lookback,
+      threshold = threshold,
+      atr_n = atr_n,
+      long = long,
+      short = short,
+      invert_signals = invert_signals
+    ),
+    ps_value = opts$ps_value,
+    ps_type = opts$ps_type,
+    initial_equity = initial_equity,
+    reinvest = reinvest,
+    execution = .bt_backtest_execution(
+      execution = execution,
+      fee = fee,
+      fee_value = fee_value,
+      fee_type = fee_type,
+      slip_value = opts$slip_value,
+      slip_type = slip_type
+    ),
+    start_date = start_date,
+    end_date = end_date,
+    normalize_risk = normalize_risk,
+    geometric = geometric,
+    only_returns = opts$only_returns,
+    verbose = verbose,
+    clean_di = opts$clean_di,
+    report = !isTRUE(hide_details),
+    show_quarterly = show_quarterly,
+    research_blocks = FALSE
   )
   if (isTRUE(plot) && !isTRUE(opts$only_returns)) .bt_tplot(res$rets)
   res
@@ -641,16 +808,31 @@ normalize_fee_mode <- function(val, default = "normal") {
   switch(type_token,
     eldoc = list(
       type = "eldoc",
-      runner = bt_eldoc,
+      runner = function(...) {
+        args <- list(...)
+        if (isTRUE(args$pyramid)) {
+          return(do.call(bt_eldoc_exp, args))
+        }
+        args[c("pyramid", "pyramid_start", "pyramid_step", "pyramid_sizing", "pyramid_qty_pct", "max_units")] <- NULL
+        do.call(bt_eldoc, args)
+      },
       resolve_indicator_args = function(args) {
+        pyramid <- isTRUE(.bt_first_non_null(args$pyramid, FALSE))
+        pyramid_step <- as.numeric(.bt_first_non_null(args$pyramid_step, 0.5))
+        pyramid_start <- as.numeric(.bt_first_non_null(args$pyramid_start, pyramid_step))
+        pyramid_sizing <- tolower(as.character(.bt_first_non_null(args$pyramid_sizing, "risk"))[1])
+        pyramid_qty_pct <- as.numeric(.bt_first_non_null(args$pyramid_qty_pct, 1))
         list(
           up = as.integer(.bt_first_non_null(args$up, args$mup, 40L)),
           down = as.integer(.bt_first_non_null(args$down, args$mdown, 40L)),
           atr_n = as.integer(.bt_first_non_null(args$atr_n, args$atr, 20L)),
           atr_mult = as.numeric(.bt_first_non_null(args$atr_mult, 2)),
-          pyramid = isTRUE(.bt_first_non_null(args$pyramid, FALSE)),
-          pyramid_step = as.numeric(.bt_first_non_null(args$pyramid_step, 0.5)),
-          max_units = as.integer(.bt_first_non_null(args$max_units, if (isTRUE(args$pyramid)) 4L else 1L))
+          pyramid = pyramid,
+          pyramid_start = pyramid_start,
+          pyramid_step = pyramid_step,
+          pyramid_sizing = pyramid_sizing,
+          pyramid_qty_pct = pyramid_qty_pct,
+          max_units = as.integer(.bt_first_non_null(args$max_units, if (isTRUE(pyramid)) 4L else 1L))
         )
       },
       batch_suffix = function(indicator_args) {
@@ -662,7 +844,24 @@ normalize_fee_mode <- function(val, default = "normal") {
           suffix <- paste0(suffix, "_atr", fmt(indicator_args$atr_n), "x", fmt(indicator_args$atr_mult))
         }
         if (isTRUE(indicator_args$pyramid)) {
-          suffix <- paste0(suffix, "_pyr", fmt(indicator_args$pyramid_step), "u", fmt(indicator_args$max_units))
+          suffix <- paste0(
+            suffix,
+            "_pyr",
+            fmt(indicator_args$pyramid_start),
+            "s",
+            fmt(indicator_args$pyramid_step),
+            "u",
+            fmt(indicator_args$max_units)
+          )
+          if (!identical(indicator_args$pyramid_sizing, "risk") ||
+              !isTRUE(all.equal(as.numeric(indicator_args$pyramid_qty_pct), 1))) {
+            suffix <- paste0(
+              suffix,
+              "_",
+              fmt(indicator_args$pyramid_sizing),
+              fmt(indicator_args$pyramid_qty_pct)
+            )
+          }
         }
         suffix
       }
@@ -689,6 +888,25 @@ normalize_fee_mode <- function(val, default = "normal") {
       },
       batch_suffix = function(indicator_args) paste0(indicator_args$fast, "_", indicator_args$slow)
     ),
+    tsmom = list(
+      type = "tsmom",
+      runner = bt_tsmom,
+      resolve_indicator_args = function(args) {
+        list(
+          lookback = as.integer(.bt_first_non_null(args$lookback, args$mup, args$up, 252L)),
+          threshold = as.numeric(.bt_first_non_null(args$threshold, 0)),
+          atr_n = as.integer(.bt_first_non_null(args$atr_n, args$atr, 20L))
+        )
+      },
+      batch_suffix = function(indicator_args) {
+        fmt <- function(x) gsub("[^A-Za-z0-9]+", "p", format(x, trim = TRUE, scientific = FALSE))
+        suffix <- paste0("lb", fmt(indicator_args$lookback))
+        if (!isTRUE(all.equal(as.numeric(indicator_args$threshold), 0))) {
+          suffix <- paste0(suffix, "_thr", fmt(indicator_args$threshold))
+        }
+        suffix
+      }
+    ),
     stop(sprintf("Unsupported backtest type '%s'.", type_name), call. = FALSE)
   )
 }
@@ -696,12 +914,12 @@ normalize_fee_mode <- function(val, default = "normal") {
 #' Run multiple backtests in batch
 #'
 #' Vectorises the single-ticker backtest wrappers (`bt_eldoc()`, `bt_ema()`,
-#' `bt_sma()`) across symbols, timeframes, and parameter grids. Indicator-specific
+#' `bt_sma()`, `bt_tsmom()`) across symbols, timeframes, and parameter grids. Indicator-specific
 #' parameters can be supplied through `mup`/`mdown` for Donchian runs or via
 #' `...` when using other modules.
 #'
 #' @param type Character scalar selecting the indicator module. One of
-#'   `"eldoc"` (Donchian), `"ema"`, or `"sma"`.
+#'   `"eldoc"` (Donchian), `"ema"`, `"sma"`, or `"tsmom"`.
 #' @param tickers Character vector of base symbols to backtest, or a (named)
 #'   list where each element describes overrides for a specific ticker (e.g.
 #'   `list(ES = list(timeframes = c("30M", "1H"), mup = c(30, 40)))`). When
@@ -722,7 +940,11 @@ normalize_fee_mode <- function(val, default = "normal") {
 #'   used.
 #' @param execution Execution mode for ElDoc runs. See [`bt_eldoc()`].
 #' @param atr_n,atr_mult ATR settings for ElDoc ATR sizing and pyramiding.
-#' @param pyramid,pyramid_step,max_units ElDoc pyramiding controls.
+#' @param pyramid,pyramid_start,pyramid_step,pyramid_sizing,pyramid_qty_pct,max_units
+#'   ElDoc pyramiding controls. `pyramid_start` is the favorable ATR movement
+#'   required before the first add; `pyramid_step` is used for each later add.
+#'   `pyramid_sizing = "entry_qty"` uses `pyramid_qty_pct` times the initial
+#'   entry quantity for each add.
 #' @param fee Fee handling mode per test (`"normal"` or `"nofee"`).
 #' @param fee_value Optional commission amount in account currency. `NULL`
 #'   reads ticker metadata.
@@ -741,6 +963,8 @@ normalize_fee_mode <- function(val, default = "normal") {
 #' @param only_returns Logical; if `TRUE`, returns an `xts` matrix of returns
 #'   instead of the full backtest objects.
 #' @param hide_details Logical flag propagated to the underlying backtest.
+#' @param show_quarterly Logical flag propagated to the underlying console
+#'   report; if `FALSE`, quarterly tables are omitted.
 #' @param fail_on_error Logical; if `TRUE` (default), any failed individual
 #'   backtest stops the batch. Set to `FALSE` only when you explicitly want the
 #'   behavior of warning and filling the failed series with zeros.
@@ -772,7 +996,7 @@ normalize_fee_mode <- function(val, default = "normal") {
 #'   labels.
 #' @export
 bt_batch <- function(
-  type = c("eldoc", "ema", "sma"),
+  type = c("eldoc", "ema", "sma", "tsmom"),
   tickers,
   timeframes = "1D",
   exact_match = FALSE,
@@ -785,7 +1009,10 @@ bt_batch <- function(
   atr_n = 20,
   atr_mult = 2,
   pyramid = FALSE,
+  pyramid_start = NULL,
   pyramid_step = 0.5,
+  pyramid_sizing = "risk",
+  pyramid_qty_pct = 1,
   max_units = if (isTRUE(pyramid)) 4L else 1L,
   fee = "normal",
   fee_value = NULL,
@@ -802,6 +1029,7 @@ bt_batch <- function(
   verbose = FALSE,
   only_returns = FALSE,
   hide_details = FALSE,
+  show_quarterly = FALSE,
   fail_on_error = TRUE,
   clean_di = TRUE,
   reinvest = TRUE,
@@ -842,7 +1070,10 @@ bt_batch <- function(
       atr_n = atr_n,
       atr_mult = atr_mult,
       pyramid = pyramid,
+      pyramid_start = pyramid_start,
       pyramid_step = pyramid_step,
+      pyramid_sizing = pyramid_sizing,
+      pyramid_qty_pct = pyramid_qty_pct,
       max_units = max_units
     ),
     extra_args
@@ -862,6 +1093,7 @@ bt_batch <- function(
         eldoc = "eldoc",
         ema = "ema",
         sma = "sma",
+        tsmom = "tsmom",
         stop(sprintf("Unsupported backtest type '%s'", type_name), call. = FALSE)
       )
       assign(type_token, .bt_batch_module_info(canonical), envir = module_cache)
@@ -1496,6 +1728,7 @@ bt_batch <- function(
     geometric = geometric,
     verbose = FALSE,
     hide_details = FALSE,
+    show_quarterly = FALSE,
     fail_on_error = TRUE,
     clean_di = TRUE,
     reinvest = TRUE,
@@ -1524,6 +1757,7 @@ bt_batch <- function(
     geometric = geometric,
     verbose = verbose,
     hide_details = hide_details,
+    show_quarterly = show_quarterly,
     fail_on_error = fail_on_error,
     clean_di = clean_di,
     reinvest = reinvest,
@@ -1585,7 +1819,8 @@ bt_batch <- function(
       length(per_params$long), length(per_params$short),
       length(per_params$invert_signals), length(per_params$normalize_risk),
       length(per_params$geometric), length(per_params$verbose),
-      length(per_params$hide_details), length(per_params$fail_on_error),
+      length(per_params$hide_details), length(per_params$show_quarterly),
+      length(per_params$fail_on_error),
       length(per_params$clean_di),
       length(per_params$reinvest), length(per_params$exact_match),
       length(per_params$returns_type),
@@ -1633,6 +1868,7 @@ bt_batch <- function(
       geom <- isTRUE(.bt_value_at(per_params$geometric, i, defaults$geometric))
       verb <- isTRUE(.bt_value_at(per_params$verbose, i, defaults$verbose))
       hide <- isTRUE(.bt_value_at(per_params$hide_details, i, defaults$hide_details))
+      show_q <- isTRUE(.bt_value_at(per_params$show_quarterly, i, defaults$show_quarterly))
       fail <- isTRUE(.bt_value_at(per_params$fail_on_error, i, defaults$fail_on_error))
       clean <- isTRUE(.bt_value_at(per_params$clean_di, i, defaults$clean_di))
       reinv <- isTRUE(.bt_value_at(per_params$reinvest, i, defaults$reinvest))
@@ -1669,6 +1905,7 @@ bt_batch <- function(
           verbose = isTRUE(verbose) || verb,
           only_returns = FALSE,
           hide_details = hide,
+          show_quarterly = show_q,
           clean_di = clean,
           reinvest = reinv,
           plot = FALSE

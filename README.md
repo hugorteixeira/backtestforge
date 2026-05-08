@@ -116,9 +116,11 @@ search <- bt_search_native(
 
 ## 🔧 Key Functions
 
-### `bt_eldoc()` - ElDoc Backtesting Function
+### `bt_eldoc()` - Basic ElDoc Backtesting Function
 
-The workhorse of the library - runs a complete ElDoc channel backtest:
+The default ElDoc wrapper is intentionally conservative: Donchian entries/exits,
+explicit execution timing, and normal position sizing. It does not expose
+pyramiding in the public baseline call.
 
 ```r
 bt_eldoc(
@@ -130,11 +132,8 @@ bt_eldoc(
   ps_type = NULL,# "eldoc", "atr", "notional", or "contract"
   execution = "breakout", # "breakout", "same_close", "next_open",
                           # "next_close", or "next_avg"
-  atr_n = 20,          # ATR lookback for ATR sizing/pyramiding
+  atr_n = 20,          # ATR lookback for ATR sizing
   atr_mult = 2,        # ATR risk multiple when ps_type = "atr"
-  pyramid = FALSE,     # Add ATR-stepped units in favorable moves
-  pyramid_step = 0.5,
-  max_units = 4,
   fee = "normal",      # Fee handling
   fee_value = NULL,    # Account-currency commission; NULL reads metadata
   fee_type = NULL,     # "contract" or "order"; NULL reads metadata
@@ -174,6 +173,67 @@ ElDoc position sizing modes:
 - `notional`: allocate `ps_value` percent of equity to notional exposure.
 - `contract`: trade `ps_value` contracts/shares per entry or add.
 
+Experimental trade diagnostics are still computed and stored, but they are not
+printed by default by `bt_eldoc()` or `bt_stats()`. Request a hidden block
+explicitly when needed:
+
+```r
+bt_stats(results, blocks = "excursion_thresholds")
+```
+
+### `bt_eldoc_exp()` - Experimental ElDoc Surface
+
+Use `bt_eldoc_exp()` for the research-heavy ElDoc variant. This is where
+pyramiding and detailed exploratory diagnostics live.
+
+```r
+exp <- bt_eldoc_exp(
+  ticker = "AAPL",
+  up = 40,
+  down = 40,
+  ps_value = 2,
+  ps_type = "eldoc",
+  pyramid = TRUE,
+  pyramid_start = 5,
+  pyramid_step = 2,
+  pyramid_sizing = "entry_qty",
+  pyramid_qty_pct = 0.5,
+  max_units = 4
+)
+```
+
+Trade diagnostics report MFE/MAE in percent, ATR, and R units. The `ATR
+Statistics` block summarizes the entry ATR scale, initial stop distance in ATR
+units, and ATR/initial-stop value per contract or unit. The `Trade Excursions`
+block summarizes the distribution; the `Excursion Thresholds` table focuses on
+large continuation levels (`5, 10, 15, 20, 25, 30, 35, 40` ATR), with hit counts,
+hit rates, median/mean final R, and median/mean post-threshold R diagnostics.
+These thresholds are descriptive diagnostics, not automatic parameter
+recommendations.
+
+When pyramiding is active, the `Pyramiding` block compares entry and add size,
+stop distance at add, and entry/add costs per contract and percent of notional.
+
+### `bt_tsmom()` - Time-Series Momentum
+
+`bt_tsmom()` implements a compact time-series momentum rule: trailing return
+over `lookback` bars above `threshold` goes long, below `-threshold` goes short.
+The default uses notional sizing and `next_open` execution.
+
+```r
+mom <- bt_tsmom(
+  ticker = "AAPL",
+  lookback = 252,
+  threshold = 0,
+  ps_value = 100,
+  ps_type = "notional",
+  execution = "next_open"
+)
+```
+
+`lookback` is in bars, not calendar days. On intraday data, convert the intended
+horizon to the data frequency before comparing results.
+
 ### Native spec API
 
 ```r
@@ -199,6 +259,14 @@ result <- bt_run_native(
 Risk sizing reinvests by default: new entries use current account equity, while
 an open position keeps its original quantity until the next order. Use
 `reinvest = FALSE` to size every entry from the initial capital instead.
+
+`normalize_risk` normalizes the returned `rets` stream to a target annualized
+volatility for system comparison. When it is supplied, report performance blocks,
+monthly/quarterly returns, and returns summaries use the normalized return stream.
+Execution facts remain raw: trades, orders, contracts, fees, slippage, and cost
+impact continue to describe the actual simulated orders. Full results therefore
+carry both views: `stats`/`performance_stats` match `rets`, while `raw_stats` and
+`raw_rets` keep the unnormalised execution path.
 
 For futures, attach instrument metadata to the `xts` object when the data source
 does not already provide it:
@@ -288,7 +356,9 @@ Contributions are welcome! Since this is a work in progress:
 
 - [x] Native-only engine without `quantstrat`, `blotter`, or `FinancialInstrument`
 - [x] Explicit fees/slippage with separate trade-ledger columns
-- [x] Donchian/ElDoc execution modes, ATR sizing, contract sizing, and pyramiding
+- [x] Basic Donchian/ElDoc execution modes, ATR sizing, and contract sizing
+- [x] Experimental ElDoc pyramiding and trade-excursion diagnostics isolated in `bt_eldoc_exp()`
+- [x] Time-series momentum wrapper with native `tsmom` strategy support
 - [x] Unit tests for native sizing, DI PU handling, costs, and batch failure strictness
 - [ ] Split the native simulator internals into smaller state-transition helpers
 - [ ] Add more real-data regression fixtures for DI and stitched futures series
