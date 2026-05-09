@@ -1,6 +1,6 @@
 # Backtestforge Native Engine Status And Handoff
 
-Date: 2026-05-06
+Date: 2026-05-08
 
 `backtestforge` is now native-only. The public wrappers call the in-memory
 simulator directly, and the package no longer imports or ships the old external

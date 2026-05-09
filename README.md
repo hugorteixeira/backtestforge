@@ -13,8 +13,10 @@ portfolio/instrument engine to configure.
 ## 🚀 Features
 
 - **Native In-Memory Simulator** - Runs directly from `xts` data and attrs
-- **Donchian Channel Strategies** - Built-in support for classic breakout strategies
-- **EMA/SMA Crossover Strategies** - Lightweight moving-average strategies
+- **Basic ElDoc / Donchian Strategy** - Conservative breakout wrapper for production comparisons
+- **Experimental ElDoc Research Surface** - Pyramiding and trade-excursion diagnostics live in `bt_eldoc_exp()`
+- **EMA/SMA Crossover Strategies** - Lightweight moving-average wrappers
+- **Time-Series Momentum** - Native `bt_tsmom()` wrapper for trailing-return sign systems
 - **Smart Position Sizing** - Risk-based position sizing with multiple methods
 - **Multi-Asset Support** - Works with stocks, futures, and crypto
 - **Brazilian Futures Support** - Optional `brfutures` integration for DI PU conversion; contract metadata is read from `xts` attrs
@@ -33,7 +35,7 @@ Read that file before continuing engine, DI futures, or server-job work.
 
 > This library is **HEAVILY WORK IN PROGRESS** and contains **LOTS OF BUGS**! 
 > 
-> 🔧 It's currently functional for Donchian Channel strategies but is being actively developed.
+> 🔧 The native wrappers are functional for basic ElDoc/Donchian, EMA/SMA, and TSMOM strategies, but the package is still being actively developed.
 > 
 > 🐛 You WILL encounter bugs, strange behaviors, and missing features.
 > 
@@ -42,14 +44,17 @@ Read that file before continuing engine, DI futures, or server-job work.
 ## 🎯 Current Capabilities
 
 ### Strategies
-- ✅ Donchian Channel Breakout (Eldoc)
+- ✅ Basic Donchian Channel Breakout (ElDoc)
+- ✅ Experimental ElDoc research surface with pyramiding diagnostics
+- ✅ Time-Series Momentum (TSMOM)
+- ✅ EMA/SMA crossover wrappers
 - ✅ Long/Short entry and exit signals
-- ✅ Custom indicator support
 
 ### Position Sizing Functions
 - ✅ Fixed Contracts Quantity
 - ✅ Percentage of Equity (Simple)
 - ✅ Donchian-based Risk Position Sizing
+- ✅ ATR-risk Position Sizing
 - ✅ DI Futures Specialized Position Sizing
 
 ### Asset Classes
