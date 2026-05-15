@@ -266,12 +266,15 @@ an open position keeps its original quantity until the next order. Use
 `reinvest = FALSE` to size every entry from the initial capital instead.
 
 `normalize_risk` normalizes the returned `rets` stream to a target annualized
-volatility for system comparison. When it is supplied, report performance blocks,
-monthly/quarterly returns, and returns summaries use the normalized return stream.
-Execution facts remain raw: trades, orders, contracts, fees, slippage, and cost
-impact continue to describe the actual simulated orders. Full results therefore
-carry both views: `stats`/`performance_stats` match `rets`, while `raw_stats` and
-`raw_rets` keep the unnormalised execution path.
+volatility for system comparison, measured on daily compounded returns. For
+intraday data, bars are compounded by calendar day and annualized with
+`sqrt(252)`, so 1H, 4H, and 1D systems use the same risk basis. When it is
+supplied, report performance blocks, monthly/quarterly returns, and returns
+summaries use the normalized return stream. Execution facts remain raw: trades,
+orders, contracts, fees, slippage, and cost impact continue to describe the
+actual simulated orders. Full results therefore carry both views:
+`stats`/`performance_stats` match `rets`, while `raw_stats` and `raw_rets` keep
+the unnormalised execution path.
 
 For futures, attach instrument metadata to the `xts` object when the data source
 does not already provide it:

@@ -338,6 +338,58 @@
   (365.25 * 86400) / dt
 }
 
+.bt_daily_log_sums <- function(x) {
+  if (!xts::is.xts(x)) stop("Input must be an xts object.", call. = FALSE)
+  out <- xts::apply.daily(x, function(z) {
+    vals <- as.numeric(z)
+    vals <- vals[is.finite(vals)]
+    if (!length(vals)) NA_real_ else sum(vals)
+  })
+  colnames(out) <- "Log"
+  out
+}
+
+.bt_daily_discrete_returns <- function(x) {
+  if (!xts::is.xts(x)) stop("Input must be an xts object.", call. = FALSE)
+  out <- xts::apply.daily(x, function(z) {
+    vals <- as.numeric(z)
+    vals <- vals[is.finite(vals)]
+    if (!length(vals)) NA_real_ else prod(1 + vals) - 1
+  })
+  colnames(out) <- "Discrete"
+  out
+}
+
+.bt_annualized_daily_vol_from_log <- function(x, scale = 1, periods_per_year = 252) {
+  daily_log <- .bt_daily_log_sums(x)
+  vals <- as.numeric(daily_log)
+  vals <- vals[is.finite(vals)]
+  scale <- suppressWarnings(as.numeric(scale)[1])
+  if (length(vals) < 2L || !is.finite(scale) ||
+      !is.finite(periods_per_year) || periods_per_year <= 0) {
+    return(NA_real_)
+  }
+  stats::sd(exp(vals * scale) - 1, na.rm = TRUE) * sqrt(periods_per_year)
+}
+
+.bt_annualized_daily_vol <- function(x, periods_per_year = 252) {
+  if (!xts::is.xts(x)) stop("Input must be an xts object.", call. = FALSE)
+  cn <- tolower(colnames(x) %||% character())
+  log_idx <- which(cn == "log")
+  if (length(log_idx)) {
+    return(.bt_annualized_daily_vol_from_log(x[, log_idx[1], drop = FALSE], periods_per_year = periods_per_year))
+  }
+  disc_idx <- which(cn == "discrete")
+  disc <- if (length(disc_idx)) x[, disc_idx[1], drop = FALSE] else x[, 1, drop = FALSE]
+  daily <- .bt_daily_discrete_returns(disc)
+  vals <- as.numeric(daily)
+  vals <- vals[is.finite(vals)]
+  if (length(vals) < 2L || !is.finite(periods_per_year) || periods_per_year <= 0) {
+    return(NA_real_)
+  }
+  stats::sd(vals, na.rm = TRUE) * sqrt(periods_per_year)
+}
+
 .bt_return_summary_values <- function(x, periods_per_year, geometric = TRUE) {
   x <- x[is.finite(x)]
   if (!length(x)) {

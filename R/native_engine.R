@@ -3470,7 +3470,7 @@ bt_search_native <- function(ticker,
   ppy <- .bt_native_periods_per_year(rets)
   total_return <- tail(eq, 1) / eq[1] - 1
   ann_return <- if (length(eq) > 1 && is.finite(ppy)) (tail(eq, 1) / eq[1])^(ppy / max(1, length(eq) - 1)) - 1 else NA_real_
-  ann_vol <- if (length(ret) > 1 && is.finite(ppy)) stats::sd(ret) * sqrt(ppy) else NA_real_
+  ann_vol <- if (length(ret) > 1) .bt_annualized_daily_vol(rets) else NA_real_
   sharpe <- if (is.finite(ann_vol) && ann_vol > 0) ann_return / ann_vol else NA_real_
   dd <- 1 - eq / cummax(eq)
   max_dd <- max(dd, na.rm = TRUE)

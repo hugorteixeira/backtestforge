@@ -556,9 +556,11 @@ bt_tsmom <- function(ticker, lookback = 252, threshold = 0, ps_value = 100, init
 #' Normalize a return series to a target annualized risk level
 #'
 #' Searches for "Log" or "Discrete" return columns inside an `xts` object (or a
-#' nested structure) and rescales them so the realized annualized volatility
-#' matches the requested percentage. The output is returned in the same style
-#' (`"Log"` or `"Discrete"`) requested via `type`.
+#' nested structure) and rescales them so the realized annualized volatility of
+#' daily compounded returns matches the requested percentage. For intraday
+#' returns, bars are compounded by calendar day before volatility is annualized
+#' with `sqrt(252)`. The output is returned in the same style (`"Log"` or
+#' `"Discrete"`) requested via `type`.
 #'
 #' @param xts An `xts` object or list containing return series.
 #' @param risk Numeric target annualized volatility in percent.
@@ -639,70 +641,27 @@ bt_normalize_risk <- function(xts, risk = 10, type = c("Discrete", "Log")) {
     NULL
   }
 
-  periods_per_year <- function(x) {
-    # Robust estimator of periods per year.
-    # - Count how many observations actually occur in each calendar year and
-    #   use the median of those counts (resilient to partial years).
-    # - Fallback: Daily = 252/365.25 heuristic, otherwise median spacing.
-    if (!xts::is.xts(x)) stop("periods_per_year requires an xts object.")
-    idx <- index(x)
-    if (length(idx) < 2) {
-      return(NA_real_)
-    }
-
-    # Use observed counts per calendar year; drop duplicated timestamps to
-    # avoid inflating counts when xts had to make indices unique.
-    idx_unique <- sort(unique(as.numeric(idx)))
-    yrs <- format(as.POSIXct(idx_unique, origin = "1970-01-01", tz = "UTC"), "%Y")
-    counts_per_year <- as.integer(table(yrs))
-    counts_per_year <- counts_per_year[counts_per_year > 0]
-    if (length(counts_per_year)) {
-      ppy_obs <- stats::median(counts_per_year)
-      if (is.finite(ppy_obs) && ppy_obs > 0) {
-        return(as.numeric(ppy_obs))
-      }
-    }
-
-    p <- tryCatch(xts::periodicity(x)$scale, error = function(e) NA_character_)
-    if (!is.na(p)) {
-      p <- tolower(p)
-      if (p == "daily") {
-        # detect crypto/all-calendar vs business-day series
-        w <- weekdays(as.Date(idx))
-        frac_weekend <- mean(w %in% c("Saturday", "Sunday"))
-        return(if (is.na(frac_weekend) || frac_weekend > 0.05) 365.25 else 252)
-      } else if (p == "weekly") {
-        return(52)
-      } else if (p == "monthly") {
-        return(12)
-      } else if (p == "quarterly") {
-        return(4)
-      } else if (p == "yearly") {
-        return(1)
-      }
-      # else fall through
-    }
-    # fallback using median spacing
-    dt <- stats::median(diff(as.numeric(idx)))
-    if (is.na(dt) || dt <= 0) {
-      return(NA_real_)
-    }
-    if (inherits(idx, "Date")) {
-      secs_per_period <- dt * 86400
-    } else {
-      secs_per_period <- dt
-    }
-    as.numeric((365.25 * 24 * 3600) / secs_per_period)
+  annualized_vol <- function(r) {
+    .bt_annualized_daily_vol_from_log(r)
   }
 
-  annualized_vol <- function(r) {
-    rnum <- as.numeric(r)
-    rnum <- rnum[is.finite(rnum)]
-    ppy <- periods_per_year(r)
-    if (length(rnum) < 2 || !is.finite(ppy) || ppy <= 0) {
-      return(NA_real_)
+  solve_scale_factor <- function(r, target_vol_ann, original_vol_ann) {
+    scale_guess <- as.numeric(target_vol_ann / original_vol_ann)
+    vol_at <- function(scale) .bt_annualized_daily_vol_from_log(r, scale = scale)
+    f <- function(scale) vol_at(scale) - target_vol_ann
+    upper <- max(1, scale_guess * 2, na.rm = TRUE)
+    for (i in seq_len(50L)) {
+      val <- f(upper)
+      if (is.finite(val) && val >= 0) {
+        break
+      }
+      upper <- upper * 2
     }
-    stats::sd(rnum) * sqrt(ppy)
+    root <- tryCatch(
+      stats::uniroot(f, lower = 0, upper = upper, tol = 1e-12)$root,
+      error = function(e) NA_real_
+    )
+    if (is.finite(root) && root > 0) root else scale_guess
   }
 
   # ---- locate returns ----
@@ -735,7 +694,7 @@ bt_normalize_risk <- function(xts, risk = 10, type = c("Discrete", "Log")) {
   }
 
   target_vol_ann <- risk / 100 # convert percent to decimal
-  scale_factor <- as.numeric(target_vol_ann / vol_ann)
+  scale_factor <- solve_scale_factor(r_log, target_vol_ann, vol_ann)
 
   # Scale log returns
   r_log_scaled <- r_log * scale_factor

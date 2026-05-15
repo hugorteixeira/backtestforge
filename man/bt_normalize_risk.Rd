@@ -18,7 +18,9 @@ A single-column \code{xts} series with normalized returns.
 }
 \description{
 Searches for "Log" or "Discrete" return columns inside an \code{xts} object (or a
-nested structure) and rescales them so the realized annualized volatility
-matches the requested percentage. The output is returned in the same style
-(\code{"Log"} or \code{"Discrete"}) requested via \code{type}.
+nested structure) and rescales them so the realized annualized volatility of
+daily compounded returns matches the requested percentage. For intraday
+returns, bars are compounded by calendar day before volatility is annualized
+with \code{sqrt(252)}. The output is returned in the same style (\code{"Log"} or
+\code{"Discrete"}) requested via \code{type}.
 }

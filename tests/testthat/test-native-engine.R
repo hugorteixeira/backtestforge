@@ -297,6 +297,24 @@ test_that("normalize_risk drives performance blocks while execution stats stay r
   expect_true(any(grepl("Risk-Normalized 10%", output, fixed = TRUE)))
 })
 
+test_that("normalize_risk targets daily-compounded volatility for intraday returns", {
+  idx <- as.POSIXct("2024-01-02 09:00:00", tz = "UTC") +
+    rep(0:119, each = 4) * 86400 +
+    rep(c(0, 3600, 7200, 10800), times = 120)
+  intraday_log <- xts::xts(
+    cbind(Log = rep(c(0.01, -0.004, 0.006, -0.002, -0.008, 0.003), length.out = length(idx))),
+    order.by = idx
+  )
+
+  scaled <- bt_normalize_risk(intraday_log, risk = 10, type = "Log")
+  daily_discrete <- xts::apply.daily(
+    scaled,
+    function(x) exp(sum(as.numeric(x), na.rm = TRUE)) - 1
+  )
+
+  expect_equal(stats::sd(as.numeric(daily_discrete), na.rm = TRUE) * sqrt(252) * 100, 10, tolerance = 1e-8)
+})
+
 test_that("native metadata uses finharvest xts contract attrs", {
   x <- bt_test_ohlc()
   attr(x, "symbol") <- NULL

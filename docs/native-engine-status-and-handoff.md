@@ -34,10 +34,13 @@ There is no `engine` argument. Passing `engine` through `bt_batch()` specs or
 - Risk sizing uses `reinvest = TRUE` by default: new entries use current equity,
   while open positions keep their original quantity until another order.
 - `normalize_risk` is a comparison layer on returns, not a rewrite of the
-  executed order path. When set, `rets`, `stats`, monthly/quarterly returns,
-  returns summaries, and performance blocks use the risk-normalized stream;
-  `raw_rets`, `raw_stats`, trades, positions, and cost/activity blocks preserve
-  the unnormalised simulated execution.
+  executed order path. The target is annualized volatility of daily compounded
+  returns: intraday bars are compounded by calendar day and annualized with
+  `sqrt(252)` so 1H, 4H, and 1D systems share the same risk basis. When set,
+  `rets`, `stats`, monthly/quarterly returns, returns summaries, and performance
+  blocks use the risk-normalized stream; `raw_rets`, `raw_stats`, trades,
+  positions, and cost/activity blocks preserve the unnormalised simulated
+  execution.
 - `bt_eldoc()` is the baseline Donchian wrapper: no pyramiding arguments and no
   research-heavy diagnostics in the default console/stat printout.
 - `bt_eldoc_exp()` is the experimental Donchian surface. It keeps pyramiding,
