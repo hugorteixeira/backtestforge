@@ -278,6 +278,8 @@ test_that("normalize_risk drives performance blocks while execution stats stay r
   expect_false(isTRUE(norm$raw_stats$RiskNormalized[1]))
   expect_equal(norm$raw_stats$net_profit, raw$raw_stats$net_profit)
   expect_false(isTRUE(all.equal(norm$stats$total_return, norm$raw_stats$total_return)))
+  expect_equal(norm$stats$annualized_vol * 100, 10, tolerance = 1e-8)
+  expect_equal(norm$stats$RiskOriginal, norm$raw_stats$annualized_vol * 100, tolerance = 1e-8)
   expect_equal(attr(norm$info_blocks$monthly_returns, "title"), "Monthly Returns Risk-Normalized 10% (Geometric)")
   expect_equal(attr(norm$info_blocks$returns, "title"), "Returns Summary Risk-Normalized 10% (Geometric)")
   expect_true(any(norm$info_blocks$performance$stat_name == "Return Source"))

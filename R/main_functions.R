@@ -698,27 +698,11 @@ bt_normalize_risk <- function(xts, risk = 10, type = c("Discrete", "Log")) {
   annualized_vol <- function(r) {
     rnum <- as.numeric(r)
     rnum <- rnum[is.finite(rnum)]
-    if (length(rnum) < 2) {
+    ppy <- periods_per_year(r)
+    if (length(rnum) < 2 || !is.finite(ppy) || ppy <= 0) {
       return(NA_real_)
     }
-    idx <- index(r)
-    yrs <- format(idx, "%Y")
-    vol_by_year <- tapply(seq_along(rnum), yrs, function(ids) {
-      vals <- rnum[ids]
-      vals <- vals[is.finite(vals)]
-      n <- length(vals)
-      if (n < 2) {
-        return(NA_real_)
-      }
-      stats::sd(vals) * sqrt(n)
-    })
-    vol_by_year <- unlist(vol_by_year, use.names = FALSE)
-    vol_by_year <- vol_by_year[is.finite(vol_by_year)]
-    if (length(vol_by_year) == 0) {
-      return(NA_real_)
-    }
-    # Average the per-year vols to respect partial/holiday-heavy years.
-    mean(vol_by_year)
+    stats::sd(rnum) * sqrt(ppy)
   }
 
   # ---- locate returns ----
