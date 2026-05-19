@@ -4,3 +4,7 @@
 .Ruserdata
 .Rbuildignore
 rBacktestTools.Rproj
+.codex
+..Rcheck
+*.Rcheck/
+*.tar.gz
