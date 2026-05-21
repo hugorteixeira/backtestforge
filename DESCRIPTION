@@ -26,7 +26,8 @@ Imports:
     tidyr,
     dplyr,
     bizdays,
-    magrittr
+    magrittr,
+    positionsizer
 Suggests: 
     base64enc,
     brfutures,

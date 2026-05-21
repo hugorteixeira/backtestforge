@@ -19,7 +19,7 @@ portfolio/instrument engine to configure.
 - **Time-Series Momentum** - Native `bt_tsmom()` wrapper for trailing-return sign systems
 - **Smart Position Sizing** - Risk-based position sizing with multiple methods
 - **Multi-Asset Support** - Works with stocks, futures, and crypto
-- **Brazilian Futures Support** - Optional `brfutures` integration for DI PU conversion; contract metadata is read from `xts` attrs
+- **Brazilian Futures Support** - DI PU conversion and position sizing use `positionsizer`; contract metadata is read from `xts` attrs
 - **Agent-Friendly Search** - `bt_search_native()` evaluates serializable parameter grids
 - **Visual Backtesting** - Optional plotting with `tradeplotr`
 - **Performance Reporting** - Built-in monthly, quarterly, and summary tables
@@ -325,6 +325,10 @@ point.
 5. **DI futures handling** - Use rate OHLC for signals and PU for execution
    when PU data is available.
 
+The actual quantity calculation is delegated to `positionsizer`. `backtestforge`
+still owns strategy signals, stop selection, execution timing, costs, and
+result reporting, but the canonical sizing math lives in that package.
+
 ## 📈 Example Output
 
 The library provides comprehensive performance metrics:
@@ -347,6 +351,7 @@ This library uses:
 - `TTR` - Technical analysis functions
 - `xts`/`zoo` - Time series handling
 - `finharvest` - Data fetching
+- `positionsizer` - Canonical position sizing and DI rate/PU calculations
 - `brfutures` - Optional Brazilian futures and DI helpers
 - `tradeplotr` - Visualization
 

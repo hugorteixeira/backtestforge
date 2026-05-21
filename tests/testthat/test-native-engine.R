@@ -46,10 +46,10 @@ bt_test_di_ohlc <- function() {
   low <- c(9, 9, 9, 9, 10.5, 11.5, 12.5, 13.5, 14.5, 15.5)
   close <- c(9.5, 9.5, 9.5, 9.8, 11, 12, 13, 14, 15, 16)
   pu_for <- function(rate, i) {
-    .calculate_futures_di_notional(rate, maturity_date = maturity, basis_date = idx[i], cal = cal)$pu
+    positionsizer::ps_di_rate_to_pu(rate, maturity_date = maturity, basis_date = idx[i], cal = cal, snap_to_tick = FALSE, round_pu = FALSE)$pu
   }
   tick_value_for <- function(rate, i) {
-    .calculate_futures_di_notional(rate, maturity_date = maturity, basis_date = idx[i], cal = cal)$tick_value
+    positionsizer::ps_di_rate_to_pu(rate, maturity_date = maturity, basis_date = idx[i], cal = cal, snap_to_tick = FALSE, round_pu = FALSE)$tick_value
   }
   pu_open <- mapply(pu_for, open, seq_along(open))
   pu_high <- mapply(pu_for, high, seq_along(high))
@@ -706,10 +706,12 @@ test_that("native DI uses rate OHLC for signals and PU for execution", {
 })
 
 test_that("DI notional fallback works without attaching bizdays", {
-  out <- .calculate_futures_di_notional(
+  out <- positionsizer::ps_di_rate_to_pu(
     10,
     maturity_date = as.Date("2028-01-03"),
-    basis_date = as.Date("2024-01-02")
+    basis_date = as.Date("2024-01-02"),
+    snap_to_tick = FALSE,
+    round_pu = FALSE
   )
 
   expect_true(is.finite(out$pu) && out$pu > 0)

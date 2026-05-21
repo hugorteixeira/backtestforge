@@ -151,7 +151,7 @@ For DI-like symbols, the simulator:
 
 - tries to fill missing maturity using `finharvest::finget_maturities()` when
   available;
-- uses `brfutures` when installed to convert annualized-rate OHLC data into PU
+- uses `positionsizer` to convert annualized-rate OHLC data into PU
   columns;
 - keeps annualized-rate OHLC columns for indicators and signals;
 - prefers PU columns (`PU_o`, `PU_h`, `PU_l`, `PU_c`, or equivalent names) for
@@ -163,7 +163,9 @@ space. Long DI positions gain when PU falls, so the simulator keeps the negative
 PU P/L multiplier for positive long quantity.
 
 The preferred data-layer improvement is to have `finharvest` or `brfutures`
-return DI PU columns and contract metadata as attrs before the backtest starts.
+return DI PU columns and contract metadata as attrs before the backtest starts;
+when the simulator needs an on-the-fly conversion, the calculation belongs to
+`positionsizer`.
 
 ## Verification
 

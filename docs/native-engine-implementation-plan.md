@@ -10,8 +10,8 @@ backtesting stack. For the current state and verification commands, read
 
 1. Data layer
    - Source: `finharvest::finget()` or already loaded `xts` objects.
-   - Futures helpers: use `brfutures` when available for DI rate-to-PU
-     conversion.
+   - Futures helpers: use `positionsizer` for DI rate-to-PU conversion and
+     canonical position-sizing math.
    - Contract metadata must come from `xts` attributes.
    - Shape: one `xts` per symbol with at least `Open`, `High`, `Low`, `Close`.
    - Server rule: fetch once per universe/timeframe, then reuse immutable data.

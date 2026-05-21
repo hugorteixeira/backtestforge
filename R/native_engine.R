@@ -1267,8 +1267,6 @@ bt_search_native <- function(ticker,
 }
 
 .bt_native_size <- function(side, price, stop_price, equity, risk, metadata, tick_value = NA_real_) {
-  mult <- metadata$multiplier
-  mult <- if (is.finite(mult) && mult > 0) mult else 1
   price <- as.numeric(price)[1]
   if (!is.finite(price) || price <= 0) return(0)
   equity_basis <- if (isTRUE(risk$reinvest)) equity else risk$initial_equity
@@ -1276,36 +1274,40 @@ bt_search_native <- function(ticker,
     stop("Unable to compute valid equity for native position sizing.", call. = FALSE)
   }
 
-  if (identical(risk$mode, "fixed")) {
-    qty_abs <- risk$fixed_qty
-  } else if (identical(risk$mode, "risk") && is.finite(stop_price)) {
-    risk_per_unit <- abs(price - stop_price) * mult
-    min_risk <- if (is.finite(tick_value) && tick_value > 0) {
-      abs(tick_value)
-    } else {
-      max(metadata$tick_size * mult, price * risk$min_risk_pct * mult, na.rm = TRUE)
-    }
-    risk_per_unit <- max(risk_per_unit, min_risk, na.rm = TRUE)
-    allowed <- equity_basis * risk$risk_pct / 100
-    qty_abs <- allowed / risk_per_unit
-  } else {
-    notional <- price * mult
-    if (!is.finite(notional) || notional <= 0) return(0)
-    qty_abs <- (equity_basis * risk$risk_pct / 100) / notional
+  mult <- suppressWarnings(as.numeric(metadata$multiplier)[1])
+  tick_size <- suppressWarnings(as.numeric(metadata$tick_size)[1])
+  tick_value <- suppressWarnings(as.numeric(tick_value)[1])
+  if (!is.finite(tick_value) || tick_value <= 0) {
+    tick_value <- suppressWarnings(as.numeric(metadata$tick_value)[1])
   }
+  if (!is.finite(mult) || mult <= 0) mult <- 1
 
-  if (is.finite(risk$max_leverage) && risk$max_leverage > 0) {
-    leverage_qty <- (equity_basis * risk$max_leverage) / (price * mult)
-    qty_abs <- min(qty_abs, leverage_qty, na.rm = TRUE)
-  }
-  if (is.finite(risk$max_qty) && risk$max_qty > 0) {
-    qty_abs <- min(qty_abs, risk$max_qty, na.rm = TRUE)
-  }
-  if (isTRUE(risk$integer_qty)) {
-    qty_abs <- floor(qty_abs)
-  }
-  if (!is.finite(qty_abs) || qty_abs <= 0) return(0)
-  if (identical(side, "short")) -qty_abs else qty_abs
+  instrument <- positionsizer::ps_instrument_spec(
+    ticker = metadata$symbol %||% "",
+    root = metadata$root %||% NULL,
+    asset_type = if (isTRUE(metadata$is_futures)) "future" else "asset",
+    contract_model = "linear",
+    price_mode = "price",
+    multiplier = mult,
+    ticksize = tick_size,
+    tickvalue = tick_value
+  )
+  out <- positionsizer::ps_size_position(
+    side = side,
+    price = price,
+    stop_price = stop_price,
+    capital = equity_basis,
+    risk_pct = risk$risk_pct,
+    fixed_qty = risk$fixed_qty,
+    mode = switch(risk$mode, fixed = "contract", notional = "notional", risk = "risk", risk$mode),
+    instrument = instrument,
+    max_qty = risk$max_qty,
+    max_leverage = risk$max_leverage,
+    integer_qty = risk$integer_qty,
+    min_risk_pct = risk$min_risk_pct
+  )
+  qty <- suppressWarnings(as.numeric(out$quantity_signed)[1])
+  if (is.finite(qty)) qty else 0
 }
 
 .bt_native_slippage_per_contract <- function(price, execution, metadata, tick_value = NA_real_) {
@@ -1474,39 +1476,14 @@ bt_search_native <- function(ticker,
     return(NA_real_)
   }
 
-  if (requireNamespace("brfutures", quietly = TRUE) &&
-    exists("calculate_futures_di_notional", envir = asNamespace("brfutures"), inherits = FALSE)) {
-    out <- tryCatch(
-      brfutures::calculate_futures_di_notional(
-        rate,
-        maturity_date = maturity,
-        basis_date = basis,
-        round_pu = FALSE
-      ),
-      error = function(e) NULL
-    )
-    if (is.null(out)) {
-      out <- tryCatch(
-        brfutures::calculate_futures_di_notional(
-          rate,
-          maturity_date = maturity,
-          basis_date = basis
-        ),
-        error = function(e) NULL
-      )
-    }
-    pu <- suppressWarnings(as.numeric(out$pu)[1])
-    if (is.finite(pu) && pu > 0) {
-      return(pu)
-    }
-  }
-
   out <- tryCatch(
-    .calculate_futures_di_notional(
+    positionsizer::ps_di_rate_to_pu(
       rate,
       maturity_date = maturity,
       basis_date = basis,
-      cal = cal
+      cal = cal,
+      snap_to_tick = FALSE,
+      round_pu = FALSE
     ),
     error = function(e) NULL
   )
