@@ -10,9 +10,12 @@ backtesting stack. For the current state and verification commands, read
 
 1. Data layer
    - Source: `finharvest::finget()` or already loaded `xts` objects.
+   - Internal `finget()` calls must request `attrs_source = "fintickers"` so
+     curated XTS attrs are available to the simulator.
    - Futures helpers: use `positionsizer` for DI rate-to-PU conversion and
      canonical position-sizing math.
-   - Contract metadata must come from `xts` attributes.
+   - Contract metadata must come from `xts` attributes, preferably the nested
+     `contract` plugin attr. Legacy flat attrs are compatibility inputs only.
    - Shape: one `xts` per symbol with at least `Open`, `High`, `Low`, `Close`.
    - Server rule: fetch once per universe/timeframe, then reuse immutable data.
 
@@ -109,7 +112,9 @@ DI pyramiding must preserve the DI contract model:
 
 ## Futures Requirements
 
-- Recognized metadata: `fut_multiplier`, `multiplier`, `fut_tick_size`,
+- Recognized metadata: nested plugin attrs `contract`, `costs`,
+  `classification`, and `information`; plus legacy flat attrs
+  `fut_multiplier`, `multiplier`, `fut_tick_size`,
   `tick_size`, `ticksize`, `fut_tick_value`, `tick_value`, `tickvalue`,
   `fee_value`, `fee_type`, `slip_value`, `slip_type`,
   `slippage_bps`, `slippage_ticks`, `slippage_points`,

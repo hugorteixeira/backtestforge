@@ -287,9 +287,10 @@ bt_risk_spec <- function(mode = c("risk", "notional", "fixed"),
 }
 
 .bt_native_ps_metadata <- function(data) {
+  meta <- .collect_instrument_metadata(data)
   list(
-    value = .bt_native_first_num(.bt_native_attr_first(data, "ps_value")),
-    type = .bt_native_first_chr(.bt_native_attr_first(data, "ps_type"))
+    value = .bt_native_first_num(meta$ps_value),
+    type = .bt_native_first_chr(meta$ps_type)
   )
 }
 
@@ -885,7 +886,11 @@ bt_search_native <- function(ticker,
   }
   data <- .use_close_only(data)
 
-  symbol <- symbol %||% attr(data, "symbol", exact = TRUE) %||% attr(data, "ticker", exact = TRUE) %||% "local_xts"
+  symbol <- symbol %||%
+    attr(data, "symbol", exact = TRUE) %||%
+    attr(data, "ticker", exact = TRUE) %||%
+    .bt_xts_attr_first(data, c("ticker", "symbol"), groups = c("information", "identity", "metadata")) %||%
+    "local_xts"
   symbol <- as.character(symbol)[1]
 
   data <- .bt_native_enrich_futures_data(data, symbol, clean_di = clean_di)
@@ -925,7 +930,11 @@ bt_search_native <- function(ticker,
   if (has_pu || !requireNamespace("brfutures", quietly = TRUE)) {
     return(data)
   }
-  maturity <- attr(data, "maturity", exact = TRUE)
+  maturity <- .bt_xts_attr_first(
+    data,
+    c("maturity", "maturity_date", "expiry", "expiration"),
+    groups = c("contract", "metadata")
+  )
   if (is.null(maturity) || all(is.na(suppressWarnings(as.Date(maturity))))) {
     maturity <- tryCatch(brfutures::di_maturity_from_ticker(.bt_base_contract_symbol(symbol)), error = function(e) NULL)
   }
@@ -965,13 +974,24 @@ bt_search_native <- function(ticker,
   attr_names <- names(attributes(data))
   attr_names <- attr_names[!is.na(attr_names)]
   base_symbol <- .bt_base_contract_symbol(symbol)
+  contract_attr <- .bt_xts_attr_list(data, "contract")
+  classification_type <- .bt_native_first_chr(
+    .bt_xts_attr_first(data, c("type", "subtype", "class"), groups = c("classification", "exposure", "metadata"))
+  )
+  has_contract_metadata <- any(vapply(
+    list(meta$tick_size, meta$tick_value, meta$multiplier, meta$maturity, meta$root),
+    .bt_attr_has_value,
+    logical(1)
+  ))
   has_futures_metadata <- any(c(
     "fut_multiplier", "fut_tick_size", "fut_tick_value",
     "ticksize", "tickvalue", "contract_symbol", "contract_year",
     "contract_month", "maturity"
-  ) %in% attr_names)
+  ) %in% attr_names) ||
+    is.list(contract_attr) && length(contract_attr) > 0 && has_contract_metadata
   is_futures <- isTRUE(di) ||
     has_futures_metadata ||
+    isTRUE(grepl("future|futures|derivative|derivatives", classification_type, ignore.case = TRUE)) ||
     grepl("(^DI1|FUT)", base_symbol, ignore.case = TRUE)
   first_num <- function(...) {
     vals <- unlist(list(...), use.names = FALSE)
@@ -995,19 +1015,16 @@ bt_search_native <- function(ticker,
   }
   missing_fields <- character()
   tick_size <- fallback_one(
-    first_num(meta$tick_size, attr(data, "fut_tick_size", exact = TRUE), attr(data, "tick_size", exact = TRUE), attr(data, "ticksize", exact = TRUE)),
+    first_num(meta$tick_size),
     "tick_size"
   )
   tick_value <- first_num(
-    meta$tick_value,
-    attr(data, "fut_tick_value", exact = TRUE),
-    attr(data, "tick_value", exact = TRUE),
-    attr(data, "tickvalue", exact = TRUE)
+    meta$tick_value
   )
   if (isTRUE(di) && is.finite(tick_value) && tick_value != 0) {
     tick_value <- abs(tick_value)
   }
-  multiplier_raw <- first_num(meta$multiplier, attr(data, "fut_multiplier", exact = TRUE), attr(data, "multiplier", exact = TRUE))
+  multiplier_raw <- first_num(meta$multiplier)
   if (isTRUE(di)) {
     multiplier_raw <- 1
   } else if ((!is.finite(multiplier_raw) || multiplier_raw <= 0) &&
@@ -1019,31 +1036,25 @@ bt_search_native <- function(ticker,
   if (!is.finite(tick_value) || tick_value <= 0) {
     tick_value <- tick_size * multiplier
   }
-  fees <- first_num(attr(data, "fee_value", exact = TRUE))
+  fees <- first_num(meta$fees)
   fee_type <- first_chr(
-    meta$fee_type,
-    attr(data, "fee_type", exact = TRUE)
+    meta$fee_type
   )
   slip_value <- first_num(
-    meta$slip_value,
-    attr(data, "slip_value", exact = TRUE)
+    meta$slip_value
   )
   slippage_bps <- first_num(
-    meta$slippage_bps,
-    attr(data, "slippage_bps", exact = TRUE)
+    meta$slippage_bps
   )
   slippage_ticks <- first_num(
-    meta$slippage_ticks,
-    attr(data, "slippage_ticks", exact = TRUE)
+    meta$slippage_ticks
   )
   slippage_points <- first_num(
-    meta$slippage_points,
-    attr(data, "slippage_points", exact = TRUE)
+    meta$slippage_points
   )
   slippage_cash <- NA_real_
   slippage_unit <- tolower(first_chr(
-    meta$slippage_unit,
-    attr(data, "slip_type", exact = TRUE)
+    meta$slippage_unit
   ))
   slippage_unit_missing <- is.na(slippage_unit) || !nzchar(slippage_unit)
   if (is.finite(slip_value) && slip_value >= 0 && !slippage_unit_missing) {
@@ -1086,9 +1097,9 @@ bt_search_native <- function(ticker,
     slippage_unit = slippage_unit,
     is_futures = is_futures,
     is_di = isTRUE(di),
-    maturity = meta$maturity %||% attr(data, "maturity", exact = TRUE),
+    maturity = meta$maturity,
     symbol = symbol,
-    root = .bt_native_root(symbol)
+    root = first_chr(meta$root, .bt_native_root(symbol))
   )
 }
 

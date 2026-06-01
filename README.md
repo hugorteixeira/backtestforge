@@ -276,32 +276,43 @@ actual simulated orders. Full results therefore carry both views:
 `stats`/`performance_stats` match `rets`, while `raw_stats` and `raw_rets` keep
 the unnormalised execution path.
 
-For futures, attach instrument metadata to the `xts` object when the data source
-does not already provide it:
+For futures, the current `finharvest`/`fintickers` contract attaches instrument
+metadata in nested `xts` plugin attrs. `backtestforge` reads `contract` for
+contract specs and `costs` for sizing, fees, and slippage:
 
 ```r
-attr(wdo, "fut_multiplier") <- 10
-attr(wdo, "fut_tick_size") <- 0.5
-attr(wdo, "fee_value") <- 1
-attr(wdo, "fee_type") <- "contract"
-attr(wdo, "slip_value") <- 1
-attr(wdo, "slip_type") <- "ticks"
-attr(wdo, "ps_value") <- 2
-attr(wdo, "ps_type") <- "eldoc"
+attr(wdo, "contract") <- list(
+  multiplier = 10,
+  ticksize = 0.5,
+  tickvalue = 5,
+  root = "WDO",
+  timeframe = "1H"
+)
+attr(wdo, "costs") <- list(
+  fee_value = 1,
+  fee_type = "contract",
+  slip_value = 1,
+  slip_type = "ticks",
+  ps_value = 2,
+  ps_type = "eldoc"
+)
 ```
 
-When data comes from `finharvest` aggregate futures, the native engine reads the
-same direct attrs emitted on the `xts` object:
+When data is fetched internally, `backtestforge` calls `finharvest::finget()`
+with `attrs_source = "fintickers"` so this nested plugin shape is used. Direct
+legacy attrs are still accepted for older objects, but new objects should prefer
+the plugin layout:
 
 ```r
-attr(ccm, "ticksize") <- 0.01
-attr(ccm, "tickvalue") <- 4.5
-attr(ccm, "fee_value") <- 2.5
-attr(ccm, "fee_type") <- "contract"
-attr(ccm, "slip_value") <- 7
-attr(ccm, "slip_type") <- "bps"
-attr(ccm, "ps_value") <- 2
-attr(ccm, "ps_type") <- "eldoc"
+attr(ccm, "information")$ticker
+#> "CCMFUT_1H_AGG"
+attr(ccm, "contract")
+#> list(multiplier = 450, root = "CCM", ticksize = 0.01,
+#>      tickvalue = 4.5, timeframe = "1H")
+attr(ccm, "costs")
+#> list(fee_value = 2.5, fee_type = "contract",
+#>      slip_value = 7, slip_type = "bps",
+#>      ps_value = 2, ps_type = "eldoc")
 ```
 
 If `fut_multiplier`/`multiplier` is absent but `tickvalue` and `ticksize` are

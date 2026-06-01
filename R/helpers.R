@@ -64,6 +64,58 @@
   val
 }
 
+.bt_attr_has_value <- function(value) {
+  if (is.null(value) || length(value) == 0) {
+    return(FALSE)
+  }
+  if (is.atomic(value) && all(is.na(value))) {
+    return(FALSE)
+  }
+  TRUE
+}
+
+.bt_xts_attr_list <- function(object, name) {
+  if (is.null(object) || is.null(name) || !nzchar(name)) {
+    return(NULL)
+  }
+  value <- attr(object, name, exact = TRUE)
+  if (is.environment(value)) value <- as.list(value)
+  if (!is.list(value)) {
+    return(NULL)
+  }
+  value
+}
+
+.bt_list_attr_first <- function(x, names) {
+  if (is.environment(x)) x <- as.list(x)
+  if (!is.list(x)) {
+    return(NULL)
+  }
+  for (name in names) {
+    value <- x[[name]]
+    if (.bt_attr_has_value(value)) {
+      return(value)
+    }
+  }
+  NULL
+}
+
+.bt_xts_attr_first <- function(object, names, groups = NULL) {
+  for (name in names) {
+    value <- attr(object, name, exact = TRUE)
+    if (.bt_attr_has_value(value)) {
+      return(value)
+    }
+  }
+  for (group in groups %||% character()) {
+    value <- .bt_list_attr_first(.bt_xts_attr_list(object, group), names)
+    if (.bt_attr_has_value(value)) {
+      return(value)
+    }
+  }
+  NULL
+}
+
 # Locate an xts object nested inside list-like inputs
 .bt_locate_xts_in_object <- function(obj, max_depth = 2) {
   if (xts::is.xts(obj)) {
@@ -117,6 +169,8 @@
       attr(xts_obj, "symbol", exact = TRUE),
       attr(xts_obj, "ticker", exact = TRUE),
       attr(xts_obj, "bt_fetched_symbol", exact = TRUE),
+      .bt_xts_attr_first(xts_obj, c("ticker", "symbol"), groups = c("information", "identity", "metadata")),
+      .bt_xts_attr_first(xts_obj, c("contract_symbol"), groups = c("contract", "metadata")),
       direct_label,
       expr_label
     )
@@ -158,14 +212,15 @@
 
 #' Gather futures metadata embedded in an xts object
 #'
-#' Inspects the direct attributes of an xts time series to collect
+#' Inspects direct and nested plugin attributes of an xts time series to collect
 #' futures-specific metadata such as tick size, multiplier, maturity,
 #' currency, fees, and slippage. Missing pieces fall back to `NULL`.
 #'
 #' @param object xts object containing market data plus metadata attributes.
 #' @return A list with `tick_size`, `tick_value`, `multiplier`, `maturity`,
-#'   `currency`, `fee_type`, `slip_value`, `slippage_bps`,
-#'   `slippage_ticks`, `slippage_points`, and `slippage_unit` entries.
+#'   `currency`, `fees`, `fee_type`, `slip_value`, `slippage_bps`,
+#'   `slippage_ticks`, `slippage_points`, `slippage_unit`, `ps_value`,
+#'   `ps_type`, and `root` entries.
 #' @keywords internal
 .collect_instrument_metadata <- function(object) {
   meta <- list(
@@ -174,75 +229,56 @@
     multiplier = NULL,
     maturity = NULL,
     currency = NULL,
+    fees = NULL,
     fee_type = NULL,
     slip_value = NULL,
     slippage_bps = NULL,
     slippage_ticks = NULL,
     slippage_unit = NULL,
-    slippage_points = NULL
+    slippage_points = NULL,
+    ps_value = NULL,
+    ps_type = NULL,
+    root = NULL
   )
   if (is.null(object)) {
     return(meta)
   }
 
-  fetch_attr <- function(name) attr(object, name, exact = TRUE)
-  fetch_attr_first <- function(names) {
-    for (name in names) {
-      val <- fetch_attr(name)
-      if (!is.null(val)) {
-        return(val)
-      }
-    }
-    NULL
-  }
-  fetch_list_first <- function(x, names) {
-    if (is.environment(x)) x <- as.list(x)
-    if (!is.list(x)) {
-      return(NULL)
-    }
-    for (name in names) {
-      val <- x[[name]]
-      if (!is.null(val)) {
-        return(val)
-      }
-    }
-    NULL
-  }
-
   tick_size_names <- c("fut_tick_size", "tick_size", "ticksize", "TickSize")
   tick_value_names <- c("fut_tick_value", "tick_value", "tickvalue", "TickValue")
   multiplier_names <- c("fut_multiplier", "multiplier", "Multiplier")
-  maturity_names <- c("maturity", "expiry", "expiration")
+  maturity_names <- c("maturity", "maturity_date", "expiry", "expiration")
   currency_names <- c("currency", "Currency", "currency_id")
+  fee_value_names <- c("fee_value", "broker_fee", "style_fee")
   slip_value_names <- "slip_value"
   fee_type_names <- "fee_type"
   slippage_bps_names <- "slippage_bps"
   slippage_ticks_names <- "slippage_ticks"
   slippage_points_names <- c("slippage_points", "slippage_points_per_contract")
   slippage_unit_names <- "slip_type"
+  ps_value_names <- "ps_value"
+  ps_type_names <- "ps_type"
+  root_names <- "root"
+  contract_groups <- c("contract", "metadata")
+  costs_groups <- c("costs", "execution", "metadata")
+  risk_groups <- c("costs", "execution", "risk", "strategy", "metadata")
 
-  meta$tick_size <- fetch_attr_first(tick_size_names)
-  meta$tick_value <- fetch_attr_first(tick_value_names)
-  meta$multiplier <- fetch_attr_first(multiplier_names)
-  meta$maturity <- fetch_attr_first(maturity_names)
-  meta$currency <- fetch_attr_first(currency_names)
+  meta$tick_size <- .bt_xts_attr_first(object, tick_size_names, groups = contract_groups)
+  meta$tick_value <- .bt_xts_attr_first(object, tick_value_names, groups = contract_groups)
+  meta$multiplier <- .bt_xts_attr_first(object, multiplier_names, groups = contract_groups)
+  meta$maturity <- .bt_xts_attr_first(object, maturity_names, groups = contract_groups)
+  meta$currency <- .bt_xts_attr_first(object, currency_names, groups = c("classification", "contract", "metadata"))
+  meta$root <- .bt_xts_attr_first(object, root_names, groups = contract_groups)
 
-  meta$fee_type <- fetch_attr_first(fee_type_names)
-  meta$slip_value <- fetch_attr_first(slip_value_names)
-  meta$slippage_bps <- fetch_attr_first(slippage_bps_names)
-  meta$slippage_ticks <- fetch_attr_first(slippage_ticks_names)
-  meta$slippage_points <- fetch_attr_first(slippage_points_names)
-  meta$slippage_unit <- fetch_attr_first(slippage_unit_names)
-
-  meta_attr <- fetch_attr("metadata")
-  if (is.environment(meta_attr)) meta_attr <- as.list(meta_attr)
-  if (is.list(meta_attr)) {
-    meta$tick_size <- meta$tick_size %||% fetch_list_first(meta_attr, tick_size_names)
-    meta$tick_value <- meta$tick_value %||% fetch_list_first(meta_attr, tick_value_names)
-    meta$multiplier <- meta$multiplier %||% fetch_list_first(meta_attr, multiplier_names)
-    meta$maturity <- meta$maturity %||% fetch_list_first(meta_attr, maturity_names)
-    meta$currency <- meta$currency %||% fetch_list_first(meta_attr, currency_names)
-  }
+  meta$fees <- .bt_xts_attr_first(object, fee_value_names, groups = costs_groups)
+  meta$fee_type <- .bt_xts_attr_first(object, fee_type_names, groups = costs_groups)
+  meta$slip_value <- .bt_xts_attr_first(object, slip_value_names, groups = costs_groups)
+  meta$slippage_bps <- .bt_xts_attr_first(object, slippage_bps_names, groups = costs_groups)
+  meta$slippage_ticks <- .bt_xts_attr_first(object, slippage_ticks_names, groups = costs_groups)
+  meta$slippage_points <- .bt_xts_attr_first(object, slippage_points_names, groups = costs_groups)
+  meta$slippage_unit <- .bt_xts_attr_first(object, slippage_unit_names, groups = costs_groups)
+  meta$ps_value <- .bt_xts_attr_first(object, ps_value_names, groups = risk_groups)
+  meta$ps_type <- .bt_xts_attr_first(object, ps_type_names, groups = risk_groups)
 
   meta
 }

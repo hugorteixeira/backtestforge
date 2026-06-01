@@ -62,7 +62,11 @@
   if (!xts::is.xts(xts_object) || !.bt_is_di_symbol(symbol)) {
     return(xts_object)
   }
-  current <- attr(xts_object, "maturity", exact = TRUE)
+  current <- .bt_xts_attr_first(
+    xts_object,
+    c("maturity", "maturity_date", "expiry", "expiration"),
+    groups = c("contract", "metadata")
+  )
   current_chr <- if (is.null(current)) character() else trimws(as.character(current))
   if (length(current_chr) > 0 && any(!is.na(current_chr) & nzchar(current_chr))) {
     return(xts_object)
@@ -106,6 +110,7 @@
     assign = FALSE,
     single_xts = TRUE,
     consolidate = FALSE,
+    attrs_source = "fintickers",
     mode = "raw",
     verbose = FALSE
   )
@@ -1373,10 +1378,17 @@ bt_batch <- function(
     if (!xts::is.xts(dt)) {
       return(NULL)
     }
-    tsz <- .sanitize_scalar_numeric(attr(dt, "fut_tick_size"), default = 1)
-    mult <- .sanitize_scalar_numeric(attr(dt, "fut_multiplier"), default = 1)
-    mat <- attr(dt, "maturity")
-    cur <- attr(dt, "currency")
+    meta <- .collect_instrument_metadata(dt)
+    tsz <- .sanitize_scalar_numeric(meta$tick_size, default = 1)
+    mult <- .sanitize_scalar_numeric(meta$multiplier, default = NA_real_)
+    tick_value <- .sanitize_scalar_numeric(meta$tick_value, default = NA_real_)
+    if ((!is.finite(mult) || mult <= 0) && is.finite(tick_value) && tick_value > 0 &&
+        is.finite(tsz) && tsz > 0) {
+      mult <- tick_value / tsz
+    }
+    if (!is.finite(mult) || mult <= 0) mult <- 1
+    mat <- meta$maturity
+    cur <- meta$currency
     if (is.null(cur)) cur <- "USD"
     attr(dt, "fut_tick_size") <- tsz
     attr(dt, "fut_multiplier") <- mult

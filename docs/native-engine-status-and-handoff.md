@@ -82,7 +82,12 @@ There is no `engine` argument. Passing `engine` through `bt_batch()` specs or
 ## Futures Metadata Policy
 
 Contract metadata comes from the `xts` object only. Do not infer multiplier,
-tick size, fees, or slippage from ticker roots.
+tick size, fees, or slippage from ticker roots. The current
+`finharvest`/`fintickers` shape stores stable attrs as nested plugin lists:
+`contract` carries contract specs such as `ticksize`, `tickvalue`, `multiplier`,
+`root`, and `timeframe`; `costs` carries `fee_value`, `fee_type`, `slip_value`,
+`slip_type`, `ps_value`, and `ps_type`. Direct legacy attrs are still accepted
+for older objects.
 
 Recognized metadata fields include:
 
@@ -120,6 +125,10 @@ from equity.
 The console report prints a `Costs & Slippage Summary` block before
 `Returns Summary`; it includes cost values and cost impact percentages versus
 gross P/L.
+
+When `backtestforge` fetches symbols through `finharvest::finget()`, it requests
+`attrs_source = "fintickers"` so the simulator receives the curated nested attrs
+shape.
 
 Backtest wrappers expose cost overrides directly. `fee_value` is account
 currency, with `fee_type = "contract"` charging per unit traded and

@@ -11,11 +11,12 @@
 }
 \value{
 A list with \code{tick_size}, \code{tick_value}, \code{multiplier}, \code{maturity},
-\code{currency}, \code{fee_type}, \code{slip_value}, \code{slippage_bps},
-\code{slippage_ticks}, \code{slippage_points}, and \code{slippage_unit} entries.
+\code{currency}, \code{fees}, \code{fee_type}, \code{slip_value}, \code{slippage_bps},
+\code{slippage_ticks}, \code{slippage_points}, \code{slippage_unit}, \code{ps_value},
+\code{ps_type}, and \code{root} entries.
 }
 \description{
-Inspects the direct attributes of an xts time series to collect
+Inspects direct and nested plugin attributes of an xts time series to collect
 futures-specific metadata such as tick size, multiplier, maturity,
 currency, fees, and slippage. Missing pieces fall back to \code{NULL}.
 }

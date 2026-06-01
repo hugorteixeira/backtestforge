@@ -477,6 +477,73 @@ test_that("native metadata uses finharvest xts contract attrs", {
   expect_equal(res$stats$TickSize, 0.01)
 })
 
+test_that("native metadata reads nested fintickers plugin attrs", {
+  x <- bt_test_ohlc()
+  attr(x, "symbol") <- NULL
+  attr(x, "ticker") <- NULL
+  attr(x, "fut_tick_size") <- NULL
+  attr(x, "fut_multiplier") <- NULL
+  attr(x, "ps_value") <- NULL
+  attr(x, "ps_type") <- NULL
+  attr(x, "fee_value") <- NULL
+  attr(x, "fee_type") <- NULL
+  attr(x, "slip_value") <- NULL
+  attr(x, "slip_type") <- NULL
+  attr(x, "information") <- list(ticker = "CCMFUT_1H_AGG")
+  attr(x, "classification") <- list(
+    class = "Variable Income",
+    exchange = "BMF",
+    segment = "Commodities",
+    subtype = "Futures",
+    type = "Derivatives"
+  )
+  attr(x, "contract") <- list(
+    multiplier = 450,
+    root = "CCM",
+    ticksize = 0.01,
+    tickvalue = 4.5,
+    timeframe = "1H"
+  )
+  attr(x, "costs") <- list(
+    fee_value = 2.5,
+    fee_type = "contract",
+    slip_value = 7,
+    slip_type = "bps",
+    ps_value = 2,
+    ps_type = "eldoc"
+  )
+
+  expect_equal(.bt_resolve_ticker_input(x)$symbol, "CCMFUT_1H_AGG")
+  expect_no_warning(meta <- .bt_native_metadata(x, "CCMFUT_1H_AGG"))
+  expect_equal(meta$tick_size, 0.01)
+  expect_equal(meta$tick_value, 4.5)
+  expect_equal(meta$multiplier, 450)
+  expect_equal(meta$fees, 2.5)
+  expect_equal(meta$fee_type, "contract")
+  expect_equal(meta$slippage_bps, 7)
+  expect_true(meta$is_futures)
+  expect_equal(meta$root, "CCM")
+  expect_equal(.bt_native_ps_metadata(x)$value, 2)
+  expect_equal(.bt_native_ps_metadata(x)$type, "eldoc")
+
+  expect_no_warning(
+    res <- bt_eldoc(
+      x,
+      up = 20,
+      down = 10,
+      hide_details = TRUE
+    )
+  )
+  expect_equal(res$symbol, "CCMFUT_1H_AGG")
+  expect_equal(res$stats$Multiplier, 450)
+  expect_equal(res$stats$TickSize, 0.01)
+  expect_equal(res$stats$FeeValue, 2.5)
+  expect_equal(res$stats$FeeType, "contract")
+  expect_equal(res$stats$SlipValue, 7)
+  expect_equal(res$spec$risk$ps_type, "eldoc")
+  expect_equal(res$spec$risk$risk_pct, 2)
+})
+
 test_that("native report prints costs before returns summary", {
   x <- bt_test_ohlc(120)
 
