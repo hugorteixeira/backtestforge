@@ -1,6 +1,6 @@
 # Backtestforge Native Engine Status And Handoff
 
-Date: 2026-05-08
+Date: 2026-06-01
 
 `backtestforge` is now native-only. The public wrappers call the in-memory
 simulator directly, and the package no longer imports or ships the old external
@@ -18,6 +18,7 @@ portfolio/instrument stack.
 - `bt_risk_spec()`
 - `bt_execution_spec()`
 - `bt_run_native()`
+- `bt_run_portfolio()`
 - `bt_search_native()`
 
 There is no `engine` argument. Passing `engine` through `bt_batch()` specs or
@@ -33,6 +34,10 @@ There is no `engine` argument. Passing `engine` through `bt_batch()` specs or
   `next_open`, `next_close`, and `next_avg`.
 - Risk sizing uses `reinvest = TRUE` by default: new entries use current equity,
   while open positions keep their original quantity until another order.
+- `bt_run_portfolio()` is the shared-capital runner. It simulates multiple
+  instruments on one timeline and sizes later entries from the same evolving
+  account equity. This is different from `bt_batch(gen_portfolio = ...)`, which
+  combines already-finished return streams after individual backtests.
 - `normalize_risk` is a comparison layer on returns, not a rewrite of the
   executed order path. The target is annualized volatility of daily compounded
   returns: intraday bars are compounded by calendar day and annualized with
@@ -79,6 +84,90 @@ There is no `engine` argument. Passing `engine` through `bt_batch()` specs or
 - Results include returns, stats, trades, positions, equity, annotated market
   data, and the spec used to run the backtest.
 
+## Shared-Capital Portfolio Contract
+
+`bt_run_portfolio()` is the native multi-instrument runner. It is intended for
+portfolio-style futures tests where all instruments share one account equity and
+new entries size from that shared equity. Single-instrument wrappers remain the
+normal entry point for one-symbol backtests.
+
+Current behavior:
+
+- Input is a character vector, an `xts`, or a list of character/`xts`
+  instruments.
+- The engine builds one unified timeline across all instruments.
+- On each timestamp, open positions are marked to market, exits are processed,
+  shared equity is updated, entries are collected, and new positions are sized
+  from the current shared equity.
+- Exits are processed before entries on the same timestamp.
+- Each instrument keeps its own strategy, risk, execution, metadata, and source
+  symbol.
+- `strategy`, `risk`, `execution`, `ps_value`, `ps_type`, and `reinvest` can be
+  scalar values for all instruments or named per-instrument overrides.
+- Per-instrument names are matched against the list label, source symbol, ticker
+  argument, and metadata such as `attr(x, "information")$ticker`.
+- Results include `equity`, `rets`, `trades`, `positions`,
+  `instrument_stats`, and per-instrument specs in `spec$strategies`,
+  `spec$risks`, and `spec$executions`.
+
+Example:
+
+```r
+res <- bt_run_portfolio(
+  tickers = list(WDO = wdo_xts, WIN = win_xts, DI1 = di1_xts),
+  strategy = list(
+    WDO = bt_strategy_spec("donchian", up = 40, down = 20),
+    WIN = bt_strategy_spec("donchian", up = 20, down = 10),
+    DI1 = bt_strategy_spec("tsmom", lookback = 120)
+  ),
+  risk = list(
+    WDO = bt_risk_spec(mode = "risk", risk_pct = 1.0, ps_type = "eldoc"),
+    WIN = bt_risk_spec(mode = "risk", risk_pct = 0.7, ps_type = "eldoc"),
+    DI1 = bt_risk_spec(mode = "risk", risk_pct = 1.5, ps_type = "atr")
+  ),
+  execution = bt_execution_spec(
+    execution = "breakout",
+    fee_value = 0,
+    fee_type = "contract",
+    slip_value = 0,
+    slip_type = "cash"
+  ),
+  initial_equity = 100000
+)
+```
+
+Use `fee = "nofee"` to bypass costs during exploratory tests. With `fee =
+"normal"`, pass `fee_value` and `fee_type`, or provide matching cost metadata in
+the `xts` attrs. Missing fee/slippage metadata is strict by design.
+
+`bt_batch(gen_portfolio = ...)` is not a shared-capital simulator. It aggregates
+finished return streams after each individual backtest has already chosen its
+own orders and sizing. Use `bt_run_portfolio()` when P/L from one instrument
+must affect later sizing in another instrument.
+
+Current limitations:
+
+- Portfolio execution supports `breakout` and `same_close` only.
+- `next_open`, `next_close`, and `next_avg` are not implemented in the
+  portfolio runner yet.
+- Portfolio pyramiding is not implemented yet.
+- No margin/guarantee model is enforced.
+- Entry priority is deterministic list order only (`priority = "order"`).
+- Futures/DI behavior reuses the native single-instrument helpers, but more
+  real-data regression coverage is still needed.
+
+## Position Sizing Ownership
+
+`backtestforge` owns strategy signals, sizing stop selection, execution timing,
+ledger costs, shared equity simulation, and reporting. The canonical quantity
+math is delegated to `positionsizer` through `positionsizer::ps_instrument_spec()`
+and `positionsizer::ps_size_position()`.
+
+DI rate-to-PU conversion also belongs to `positionsizer` via
+`positionsizer::ps_di_rate_to_pu()`. The old package-local DI sizing helpers and
+their generated `man/dot-calculate_futures_di_*` pages are intentionally removed;
+do not reintroduce a second sizing engine in this package.
+
 ## Futures Metadata Policy
 
 Contract metadata comes from the `xts` object only. Do not infer multiplier,
@@ -108,6 +197,11 @@ Recognized metadata fields include:
 - `slippage_points`
 - `ps_value`
 - `ps_type`
+
+When an `xts` object is passed directly, the symbol is resolved from
+`attr(x, "symbol")`, then `attr(x, "ticker")`, then nested metadata such as
+`attr(x, "information")$ticker`. In `bt_run_portfolio()`, the name used in the
+`tickers` list is also used as a fallback label/source key.
 
 If `multiplier` is absent but `tickvalue` and `ticksize` are present, the
 simulator derives `multiplier = tickvalue / ticksize`. `slip_value` is
@@ -160,8 +254,8 @@ For DI-like symbols, the simulator:
 
 - tries to fill missing maturity using `finharvest::finget_maturities()` when
   available;
-- uses `positionsizer` to convert annualized-rate OHLC data into PU
-  columns;
+- uses `positionsizer` to convert annualized-rate OHLC data into PU columns when
+  a conversion is needed;
 - keeps annualized-rate OHLC columns for indicators and signals;
 - prefers PU columns (`PU_o`, `PU_h`, `PU_l`, `PU_c`, or equivalent names) for
   execution and mark-to-market.
@@ -201,4 +295,8 @@ R CMD INSTALL .
    regressions.
 4. Add an optional real-data smoke script for local `finharvest` caches.
 5. Add a lightweight benchmark helper for fixed symbols/specs.
-6. Add job/result persistence only after the single-symbol path is stable.
+6. Extend `bt_run_portfolio()` to support `next_*` execution, portfolio
+   pyramiding, richer entry-priority rules, and a futures margin/guarantee
+   model.
+7. Add job/result persistence only after the single-symbol and shared-capital
+   portfolio paths are stable.

@@ -87,6 +87,10 @@ bt_strategy_spec <- function(type = c("donchian", "eldoc", "ema", "sma", "tsmom"
 
 #' Build a native risk specification
 #'
+#' The returned spec tells the native simulator which sizing mode and constraints
+#' to use. The final quantity calculation is delegated to `positionsizer`; this
+#' package keeps strategy stop selection, execution timing, and ledger handling.
+#'
 #' @param mode Sizing mode. `"risk"` uses an explicit sizing stop distance,
 #'   `"notional"` uses `risk_pct` as capital allocation, and `"fixed"` uses
 #'   `fixed_qty`.
@@ -568,6 +572,10 @@ bt_execution_spec <- function(execution = c("breakout", "same_close", "next_open
 
 #' Run a native in-memory backtest
 #'
+#' The native engine computes indicators, signals, stops, execution prices, and
+#' cost ledgers in this package. Quantity calculation is delegated to
+#' `positionsizer` from the resolved risk spec and instrument metadata.
+#'
 #' @param ticker Character symbol or `xts` OHLC object.
 #' @param data Optional preloaded `xts` object. Used when `ticker` is a label.
 #' @param strategy A `bt_strategy_spec`, or a character strategy type.
@@ -776,6 +784,471 @@ bt_run_native <- function(ticker,
   )
   class(out) <- c("bt_native_result", "list")
   out
+}
+
+#' Run a native shared-capital multi-instrument backtest
+#'
+#' This runner uses one account equity curve for all instruments. Each instrument
+#' has its own strategy, risk, execution, metadata, signals, and positions, while
+#' later entries size from the shared account equity. Quantity calculation still
+#' delegates to `positionsizer`; `backtestforge` owns the shared-capital event
+#' loop and trade ledger.
+#'
+#' @param tickers Character vector, `xts` object, or named list of character/`xts`
+#'   instruments.
+#' @param data Optional `xts` object or named list of preloaded `xts` objects.
+#' @param strategy A `bt_strategy_spec`, character strategy type, or named list
+#'   of per-instrument strategy specs.
+#' @param risk Optional `bt_risk_spec`, or named list of per-instrument specs. If
+#'   `NULL`, each instrument resolves `ps_value`/`ps_type` from arguments or
+#'   metadata.
+#' @param ps_value,ps_type Position-sizing value and type used when `risk` is
+#'   `NULL`. Scalars apply to every instrument; named vectors/lists can override
+#'   by instrument label or source symbol.
+#' @param initial_equity Starting shared account equity.
+#' @param reinvest Whether sizing uses current shared equity. Can be scalar or
+#'   named per instrument when `risk` is `NULL`.
+#' @param execution A `bt_execution_spec`, or named list of per-instrument specs.
+#' @param start_date,end_date Optional date bounds used when fetching/subsetting.
+#' @param normalize_risk Optional annualized risk target in percent for the
+#'   portfolio return stream.
+#' @param geometric Kept for wrapper compatibility.
+#' @param only_returns If `TRUE`, return only the portfolio `xts` returns object.
+#' @param verbose If `TRUE`, print a compact execution summary.
+#' @param clean_di If `TRUE`, apply DI cleanup before running.
+#' @param max_positions Maximum simultaneous open instruments.
+#' @param priority Entry priority. Currently only `"order"` is supported.
+#' @details
+#' `bt_run_portfolio()` simulates all instruments on one shared equity curve.
+#' This is different from `bt_batch(gen_portfolio = ...)`, which aggregates
+#' already-finished individual return streams.
+#'
+#' Per-instrument names are matched against the list label, source symbol,
+#' ticker argument, and nested metadata such as `attr(x, "information")$ticker`.
+#' Direct `xts` inputs resolve their source symbol from `attr(x, "symbol")`,
+#' then `attr(x, "ticker")`, then `attr(x, "information")$ticker`, then the
+#' list label.
+#'
+#' Current portfolio execution support is limited to `"breakout"` and
+#' `"same_close"`. Portfolio pyramiding, `next_*` execution modes, margin, and
+#' advanced entry-priority rules are not implemented yet.
+#' @return A `bt_portfolio_result` list, or an `xts` returns object when
+#'   `only_returns = TRUE`.
+#' @examples
+#' \dontrun{
+#' res <- bt_run_portfolio(
+#'   tickers = list(WDO = wdo_xts, WIN = win_xts),
+#'   strategy = bt_strategy_spec("donchian", up = 40, down = 20),
+#'   ps_value = c(WDO = 1, WIN = 2),
+#'   ps_type = c(WDO = "contract", WIN = "contract"),
+#'   execution = bt_execution_spec(
+#'     execution = "breakout",
+#'     fee_value = 0,
+#'     fee_type = "contract",
+#'     slip_value = 0,
+#'     slip_type = "cash"
+#'   ),
+#'   initial_equity = 100000
+#' )
+#' }
+#' @export
+bt_run_portfolio <- function(tickers,
+                             data = NULL,
+                             strategy = bt_strategy_spec("donchian"),
+                             risk = NULL,
+                             ps_value = NULL,
+                             ps_type = NULL,
+                             initial_equity = 100000,
+                             reinvest = TRUE,
+                             execution = bt_execution_spec(execution = "breakout"),
+                             start_date = "1900-01-01",
+                             end_date = Sys.Date(),
+                             normalize_risk = NULL,
+                             geometric = TRUE,
+                             only_returns = FALSE,
+                             verbose = FALSE,
+                             clean_di = TRUE,
+                             max_positions = Inf,
+                             priority = c("order")) {
+  start_t <- Sys.time()
+  priority <- match.arg(priority)
+
+  if (inherits(risk, "bt_risk_spec")) {
+    initial_equity <- risk$initial_equity
+  }
+  initial_equity <- suppressWarnings(as.numeric(initial_equity)[1])
+  if (!is.finite(initial_equity) || initial_equity <= 0) {
+    stop("'initial_equity' must be positive.", call. = FALSE)
+  }
+  max_positions <- suppressWarnings(as.numeric(max_positions)[1])
+  if (!is.finite(max_positions)) max_positions <- Inf
+  if (max_positions <= 0) {
+    stop("'max_positions' must be positive.", call. = FALSE)
+  }
+
+  items <- .bt_native_portfolio_items(
+    tickers = tickers,
+    data = data,
+    strategy = strategy,
+    risk = risk,
+    ps_value = ps_value,
+    ps_type = ps_type,
+    initial_equity = initial_equity,
+    reinvest = reinvest,
+    execution = execution,
+    start_date = start_date,
+    end_date = end_date,
+    clean_di = clean_di
+  )
+
+  sim <- .bt_native_simulate_portfolio(
+    items = items,
+    initial_equity = initial_equity,
+    max_positions = max_positions,
+    priority = priority
+  )
+  if (NROW(sim$trades) == 0) {
+    warning("No generated portfolio order. Check price columns, signals, and instrument metadata.", call. = FALSE)
+  }
+
+  raw_rets <- .bt_native_returns(sim$equity, normalize_risk = NULL)
+  rets <- .bt_native_returns(sim$equity, normalize_risk = normalize_risk)
+  first_item <- items[[1]]
+  strategy_specs <- lapply(items, `[[`, "strategy")
+  risk_specs <- lapply(items, `[[`, "risk")
+  execution_specs <- lapply(items, `[[`, "execution")
+  portfolio_strategy <- if (all(vapply(strategy_specs, identical, logical(1), y = first_item$strategy))) {
+    first_item$strategy
+  } else {
+    structure(
+      list(
+        type = "portfolio",
+        params = list(atr_n = NA_integer_),
+        long = any(vapply(strategy_specs, `[[`, logical(1), "long")),
+        short = any(vapply(strategy_specs, `[[`, logical(1), "short")),
+        invert_signals = FALSE
+      ),
+      class = c("bt_strategy_spec", "list")
+    )
+  }
+  portfolio_risk <- first_item$risk
+  portfolio_risk$initial_equity <- initial_equity
+  portfolio_risk$reinvest <- all(vapply(risk_specs, function(x) isTRUE(x$reinvest), logical(1)))
+  portfolio_execution <- first_item$execution
+  portfolio_metadata <- first_item$metadata
+  portfolio_metadata$symbol <- "Portfolio"
+  portfolio_stats <- .bt_native_stats(
+    equity = if (.bt_native_is_risk_normalized(rets)) .bt_native_performance_equity(sim$equity, rets, initial_equity) else sim$equity,
+    rets = rets,
+    trades = sim$trades,
+    risk = portfolio_risk,
+    execution = portfolio_execution,
+    metadata = portfolio_metadata,
+    strategy = portfolio_strategy
+  )
+  instrument_stats <- lapply(items, function(item) {
+    tr <- sim$trades[sim$trades$symbol == item$symbol, , drop = FALSE]
+    trade_sum <- function(name) {
+      if (!name %in% names(tr)) return(0)
+      sum(suppressWarnings(as.numeric(tr[[name]])), na.rm = TRUE)
+    }
+    data.frame(
+      Symbol = item$symbol,
+      source_symbol = item$source_symbol,
+      Strategy = .bt_native_strategy_label(item$strategy),
+      num_trades = sum(tr$reason %in% c("long_entry", "short_entry")),
+      num_orders = NROW(tr),
+      contracts_traded = if ("qty_delta" %in% names(tr)) sum(abs(suppressWarnings(as.numeric(tr$qty_delta))), na.rm = TRUE) else 0,
+      fees = trade_sum("fees"),
+      slippage = trade_sum("slippage"),
+      total_cost = if ("total_cost" %in% names(tr)) trade_sum("total_cost") else trade_sum("fees") + trade_sum("slippage"),
+      InitialEquity = initial_equity,
+      PosSiz = item$risk$ps_type %||% item$risk$mode,
+      PsValue = if (identical(item$risk$mode, "fixed")) item$risk$fixed_qty else item$risk$risk_pct,
+      RiskPct = item$risk$risk_pct,
+      Reinvest = item$risk$reinvest,
+      Execution = item$execution$execution,
+      Multiplier = item$metadata$multiplier,
+      TickSize = item$metadata$tick_size,
+      stringsAsFactors = FALSE
+    )
+  })
+  instrument_stats <- do.call(rbind, instrument_stats)
+  rownames(instrument_stats) <- NULL
+
+  attr(rets, "backtest") <- TRUE
+  attr(rets, "local") <- TRUE
+  attr(rets, "portfolio") <- TRUE
+  fee_modes <- unique(vapply(execution_specs, `[[`, character(1), "fee"))
+  attr(rets, "fee_mode") <- if (length(fee_modes) == 1L) fee_modes else "mixed"
+
+  if (isTRUE(verbose)) {
+    message(sprintf(
+      "Portfolio backtest: %d instruments, %d orders, final equity %.2f, runtime %.2fs",
+      length(items),
+      NROW(sim$trades),
+      as.numeric(tail(sim$equity, 1)),
+      as.numeric(difftime(Sys.time(), start_t, units = "secs"))
+    ))
+  }
+  if (isTRUE(only_returns)) {
+    return(rets)
+  }
+
+  out <- list(
+    rets = rets,
+    stats = portfolio_stats,
+    portfolio_stats = portfolio_stats,
+    instrument_stats = instrument_stats,
+    trades = sim$trades,
+    raw_rets = raw_rets,
+    positions = sim$positions,
+    equity = sim$equity,
+    spec = list(
+      strategy = portfolio_strategy,
+      strategies = strategy_specs,
+      risk = portfolio_risk,
+      risks = risk_specs,
+      execution = portfolio_execution,
+      executions = execution_specs
+    ),
+    instruments = names(items),
+    geometric = geometric
+  )
+  class(out) <- c("bt_portfolio_result", "list")
+  out
+}
+
+.bt_native_portfolio_arg <- function(x, i, keys, default = NULL) {
+  if (is.null(x)) {
+    return(default)
+  }
+  if (inherits(x, c("bt_strategy_spec", "bt_risk_spec", "bt_execution_spec"))) {
+    return(x)
+  }
+  keys <- as.character(keys)
+  keys <- unique(keys[!is.na(keys) & nzchar(keys)])
+  default_keys <- c("default", ".default", "*", "all")
+
+  if (is.list(x) && !xts::is.xts(x)) {
+    nms <- names(x)
+    if (!is.null(nms)) {
+      for (key in keys) {
+        hit <- match(key, nms, nomatch = 0L)
+        if (hit > 0L) return(x[[hit]])
+      }
+      default_hit <- match(TRUE, tolower(nms) %in% default_keys, nomatch = 0L)
+      if (default_hit > 0L) return(x[[default_hit]])
+    }
+    if (length(x) == 1L) return(x[[1L]])
+    if (length(x) >= i) return(x[[i]])
+    if (length(x)) return(x[[length(x)]])
+    return(default)
+  }
+
+  nms <- names(x)
+  if (!is.null(nms)) {
+    for (key in keys) {
+      hit <- match(key, nms, nomatch = 0L)
+      if (hit > 0L) return(x[[hit]])
+    }
+    default_hit <- match(TRUE, tolower(nms) %in% default_keys, nomatch = 0L)
+    if (default_hit > 0L) return(x[[default_hit]])
+  }
+  if (length(x) == 1L) return(x[[1L]])
+  if (length(x) >= i) return(x[[i]])
+  if (length(x)) return(x[[length(x)]])
+  default
+}
+
+.bt_native_portfolio_keys <- function(...) {
+  keys <- unlist(list(...), use.names = FALSE)
+  keys <- as.character(keys)
+  unique(keys[!is.na(keys) & nzchar(keys)])
+}
+
+.bt_native_portfolio_strategy <- function(strategy, i, keys) {
+  raw <- if (is.list(strategy) && !inherits(strategy, "bt_strategy_spec") && !is.null(strategy$type)) {
+    strategy
+  } else {
+    .bt_native_portfolio_arg(strategy, i, keys)
+  }
+  if (is.character(raw)) {
+    raw <- bt_strategy_spec(raw)
+  } else if (is.list(raw) && !inherits(raw, "bt_strategy_spec")) {
+    type <- raw$type %||% "donchian"
+    raw$type <- NULL
+    raw <- do.call(bt_strategy_spec, c(list(type = type), raw))
+  }
+  if (!inherits(raw, "bt_strategy_spec")) {
+    stop("'strategy' must be a bt_strategy_spec, character strategy, or per-instrument list.", call. = FALSE)
+  }
+  if (!raw$long && !raw$short) {
+    stop("At least one side must be enabled for every portfolio instrument.", call. = FALSE)
+  }
+  if (isTRUE(raw$params$pyramid)) {
+    stop("bt_run_portfolio() does not support pyramiding yet.", call. = FALSE)
+  }
+  raw
+}
+
+.bt_native_portfolio_risk <- function(risk, i, keys) {
+  raw <- .bt_native_portfolio_arg(risk, i, keys, default = NULL)
+  if (is.null(raw)) {
+    return(NULL)
+  }
+  if (inherits(raw, "bt_risk_spec")) {
+    return(raw)
+  }
+  if (is.character(raw)) {
+    return(bt_risk_spec(mode = raw))
+  }
+  if (is.list(raw)) {
+    return(do.call(bt_risk_spec, raw))
+  }
+  stop("'risk' must be a bt_risk_spec, NULL, or per-instrument list.", call. = FALSE)
+}
+
+.bt_native_portfolio_execution <- function(execution, i, keys) {
+  raw <- if (is.list(execution) && !inherits(execution, "bt_execution_spec") && !is.null(execution$execution)) {
+    execution
+  } else {
+    .bt_native_portfolio_arg(execution, i, keys)
+  }
+  if (is.character(raw)) {
+    raw <- bt_execution_spec(execution = raw)
+  } else if (is.list(raw) && !inherits(raw, "bt_execution_spec")) {
+    raw <- do.call(bt_execution_spec, raw)
+  }
+  if (!inherits(raw, "bt_execution_spec")) {
+    stop("'execution' must be a bt_execution_spec, character mode, or per-instrument list.", call. = FALSE)
+  }
+  if (!identical(raw$execution, "breakout") && !identical(raw$execution, "same_close")) {
+    stop("bt_run_portfolio() currently supports only 'breakout' and 'same_close' execution.", call. = FALSE)
+  }
+  if (!identical(raw$delay, 0L)) {
+    stop("bt_run_portfolio() does not support delayed next-bar execution yet.", call. = FALSE)
+  }
+  raw
+}
+
+.bt_native_portfolio_items <- function(tickers, data, strategy, risk, ps_value, ps_type,
+                                       initial_equity, reinvest, execution,
+                                       start_date, end_date, clean_di) {
+  if (missing(tickers) || is.null(tickers) || length(tickers) == 0) {
+    stop("'tickers' cannot be empty.", call. = FALSE)
+  }
+  if (xts::is.xts(tickers)) {
+    tickers <- list(tickers)
+  } else if (!is.list(tickers)) {
+    tickers <- as.list(tickers)
+  }
+  ticker_names <- names(tickers)
+  if (is.null(ticker_names)) ticker_names <- rep("", length(tickers))
+
+  data_list <- NULL
+  if (!is.null(data)) {
+    if (xts::is.xts(data)) {
+      data_list <- list(data)
+    } else if (is.list(data)) {
+      data_list <- data
+    } else {
+      stop("'data' must be an xts object or a named list of xts objects.", call. = FALSE)
+    }
+  }
+
+  label_seen <- new.env(parent = emptyenv())
+  unique_label <- function(label) {
+    if (is.null(label) || !nzchar(label)) label <- "Asset"
+    count <- label_seen[[label]]
+    if (is.null(count)) {
+      label_seen[[label]] <- 1L
+      return(label)
+    }
+    count <- count + 1L
+    label_seen[[label]] <- count
+    paste0(label, "_", count)
+  }
+
+  items <- vector("list", length(tickers))
+  for (i in seq_along(tickers)) {
+    entry <- tickers[[i]]
+    entry_name <- ticker_names[i]
+    data_i <- NULL
+    ticker_i <- NULL
+    label_i <- NULL
+    if (xts::is.xts(entry)) {
+      data_i <- entry
+      ticker_i <- attr(entry, "symbol", exact = TRUE) %||%
+        attr(entry, "ticker", exact = TRUE) %||%
+        .bt_xts_attr_first(entry, c("ticker", "symbol"), groups = c("information", "identity", "metadata"))
+      if (is.null(ticker_i) || !nzchar(ticker_i)) {
+        ticker_i <- if (!is.null(entry_name) && nzchar(entry_name)) entry_name else paste0("Asset", i)
+      }
+      label_i <- if (!is.null(entry_name) && nzchar(entry_name)) entry_name else ticker_i
+    } else if (is.character(entry) && length(entry) == 1L && nzchar(entry)) {
+      ticker_i <- entry
+      label_i <- if (!is.null(entry_name) && nzchar(entry_name)) entry_name else ticker_i
+      if (!is.null(data_list)) {
+        if (!is.null(names(data_list)) && ticker_i %in% names(data_list)) {
+          data_i <- data_list[[ticker_i]]
+        } else if (length(data_list) == length(tickers)) {
+          data_i <- data_list[[i]]
+        }
+      }
+    } else {
+      stop("'tickers' entries must be character symbols or xts objects.", call. = FALSE)
+    }
+
+    prepared <- .bt_native_prepare_data(
+      ticker = ticker_i,
+      data = data_i,
+      start_date = start_date,
+      end_date = end_date,
+      clean_di = clean_di
+    )
+    label <- unique_label(label_i %||% prepared$symbol %||% ticker_i)
+    keys <- .bt_native_portfolio_keys(label, prepared$symbol, ticker_i, entry_name)
+    strategy_i <- .bt_native_portfolio_strategy(strategy, i, keys)
+    risk_arg_i <- .bt_native_portfolio_risk(risk, i, keys)
+    ps_value_i <- .bt_native_portfolio_arg(ps_value, i, keys, default = ps_value)
+    ps_type_i <- .bt_native_portfolio_arg(ps_type, i, keys, default = ps_type)
+    reinvest_i <- .bt_native_portfolio_arg(reinvest, i, keys, default = reinvest)
+    execution_arg_i <- .bt_native_portfolio_execution(execution, i, keys)
+
+    prices <- .bt_native_price_set(prepared$data, prepared$symbol)
+    indicators <- .bt_native_indicators(prepared$data, prices, strategy_i)
+    signals <- .bt_native_signals(prepared$data, prices, indicators, strategy_i)
+    metadata <- .bt_native_metadata(prepared$data, prepared$symbol)
+    risk_i <- .bt_native_resolve_risk(
+      risk = risk_arg_i,
+      data = prepared$data,
+      symbol = prepared$symbol,
+      ps_value = ps_value_i,
+      ps_type = ps_type_i,
+      initial_equity = initial_equity,
+      reinvest = isTRUE(reinvest_i),
+      atr_mult = strategy_i$params$atr_mult %||% 2
+    )
+    if (inherits(risk_i, "bt_risk_spec")) {
+      risk_i$initial_equity <- initial_equity
+    }
+    execution_i <- .bt_native_resolve_execution(execution_arg_i, metadata, prepared$symbol)
+    items[[i]] <- list(
+      data = prepared$data,
+      prices = prices,
+      indicators = indicators,
+      signals = signals,
+      strategy = strategy_i,
+      risk = risk_i,
+      execution = execution_i,
+      metadata = metadata,
+      symbol = label,
+      source_symbol = prepared$symbol
+    )
+  }
+  names(items) <- vapply(items, `[[`, character(1), "symbol")
+  items
 }
 
 #' Search native trend-following parameter specifications
@@ -2083,6 +2556,309 @@ bt_search_native <- function(ticker,
       signal_close = prices$close
     ),
     order.by = idx
+  )
+  trades_df <- if (length(trades)) do.call(rbind, trades) else .bt_native_empty_trade_frame()
+  list(equity = equity_xts, positions = positions, trades = trades_df)
+}
+
+.bt_native_simulate_portfolio <- function(items, initial_equity, max_positions = Inf, priority = c("order")) {
+  priority <- match.arg(priority)
+  if (!length(items)) {
+    stop("'items' cannot be empty.", call. = FALSE)
+  }
+  if (!identical(priority, "order")) {
+    stop("Only order priority is supported.", call. = FALSE)
+  }
+
+  to_posix <- function(x) {
+    if (inherits(x, "POSIXt")) {
+      return(as.POSIXct(x, tz = "UTC"))
+    }
+    as.POSIXct(as.Date(x), tz = "UTC")
+  }
+  time_num <- lapply(items, function(item) as.numeric(to_posix(item$prices$index)))
+  timeline_num <- sort(unique(unlist(time_num, use.names = FALSE)))
+  timeline_num <- timeline_num[is.finite(timeline_num)]
+  if (!length(timeline_num)) {
+    stop("Portfolio instruments have no valid timestamps.", call. = FALSE)
+  }
+  timeline_index <- as.POSIXct(timeline_num, origin = "1970-01-01", tz = "UTC")
+  time_keys <- as.character(timeline_num)
+  row_lookup <- lapply(time_num, function(x) {
+    stats::setNames(seq_along(x), as.character(x))
+  })
+
+  n_times <- length(timeline_index)
+  n_items <- length(items)
+  symbols <- names(items)
+  if (is.null(symbols) || any(!nzchar(symbols))) {
+    symbols <- vapply(items, `[[`, character(1), "symbol")
+  }
+
+  item_uses_pu <- vapply(seq_along(items), function(j) {
+    item <- items[[j]]
+    isTRUE(item$prices$uses_pu) && .bt_is_di_symbol(item$source_symbol %||% item$symbol)
+  }, logical(1))
+  item_pnl_multiplier <- vapply(seq_along(items), function(j) {
+    mult <- suppressWarnings(as.numeric(items[[j]]$metadata$multiplier)[1])
+    if (!is.finite(mult) || mult <= 0) mult <- 1
+    mult * if (isTRUE(item_uses_pu[j])) -1 else 1
+  }, numeric(1))
+  item_calendars <- lapply(item_uses_pu, function(uses_pu) {
+    if (isTRUE(uses_pu)) tryCatch(.generate_calendar(), error = function(e) NULL) else NULL
+  })
+  states <- lapply(seq_along(items), function(j) {
+    list(qty = 0, units = 0L, last_price = NA_real_, last_i = NA_integer_)
+  })
+
+  qty_path <- matrix(0, nrow = n_times, ncol = n_items)
+  value_path <- matrix(0, nrow = n_times, ncol = n_items)
+  close_path <- matrix(NA_real_, nrow = n_times, ncol = n_items)
+  colnames(qty_path) <- paste0(symbols, ".qty")
+  colnames(value_path) <- paste0(symbols, ".position_value")
+  colnames(close_path) <- paste0(symbols, ".close")
+  equity <- numeric(n_times)
+  equity_now <- suppressWarnings(as.numeric(initial_equity)[1])
+  if (!is.finite(equity_now) || equity_now <= 0) {
+    stop("'initial_equity' must be positive.", call. = FALSE)
+  }
+  trades <- list()
+
+  current_row <- function(j, key) {
+    hit <- row_lookup[[j]][[key]]
+    if (is.null(hit)) NA_integer_ else as.integer(hit)
+  }
+  exec_close_at <- function(item, i) {
+    px <- if (!is.null(item$prices$exec_close)) item$prices$exec_close[i] else item$prices$close[i]
+    suppressWarnings(as.numeric(px)[1])
+  }
+  event_price <- function(item, j, i, event, fallback) {
+    if (!identical(item$execution$execution, "breakout") || !identical(item$strategy$type, "donchian")) {
+      return(fallback)
+    }
+    column <- if (identical(event, "upper")) "DonchianUpper" else "DonchianLower"
+    rate_px <- suppressWarnings(as.numeric(item$indicators[i, column])[1])
+    if (!is.finite(rate_px) || rate_px <= 0) {
+      return(fallback)
+    }
+    if (!isTRUE(item_uses_pu[j])) {
+      return(rate_px)
+    }
+    pu <- .bt_native_di_rate_to_pu(
+      rate_px,
+      item$data,
+      i,
+      item$source_symbol %||% item$symbol,
+      cal = item_calendars[[j]]
+    )
+    if (is.finite(pu) && pu > 0) pu else fallback
+  }
+  sizing_qty <- function(item, j, i, side, eq, price) {
+    rate_px <- suppressWarnings(as.numeric(item$prices$close[i])[1])
+    stop_px <- .bt_native_sizing_stop_price(
+      i,
+      side,
+      price = price,
+      indicators = item$indicators,
+      strategy = item$strategy,
+      risk = item$risk,
+      rate_price = rate_px
+    )
+    if (identical(item$strategy$type, "donchian") &&
+        identical(item$risk$mode, "risk") &&
+        !is.finite(stop_px)) {
+      return(0)
+    }
+    if (isTRUE(item_uses_pu[j])) {
+      stop_pu <- .bt_native_di_rate_to_pu(
+        stop_px,
+        item$data,
+        i,
+        item$source_symbol %||% item$symbol,
+        cal = item_calendars[[j]]
+      )
+      if (is.finite(stop_pu) && stop_pu > 0) {
+        stop_px <- stop_pu
+      }
+    }
+    tick_value <- .bt_native_tick_value_at(item$data, i, item$metadata)
+    .bt_native_size(side, price, stop_px, eq, item$risk, item$metadata, tick_value = tick_value)
+  }
+  txn_cost <- function(item, i, qty_delta, price) {
+    tick_value <- .bt_native_tick_value_at(item$data, i, item$metadata)
+    .bt_native_txn_cost_components(qty_delta, price, item$execution, item$metadata, tick_value = tick_value)
+  }
+  add_trade <- function(t, j, qty_delta, price, costs, reason) {
+    item <- items[[j]]
+    trades[[length(trades) + 1L]] <<- .bt_native_trade_row(
+      timestamp = timeline_index[t],
+      symbol = item$symbol,
+      qty = states[[j]]$qty,
+      qty_delta = qty_delta,
+      units = states[[j]]$units,
+      price = price,
+      costs = costs,
+      reason = reason,
+      equity_after = equity_now
+    )
+    invisible(NULL)
+  }
+  signal_flag <- function(item, i, column) {
+    isTRUE(as.logical(item$signals[i, column]))
+  }
+  open_positions <- function() {
+    sum(vapply(states, function(st) st$qty != 0, logical(1)))
+  }
+
+  for (t in seq_len(n_times)) {
+    key <- time_keys[t]
+    rows <- vapply(seq_along(items), current_row, integer(1), key = key)
+    close_i <- rep(NA_real_, n_items)
+    row_last_px <- rep(NA_real_, n_items)
+
+    for (j in seq_along(items)) {
+      i <- rows[j]
+      if (is.na(i)) next
+      item <- items[[j]]
+      px <- exec_close_at(item, i)
+      if (!is.finite(px) || px <= 0) next
+      close_i[j] <- px
+      row_last_px[j] <- px
+      if (states[[j]]$qty != 0 && is.finite(states[[j]]$last_price)) {
+        equity_now <- equity_now + states[[j]]$qty * (px - states[[j]]$last_price) * item_pnl_multiplier[j]
+      }
+      states[[j]]$last_price <- px
+      states[[j]]$last_i <- i
+    }
+
+    exited_from <- rep(NA_character_, n_items)
+    for (j in seq_along(items)) {
+      i <- rows[j]
+      if (is.na(i) || states[[j]]$qty == 0 || !is.finite(close_i[j])) next
+      item <- items[[j]]
+      qty_now <- states[[j]]$qty
+      exit_event <- NULL
+      reason <- NULL
+      if (qty_now > 0 && signal_flag(item, i, "LongExit")) {
+        exit_event <- "lower"
+        reason <- "long_exit"
+        exited_from[j] <- "long"
+      } else if (qty_now < 0 && signal_flag(item, i, "ShortExit")) {
+        exit_event <- "upper"
+        reason <- "short_exit"
+        exited_from[j] <- "short"
+      }
+      if (is.null(exit_event)) next
+      px <- event_price(item, j, i, exit_event, fallback = close_i[j])
+      if (!is.finite(px) || px <= 0) next
+      if (is.finite(row_last_px[j])) {
+        equity_now <- equity_now + qty_now * (px - row_last_px[j]) * item_pnl_multiplier[j]
+      }
+      row_last_px[j] <- px
+      delta <- -qty_now
+      costs <- txn_cost(item, i, delta, px)
+      states[[j]]$qty <- 0
+      states[[j]]$units <- 0L
+      equity_now <- equity_now - costs[["total_cost"]]
+      add_trade(t, j, delta, px, costs, reason)
+    }
+
+    candidates <- list()
+    for (j in seq_along(items)) {
+      i <- rows[j]
+      if (is.na(i) || states[[j]]$qty != 0 || !is.finite(close_i[j])) next
+      item <- items[[j]]
+      le <- signal_flag(item, i, "LongEntry")
+      se <- signal_flag(item, i, "ShortEntry")
+      side <- NULL
+      event <- NULL
+      if (identical(exited_from[j], "long") && item$strategy$short && se) {
+        side <- "short"
+        event <- "lower"
+      } else if (identical(exited_from[j], "short") && item$strategy$long && le) {
+        side <- "long"
+        event <- "upper"
+      } else if (item$strategy$long && le && !(item$strategy$short && se)) {
+        side <- "long"
+        event <- "upper"
+      } else if (item$strategy$short && se && !(item$strategy$long && le)) {
+        side <- "short"
+        event <- "lower"
+      }
+      if (is.null(side)) next
+      candidates[[length(candidates) + 1L]] <- list(j = j, i = i, side = side, event = event)
+    }
+
+    slots <- max_positions - open_positions()
+    if (is.finite(slots) && slots <= 0) {
+      candidates <- list()
+    } else if (is.finite(slots) && length(candidates) > slots) {
+      candidates <- candidates[seq_len(slots)]
+    }
+    for (candidate in candidates) {
+      j <- candidate$j
+      i <- candidate$i
+      item <- items[[j]]
+      px <- event_price(item, j, i, candidate$event, fallback = close_i[j])
+      if (!is.finite(px) || px <= 0) next
+      delta <- sizing_qty(item, j, i, candidate$side, equity_now, px)
+      if (!is.finite(delta) || delta == 0) next
+      costs <- txn_cost(item, i, delta, px)
+      states[[j]]$qty <- states[[j]]$qty + delta
+      states[[j]]$units <- 1L
+      row_last_px[j] <- px
+      equity_now <- equity_now - costs[["total_cost"]]
+      add_trade(t, j, delta, px, costs, paste0(candidate$side, "_entry"))
+    }
+
+    for (j in seq_along(items)) {
+      if (is.na(rows[j]) || states[[j]]$qty == 0 || !is.finite(close_i[j])) next
+      if (is.finite(row_last_px[j]) && row_last_px[j] != close_i[j]) {
+        equity_now <- equity_now + states[[j]]$qty * (close_i[j] - row_last_px[j]) * item_pnl_multiplier[j]
+      }
+      states[[j]]$last_price <- close_i[j]
+    }
+
+    equity[t] <- equity_now
+    for (j in seq_along(items)) {
+      qty_path[t, j] <- states[[j]]$qty
+      px <- states[[j]]$last_price
+      if (is.finite(close_i[j])) {
+        close_path[t, j] <- close_i[j]
+      } else if (is.finite(px)) {
+        close_path[t, j] <- px
+      }
+      if (states[[j]]$qty != 0 && is.finite(px)) {
+        value_path[t, j] <- states[[j]]$qty * px * item_pnl_multiplier[j]
+      }
+    }
+  }
+
+  if (n_times > 0) {
+    t <- n_times
+    for (j in seq_along(items)) {
+      item <- items[[j]]
+      if (!isTRUE(item$execution$close_on_end) || states[[j]]$qty == 0) next
+      i <- states[[j]]$last_i
+      px <- states[[j]]$last_price
+      if (!is.finite(i) || !is.finite(px) || px <= 0) next
+      delta <- -states[[j]]$qty
+      costs <- txn_cost(item, i, delta, px)
+      states[[j]]$qty <- 0
+      states[[j]]$units <- 0L
+      equity_now <- equity_now - costs[["total_cost"]]
+      add_trade(t, j, delta, px, costs, "end_exit")
+      qty_path[t, j] <- 0
+      value_path[t, j] <- 0
+    }
+    equity[t] <- equity_now
+  }
+
+  equity_xts <- xts::xts(equity, order.by = timeline_index)
+  colnames(equity_xts) <- "Equity"
+  positions <- xts::xts(
+    cbind(qty_path, close_path, value_path, equity = equity),
+    order.by = timeline_index
   )
   trades_df <- if (length(trades)) do.call(rbind, trades) else .bt_native_empty_trade_frame()
   list(equity = equity_xts, positions = positions, trades = trades_df)
@@ -3542,6 +4318,8 @@ bt_search_native <- function(ticker,
     paste0("ElDoc ", strategy$params$up, "/", strategy$params$down)
   } else if (identical(strategy$type, "tsmom")) {
     paste0("TSMOM ", strategy$params$lookback)
+  } else if (identical(strategy$type, "portfolio")) {
+    "Portfolio mixed"
   } else {
     paste0(toupper(strategy$type), " ", strategy$params$fast, "/", strategy$params$slow)
   }

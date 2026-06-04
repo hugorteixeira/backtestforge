@@ -17,7 +17,8 @@ portfolio/instrument engine to configure.
 - **Experimental ElDoc Research Surface** - Pyramiding and trade-excursion diagnostics live in `bt_eldoc_exp()`
 - **EMA/SMA Crossover Strategies** - Lightweight moving-average wrappers
 - **Time-Series Momentum** - Native `bt_tsmom()` wrapper for trailing-return sign systems
-- **Smart Position Sizing** - Risk-based position sizing with multiple methods
+- **Smart Position Sizing** - Native specs delegate quantity math to `positionsizer`
+- **Shared-Capital Portfolio Backtests** - Runs multiple instruments against one growing account equity
 - **Multi-Asset Support** - Works with stocks, futures, and crypto
 - **Brazilian Futures Support** - DI PU conversion and position sizing use `positionsizer`; contract metadata is read from `xts` attrs
 - **Agent-Friendly Search** - `bt_search_native()` evaluates serializable parameter grids
@@ -50,12 +51,18 @@ Read that file before continuing engine, DI futures, or server-job work.
 - ✅ EMA/SMA crossover wrappers
 - ✅ Long/Short entry and exit signals
 
-### Position Sizing Functions
+### Position Sizing Modes
 - ✅ Fixed Contracts Quantity
 - ✅ Percentage of Equity (Simple)
 - ✅ Donchian-based Risk Position Sizing
 - ✅ ATR-risk Position Sizing
 - ✅ DI Futures Specialized Position Sizing
+
+These are `backtestforge` strategy/risk modes, not standalone sizing engines.
+The actual quantity math is delegated to `positionsizer`, including DI rate/PU
+conversion and canonical futures sizing. Legacy package-local DI sizing helpers
+and their generated `man/dot-calculate_futures_di_*` pages were retired for that
+reason.
 
 ### Asset Classes
 - ✅ Stocks (Generic)
@@ -264,6 +271,114 @@ result <- bt_run_native(
 Risk sizing reinvests by default: new entries use current account equity, while
 an open position keeps its original quantity until the next order. Use
 `reinvest = FALSE` to size every entry from the initial capital instead.
+For all native runners, `backtestforge` chooses the strategy stop/source price
+and builds the instrument spec, then calls `positionsizer` for the canonical
+quantity calculation.
+
+### Shared-capital portfolio backtests
+
+Use `bt_run_portfolio()` when several instruments must share the same account
+equity. This is different from `bt_batch(gen_portfolio = ...)`: batch-generated
+portfolios aggregate finished return streams after the individual backtests have
+already been run; `bt_run_portfolio()` simulates all instruments on one timeline
+and sizes new positions from the same equity curve.
+
+```r
+portfolio <- bt_run_portfolio(
+  tickers = list(
+    WDO = wdo_xts,
+    WIN = win_xts,
+    DI1 = di1_xts,
+    BGI = bgi_xts
+  ),
+  strategy = list(
+    WDO = bt_strategy_spec("donchian", up = 40, down = 20),
+    WIN = bt_strategy_spec("donchian", up = 20, down = 10),
+    DI1 = bt_strategy_spec("tsmom", lookback = 120),
+    BGI = bt_strategy_spec("donchian", up = 55, down = 25)
+  ),
+  risk = list(
+    WDO = bt_risk_spec(mode = "risk", risk_pct = 1.0, ps_type = "eldoc"),
+    WIN = bt_risk_spec(mode = "risk", risk_pct = 0.7, ps_type = "eldoc"),
+    DI1 = bt_risk_spec(mode = "risk", risk_pct = 1.5, ps_type = "atr", atr_mult = 2),
+    BGI = bt_risk_spec(mode = "fixed", fixed_qty = 1)
+  ),
+  execution = list(
+    WDO = bt_execution_spec(
+      execution = "breakout",
+      fee_value = 1,
+      fee_type = "contract",
+      slip_value = 1,
+      slip_type = "ticks"
+    ),
+    WIN = bt_execution_spec(
+      execution = "breakout",
+      fee_value = 1,
+      fee_type = "contract",
+      slip_value = 1,
+      slip_type = "ticks"
+    ),
+    DI1 = bt_execution_spec(
+      execution = "same_close",
+      fee_value = 2,
+      fee_type = "contract",
+      slip_value = 0,
+      slip_type = "cash"
+    ),
+    BGI = bt_execution_spec(
+      execution = "breakout",
+      fee_value = 2.5,
+      fee_type = "contract",
+      slip_value = 7,
+      slip_type = "bps"
+    )
+  ),
+  initial_equity = 100000,
+  max_positions = Inf
+)
+```
+
+All of `strategy`, `risk`, `execution`, `ps_value`, `ps_type`, and `reinvest`
+can be scalar values applied to every instrument or named per-instrument
+overrides. Names are resolved against the list label, the source symbol, and
+metadata such as `attr(x, "information")$ticker`.
+
+If you only need different fixed contract sizes while sharing one setup:
+
+```r
+portfolio <- bt_run_portfolio(
+  tickers = list(WDO = wdo_xts, WIN = win_xts),
+  strategy = bt_strategy_spec("donchian", up = 40, down = 20),
+  ps_value = c(WDO = 1, WIN = 2),
+  ps_type = c(WDO = "contract", WIN = "contract"),
+  execution = bt_execution_spec(
+    execution = "breakout",
+    fee_value = 0,
+    fee_type = "contract",
+    slip_value = 0,
+    slip_type = "cash"
+  ),
+  initial_equity = 100000
+)
+```
+
+The result includes the portfolio-level equity curve and return stream plus
+per-instrument specs and trade summaries:
+
+```r
+portfolio$equity
+portfolio$rets
+portfolio$trades
+portfolio$positions
+portfolio$instrument_stats
+portfolio$spec$strategies
+portfolio$spec$risks
+portfolio$spec$executions
+```
+
+Current portfolio limitations: only `breakout` and `same_close` execution are
+implemented; `next_open`, `next_close`, `next_avg`, pyramiding, margin, and
+advanced signal-priority rules are not implemented yet.
 
 `normalize_risk` normalizes the returned `rets` stream to a target annualized
 volatility for system comparison, measured on daily compounded returns. For
@@ -327,6 +442,10 @@ row `TickValue`. To provide slippage as ticks or price points, set `slip_type` t
 minimum price increment, while `multiplier` is the cash value of one full price
 point.
 
+When an `xts` object is passed directly, symbols are resolved in this order:
+`attr(x, "symbol")`, `attr(x, "ticker")`, `attr(x, "information")$ticker`, the
+name used in the `tickers` list, then a generated `AssetN` fallback.
+
 ## 📊 Position Sizing Methods
 
 1. **ElDoc risk** - Risk a percent of equity to the opposite channel.
@@ -337,8 +456,10 @@ point.
    when PU data is available.
 
 The actual quantity calculation is delegated to `positionsizer`. `backtestforge`
-still owns strategy signals, stop selection, execution timing, costs, and
-result reporting, but the canonical sizing math lives in that package.
+still owns strategy signals, stop selection, execution timing, costs, shared
+equity simulation, and result reporting, but the canonical sizing math lives in
+that package. This is intentional: `backtestforge` should not grow parallel
+helpers for DI notional/rate sizing or futures quantity formulas.
 
 ## 📈 Example Output
 
@@ -383,10 +504,11 @@ Contributions are welcome! Since this is a work in progress:
 - [x] Basic Donchian/ElDoc execution modes, ATR sizing, and contract sizing
 - [x] Experimental ElDoc pyramiding and trade-excursion diagnostics isolated in `bt_eldoc_exp()`
 - [x] Time-series momentum wrapper with native `tsmom` strategy support
+- [x] Shared-capital portfolio runner with per-instrument strategy, risk, and execution specs
 - [x] Unit tests for native sizing, DI PU handling, costs, and batch failure strictness
 - [ ] Split the native simulator internals into smaller state-transition helpers
 - [ ] Add more real-data regression fixtures for DI and stitched futures series
-- [ ] Improve documentation around metadata attrs expected from `finharvest`
+- [x] Improve documentation around metadata attrs expected from `finharvest`
 - [x] Parameter search with `bt_search_native()`
 
 ## 📄 License

@@ -24,10 +24,20 @@ backtesting stack. For the current state and verification commands, read
    - Input: data plus strategy, risk, and execution specs.
    - Output: trades, positions, returns, stats, and annotated market data.
    - Inner loop: local vectors only; no database and no mutable package globals.
+   - Quantity sizing delegates to `positionsizer`; this layer should not contain
+     a parallel DI notional/rate sizing engine.
+   - `bt_run_native()` is the single-instrument runner.
+   - `bt_run_portfolio()` is the shared-capital multi-instrument runner. It
+     builds one timeline across instruments and sizes entries from one evolving
+     equity curve.
 
 3. Service layer
    - Wrappers (`bt_eldoc()`, `bt_eldoc_exp()`, `bt_sma()`, `bt_ema()`,
-     `bt_tsmom()`, `bt_batch()`) call the native simulator directly.
+     `bt_tsmom()`, `bt_batch()`, `bt_run_portfolio()`) call the native simulator
+     directly.
+   - `bt_batch(gen_portfolio = ...)` remains post-backtest return aggregation;
+     it must not be treated as a portfolio simulator because individual order
+     paths have already been fixed before aggregation.
    - Server jobs should store immutable specs, data hashes, seeds, status,
      logs, and result artifacts outside the inner simulation loop.
 
@@ -40,6 +50,8 @@ backtesting stack. For the current state and verification commands, read
 - Backtest specs must be serializable as JSON-like lists.
 - Batch/search APIs must be usable by agents without writing arbitrary R code.
 - Tests must cover the package without downloading market data.
+- Do not reintroduce package-local DI sizing helpers such as the retired
+  `.calculate_futures_di_*` path; `positionsizer` owns that math.
 
 ## ElDoc-First Scope
 
@@ -77,6 +89,10 @@ Position-sizing modes for ElDoc:
 - `notional`: allocate a percent of equity to notional exposure.
 - `contract`: trade a fixed number of contracts/shares per entry/add.
 
+The modes above are `backtestforge` risk-spec choices. Final quantity
+calculation is performed by `positionsizer::ps_size_position()` using an
+instrument spec built from the resolved XTS metadata.
+
 Pyramiding belongs in the experimental native ElDoc path. The first add can use
 its own ATR-based threshold (`pyramid_start` in ATR units); when omitted, it
 falls back to `pyramid_step` for backward-compatible behavior. Later adds use
@@ -104,6 +120,12 @@ DI pyramiding must preserve the DI contract model:
 - `bt_execution_spec()` stores execution mode and cost assumptions.
 - `bt_run_native()` accepts a symbol or `xts`, computes indicators/signals, runs
   the event loop, and returns a `bt_native_result`.
+- `bt_run_portfolio()` accepts multiple symbols or `xts` objects, computes each
+  instrument's indicators/signals, and runs one shared-capital event loop.
+- In `bt_run_portfolio()`, `strategy`, `risk`, `execution`, `ps_value`,
+  `ps_type`, and `reinvest` can be single values or named per-instrument
+  overrides. Names are matched against list labels, source symbols, ticker
+  arguments, and `information$ticker` metadata.
 - `normalize_risk` belongs to the returned/performance return stream. Performance
   stats and return tables should use normalized returns when supplied; execution
   facts and cost blocks should keep the raw simulated order path.
@@ -142,6 +164,10 @@ DI pyramiding must preserve the DI contract model:
   default starting capital is `100000`.
 - For DI contracts, keep annualized-rate OHLC columns for indicators/signals and
   prefer PU columns for execution and mark-to-market.
+- When an `xts` object has no flat `symbol` or `ticker` attr, resolve the source
+  symbol from nested attrs such as `attr(x, "information")$ticker`.
+- DI rate-to-PU conversion and per-contract sizing inputs should come from
+  `positionsizer`, not from local formula copies.
 
 ## Tests
 
@@ -161,6 +187,12 @@ Minimum test coverage:
 - EMA/SMA/TSMOM wrappers run on synthetic data.
 - `bt_search_native()` evaluates and sorts a small search space.
 - `bt_batch()` works with exact-match preloaded data.
+- `bt_batch(gen_portfolio = ...)` is documented and tested as post-backtest
+  return aggregation, not shared-capital simulation.
+- `bt_run_portfolio()` sizes later entries from shared equity and keeps
+  per-instrument strategy/risk/execution specs separate.
+- `bt_run_portfolio()` accepts per-instrument `ps_value`/`ps_type` and resolves
+  unnamed direct `xts` symbols from `information$ticker`.
 - Passing removed `engine` inputs fails explicitly.
 
 Optional real-data smoke coverage should live outside the deterministic unit
@@ -195,3 +227,21 @@ Then run:
 git diff --check
 R CMD INSTALL .
 ```
+
+## Shared-Capital Portfolio Next Steps
+
+The first shared-capital implementation is intentionally narrow and should be
+extended in this order:
+
+1. Add real futures fixtures for WDO/WIN/DI/CCM/BGI-style combinations with
+   different strategy/risk specs.
+2. Add `next_open`, `next_close`, and `next_avg` execution to the portfolio
+   runner with deterministic cross-instrument event ordering.
+3. Add portfolio pyramiding using the same audit fields as `bt_eldoc_exp()`.
+4. Add priority modes for simultaneous entries, such as explicit ranking,
+   volatility/risk ranking, or first-touch timestamps when intrabar data is
+   available.
+5. Add an optional futures margin/guarantee model; keep it separate from equity
+   P/L so users can run both unconstrained research and margin-constrained
+   simulations.
+6. Add plotting support through `tradeplotr` for `bt_portfolio_result` objects.

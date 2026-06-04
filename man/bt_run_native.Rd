@@ -74,5 +74,7 @@ blocks use the risk-normalized return stream; \code{raw_rets}, \code{raw_stats},
 trades, positions, and cost blocks keep the unnormalised execution path.
 }
 \description{
-Run a native in-memory backtest
+The native engine computes indicators, signals, stops, execution prices, and
+cost ledgers in this package. Quantity calculation is delegated to
+\code{positionsizer} from the resolved risk spec and instrument metadata.
 }

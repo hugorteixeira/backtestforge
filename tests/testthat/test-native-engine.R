@@ -988,6 +988,204 @@ test_that("ElDoc execution modes choose the documented fill price", {
   expect_equal(first_entry_price("next_avg"), mean(c(10.5, 10.8, 10.2, 10.4)))
 })
 
+test_that("portfolio engine sizes later entries from shared equity", {
+  idx <- as.Date("2024-01-01") + 0:3
+  strategy <- bt_strategy_spec("donchian", up = 2, down = 2, long = TRUE, short = FALSE)
+  risk <- bt_risk_spec(
+    mode = "notional",
+    initial_equity = 1000,
+    risk_pct = 100,
+    integer_qty = FALSE,
+    reinvest = TRUE
+  )
+  execution <- bt_execution_spec(execution = "same_close", fee = "nofee", close_on_end = FALSE)
+  metadata <- function(symbol) {
+    list(
+      multiplier = 1,
+      tick_size = 1,
+      tick_value = 1,
+      fees = 0,
+      fee_type = "contract",
+      slippage = 0,
+      is_futures = TRUE,
+      is_di = FALSE,
+      symbol = symbol,
+      root = symbol
+    )
+  }
+  item <- function(symbol, close, signals) {
+    data <- xts::xts(
+      cbind(Open = close, High = close, Low = close, Close = close),
+      order.by = idx
+    )
+    prices <- .bt_native_price_set(data, symbol)
+    indicators <- xts::xts(
+      cbind(
+        DonchianUpper = rep(150, length(idx)),
+        DonchianLower = rep(50, length(idx)),
+        ATR = rep(10, length(idx))
+      ),
+      order.by = idx
+    )
+    list(
+      data = data,
+      prices = prices,
+      indicators = indicators,
+      signals = xts::xts(signals, order.by = idx),
+      strategy = strategy,
+      risk = risk,
+      execution = execution,
+      metadata = metadata(symbol),
+      symbol = symbol,
+      source_symbol = symbol
+    )
+  }
+  empty_signals <- cbind(
+    LongEntry = rep(FALSE, length(idx)),
+    LongExit = rep(FALSE, length(idx)),
+    ShortEntry = rep(FALSE, length(idx)),
+    ShortExit = rep(FALSE, length(idx))
+  )
+  a_signals <- empty_signals
+  a_signals[2, "LongEntry"] <- TRUE
+  a_signals[3, "LongExit"] <- TRUE
+  b_signals <- empty_signals
+  b_signals[3, "LongEntry"] <- TRUE
+  items <- list(
+    A = item("A", c(100, 100, 200, 200), a_signals),
+    B = item("B", c(100, 100, 100, 100), b_signals)
+  )
+
+  sim <- .bt_native_simulate_portfolio(items, initial_equity = 1000)
+  b_entry <- sim$trades[sim$trades$symbol == "B" & sim$trades$reason == "long_entry", ]
+
+  expect_equal(b_entry$qty_delta, 20)
+  expect_equal(as.numeric(sim$equity["2024-01-03"]$Equity), 2000)
+  expect_equal(as.numeric(sim$positions["2024-01-03", "B.qty"]), 20)
+})
+
+test_that("bt_run_portfolio returns a shared-capital result object", {
+  x1 <- bt_test_ohlc(160)
+  x2 <- bt_test_ohlc(160)
+  attr(x1, "symbol") <- "BT_PORT_RUN_A"
+  attr(x2, "symbol") <- "BT_PORT_RUN_B"
+  attr(x1, "ps_value") <- 1
+  attr(x2, "ps_value") <- 1
+  attr(x1, "ps_type") <- "contract"
+  attr(x2, "ps_type") <- "contract"
+
+  res <- bt_run_portfolio(
+    list(A = x1, B = x2),
+    strategy = bt_strategy_spec("donchian", up = 12, down = 8),
+    execution = bt_execution_spec(execution = "same_close", fee = "nofee"),
+    initial_equity = 100000,
+    max_positions = 1
+  )
+
+  expect_s3_class(res, "bt_portfolio_result")
+  expect_s3_class(res$equity, "xts")
+  expect_s3_class(res$positions, "xts")
+  expect_equal(res$instruments, c("A", "B"))
+  expect_true(all(res$trades$symbol %in% res$instruments))
+})
+
+test_that("bt_run_portfolio accepts per-instrument strategy risk and execution specs", {
+  x1 <- bt_test_ohlc(180)
+  x2 <- bt_test_ohlc(180)
+  attr(x1, "symbol") <- "BT_PORT_PARAM_WDO"
+  attr(x2, "symbol") <- "BT_PORT_PARAM_WIN"
+
+  res <- bt_run_portfolio(
+    list(WDO = x1, WIN = x2),
+    strategy = list(
+      WDO = bt_strategy_spec("donchian", up = 12, down = 8),
+      WIN = bt_strategy_spec("tsmom", lookback = 30)
+    ),
+    risk = list(
+      WDO = bt_risk_spec(mode = "fixed", fixed_qty = 1),
+      WIN = bt_risk_spec(mode = "fixed", fixed_qty = 2)
+    ),
+    execution = list(
+      WDO = bt_execution_spec(execution = "same_close", fee = "nofee"),
+      WIN = bt_execution_spec(execution = "same_close", fee = "nofee", close_on_end = FALSE)
+    ),
+    initial_equity = 100000
+  )
+
+  expect_equal(res$spec$strategy$type, "portfolio")
+  expect_equal(res$stats$Indicator, "Portfolio mixed")
+  expect_equal(res$spec$strategies$WDO$params$up, 12)
+  expect_equal(res$spec$strategies$WIN$type, "tsmom")
+  expect_equal(res$spec$risks$WDO$fixed_qty, 1)
+  expect_equal(res$spec$risks$WIN$fixed_qty, 2)
+  expect_true(res$spec$executions$WDO$close_on_end)
+  expect_false(res$spec$executions$WIN$close_on_end)
+  expect_equal(res$instrument_stats$Strategy, c("ElDoc 12/8", "TSMOM 30"))
+  expect_equal(res$instrument_stats$PsValue, c(1, 2))
+})
+
+test_that("bt_run_portfolio accepts named ps values when risk is resolved from arguments", {
+  x1 <- bt_test_ohlc(160)
+  x2 <- bt_test_ohlc(160)
+  attr(x1, "symbol") <- "BT_PORT_PS_WDO"
+  attr(x2, "symbol") <- "BT_PORT_PS_WIN"
+
+  res <- bt_run_portfolio(
+    list(WDO = x1, WIN = x2),
+    strategy = bt_strategy_spec("donchian", up = 12, down = 8),
+    ps_value = c(WDO = 1, WIN = 2),
+    ps_type = c(WDO = "contract", WIN = "contract"),
+    execution = bt_execution_spec(execution = "same_close", fee = "nofee"),
+    initial_equity = 100000
+  )
+
+  expect_equal(res$spec$risks$WDO$fixed_qty, 1)
+  expect_equal(res$spec$risks$WIN$fixed_qty, 2)
+  expect_equal(res$instrument_stats$PsValue, c(1, 2))
+})
+
+test_that("bt_run_portfolio uses named xts entries as source symbols when attrs are absent", {
+  x1 <- bt_test_ohlc(160)
+  x2 <- bt_test_ohlc(160)
+  attr(x1, "symbol") <- NULL
+  attr(x2, "symbol") <- NULL
+
+  res <- bt_run_portfolio(
+    list(WDO = x1, WIN = x2),
+    strategy = bt_strategy_spec("donchian", up = 12, down = 8),
+    ps_value = c(WDO = 1, WIN = 2),
+    ps_type = c(WDO = "contract", WIN = "contract"),
+    execution = bt_execution_spec(execution = "same_close", fee = "nofee"),
+    initial_equity = 100000
+  )
+
+  expect_equal(res$instrument_stats$source_symbol, c("WDO", "WIN"))
+  expect_equal(res$instruments, c("WDO", "WIN"))
+})
+
+test_that("bt_run_portfolio uses information ticker metadata for unnamed xts entries", {
+  x1 <- bt_test_ohlc(160)
+  x2 <- bt_test_ohlc(160)
+  attr(x1, "symbol") <- NULL
+  attr(x2, "symbol") <- NULL
+  attr(x1, "information") <- list(ticker = "WDO")
+  attr(x2, "information") <- list(ticker = "WIN")
+
+  res <- bt_run_portfolio(
+    list(x1, x2),
+    strategy = bt_strategy_spec("donchian", up = 12, down = 8),
+    ps_value = c(WDO = 1, WIN = 2),
+    ps_type = c(WDO = "contract", WIN = "contract"),
+    execution = bt_execution_spec(execution = "same_close", fee = "nofee"),
+    initial_equity = 100000
+  )
+
+  expect_equal(res$instrument_stats$source_symbol, c("WDO", "WIN"))
+  expect_equal(res$instruments, c("WDO", "WIN"))
+  expect_equal(res$spec$risks$WDO$fixed_qty, 1)
+  expect_equal(res$spec$risks$WIN$fixed_qty, 2)
+})
+
 test_that("ElDoc channel and notional sizing are hand calculated", {
   x <- bt_test_eldoc_breakout_ohlc()
 
@@ -1282,6 +1480,36 @@ test_that("bt_batch passes starting equity through specs", {
   expect_equal(out[[1]]$spec$strategy$params$pyramid_sizing, "entry_qty")
   expect_equal(out[[1]]$spec$strategy$params$pyramid_qty_pct, 0.5)
   expect_equal(as.numeric(out[[1]]$equity$Equity[1]), 250000)
+})
+
+test_that("bt_batch generated portfolios are post-backtest return aggregation", {
+  x1 <- bt_test_ohlc(160)
+  x2 <- bt_test_ohlc(160)
+  x2$Close <- x2$Close * 1.01
+  x2$Open <- x2$Open * 1.01
+  x2$High <- x2$High * 1.01
+  x2$Low <- x2$Low * 1.01
+  assign("BT_NATIVE_PORT_A", x1, envir = .GlobalEnv)
+  assign("BT_NATIVE_PORT_B", x2, envir = .GlobalEnv)
+  on.exit(rm("BT_NATIVE_PORT_A", "BT_NATIVE_PORT_B", envir = .GlobalEnv), add = TRUE)
+
+  out <- bt_batch(
+    type = "eldoc",
+    tickers = c("BT_NATIVE_PORT_A", "BT_NATIVE_PORT_B"),
+    exact_match = TRUE,
+    mup = 12,
+    mdown = 8,
+    fee = "nofee",
+    only_returns = TRUE,
+    returns_type = "Log",
+    gen_portfolio = list(All = 1:2),
+    hide_details = TRUE,
+    verbose = FALSE
+  )
+
+  expect_s3_class(out, "xts")
+  expect_equal(NCOL(out), 3)
+  expect_equal(as.numeric(out[, 3]), unname(rowSums(as.matrix(out[, 1:2]), na.rm = TRUE)))
 })
 
 test_that("bt_batch fails strictly by default and can opt into zero-fill", {

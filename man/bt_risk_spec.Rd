@@ -53,5 +53,7 @@ value is available.}
 A list with class \code{bt_risk_spec}.
 }
 \description{
-Build a native risk specification
+The returned spec tells the native simulator which sizing mode and constraints
+to use. The final quantity calculation is delegated to \code{positionsizer}; this
+package keeps strategy stop selection, execution timing, and ledger handling.
 }
