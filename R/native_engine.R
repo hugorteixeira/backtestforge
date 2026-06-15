@@ -2625,8 +2625,11 @@ bt_search_native <- function(ticker,
   trades <- list()
 
   current_row <- function(j, key) {
-    hit <- row_lookup[[j]][[key]]
-    if (is.null(hit)) NA_integer_ else as.integer(hit)
+    hit <- match(key, names(row_lookup[[j]]), nomatch = 0L)
+    if (hit <= 0L) {
+      return(NA_integer_)
+    }
+    as.integer(row_lookup[[j]][hit])
   }
   exec_close_at <- function(item, i) {
     px <- if (!is.null(item$prices$exec_close)) item$prices$exec_close[i] else item$prices$close[i]

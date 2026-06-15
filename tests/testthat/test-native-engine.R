@@ -1089,6 +1089,29 @@ test_that("bt_run_portfolio returns a shared-capital result object", {
   expect_true(all(res$trades$symbol %in% res$instruments))
 })
 
+test_that("bt_run_portfolio handles instruments with different calendars", {
+  x1 <- bt_test_ohlc(160)
+  x2 <- bt_test_ohlc(160)["2020-02-15/"]
+  attr(x1, "symbol") <- "BT_PORT_CAL_A"
+  attr(x2, "symbol") <- "BT_PORT_CAL_B"
+  attr(x1, "ps_value") <- 1
+  attr(x2, "ps_value") <- 1
+  attr(x1, "ps_type") <- "contract"
+  attr(x2, "ps_type") <- "contract"
+
+  res <- bt_run_portfolio(
+    list(A = x1, B = x2),
+    strategy = bt_strategy_spec("donchian", up = 12, down = 8),
+    execution = bt_execution_spec(execution = "same_close", fee = "nofee"),
+    initial_equity = 100000
+  )
+
+  expected_index <- sort(unique(c(as.Date(zoo::index(x1)), as.Date(zoo::index(x2)))))
+  expect_s3_class(res, "bt_portfolio_result")
+  expect_equal(format(zoo::index(res$equity), "%Y-%m-%d"), as.character(expected_index))
+  expect_true(any(is.na(as.numeric(res$positions[, "B.close"]))))
+})
+
 test_that("bt_run_portfolio accepts per-instrument strategy risk and execution specs", {
   x1 <- bt_test_ohlc(180)
   x2 <- bt_test_ohlc(180)
