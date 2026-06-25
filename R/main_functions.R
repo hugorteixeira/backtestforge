@@ -110,7 +110,7 @@
     assign = FALSE,
     single_xts = TRUE,
     consolidate = FALSE,
-    attrs_source = "fintickers",
+    attrs_source = "codigos",
     mode = "raw",
     verbose = FALSE
   )

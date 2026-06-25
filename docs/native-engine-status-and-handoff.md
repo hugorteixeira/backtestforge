@@ -171,8 +171,8 @@ do not reintroduce a second sizing engine in this package.
 ## Futures Metadata Policy
 
 Contract metadata comes from the `xts` object only. Do not infer multiplier,
-tick size, fees, or slippage from ticker roots. The current
-`finharvest`/`fintickers` shape stores stable attrs as nested plugin lists:
+tick size, fees, or slippage from ticker roots. The current `finharvest` runtime
+shape stores stable attrs as nested plugin lists:
 `contract` carries contract specs such as `ticksize`, `tickvalue`, `multiplier`,
 `root`, and `timeframe`; `costs` carries `fee_value`, `fee_type`, `slip_value`,
 `slip_type`, `ps_value`, and `ps_type`. Direct legacy attrs are still accepted
@@ -221,8 +221,9 @@ The console report prints a `Costs & Slippage Summary` block before
 gross P/L.
 
 When `backtestforge` fetches symbols through `finharvest::finget()`, it requests
-`attrs_source = "fintickers"` so the simulator receives the curated nested attrs
-shape.
+`attrs_source = "codigos"` so the simulator receives the runtime codigos attrs.
+`attrs_source = "fintickers"` remains an explicit opt-in path for callers that
+preload an `xts` object and pass it directly.
 
 Backtest wrappers expose cost overrides directly. `fee_value` is account
 currency, with `fee_type = "contract"` charging per unit traded and

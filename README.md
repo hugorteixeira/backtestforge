@@ -391,9 +391,9 @@ actual simulated orders. Full results therefore carry both views:
 `stats`/`performance_stats` match `rets`, while `raw_stats` and `raw_rets` keep
 the unnormalised execution path.
 
-For futures, the current `finharvest`/`fintickers` contract attaches instrument
-metadata in nested `xts` plugin attrs. `backtestforge` reads `contract` for
-contract specs and `costs` for sizing, fees, and slippage:
+For futures, the current `finharvest` contract attaches instrument metadata in
+nested `xts` plugin attrs. `backtestforge` reads `contract` for contract specs
+and `costs` for sizing, fees, and slippage:
 
 ```r
 attr(wdo, "contract") <- list(
@@ -414,9 +414,11 @@ attr(wdo, "costs") <- list(
 ```
 
 When data is fetched internally, `backtestforge` calls `finharvest::finget()`
-with `attrs_source = "fintickers"` so this nested plugin shape is used. Direct
-legacy attrs are still accepted for older objects, but new objects should prefer
-the plugin layout:
+with `attrs_source = "codigos"` so the runtime codigos attrs are used. The
+curated `attrs_source = "fintickers"` registry remains an opt-in path for
+callers that fetch and pass an `xts` object directly. Direct legacy attrs are
+still accepted for older objects, but new objects should prefer the plugin
+layout:
 
 ```r
 attr(ccm, "information")$ticker

@@ -10,8 +10,8 @@ backtesting stack. For the current state and verification commands, read
 
 1. Data layer
    - Source: `finharvest::finget()` or already loaded `xts` objects.
-   - Internal `finget()` calls must request `attrs_source = "fintickers"` so
-     curated XTS attrs are available to the simulator.
+   - Internal `finget()` calls must request `attrs_source = "codigos"` so
+     runtime codigos XTS attrs are available to the simulator.
    - Futures helpers: use `positionsizer` for DI rate-to-PU conversion and
      canonical position-sizing math.
    - Contract metadata must come from `xts` attributes, preferably the nested

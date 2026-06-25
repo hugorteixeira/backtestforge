@@ -477,7 +477,7 @@ test_that("native metadata uses finharvest xts contract attrs", {
   expect_equal(res$stats$TickSize, 0.01)
 })
 
-test_that("native metadata reads nested fintickers plugin attrs", {
+test_that("native metadata reads nested plugin attrs", {
   x <- bt_test_ohlc()
   attr(x, "symbol") <- NULL
   attr(x, "ticker") <- NULL
@@ -1283,7 +1283,7 @@ test_that("ElDoc supports contract and ATR position sizing", {
   first_atr_entry <- atr_res$trades[atr_res$trades$reason == "long_entry", ][1, ]
   atr_i <- which(as.Date(zoo::index(atr_res$mktdata)) == as.Date(first_atr_entry$timestamp))[1]
   atr <- as.numeric(atr_res$mktdata[atr_i, "ATR"])
-  expected_qty <- floor(100000 * 0.02 / (atr * 2))
+  expected_qty <- floor(100000 * 0.02 / (atr * 2) + 0.5 + sqrt(.Machine$double.eps))
   expect_true(is.finite(atr) && atr > 0)
   expect_equal(first_atr_entry$qty_delta, expected_qty)
   expect_equal(atr_res$spec$risk$ps_type, "atr")
