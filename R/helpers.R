@@ -220,7 +220,7 @@
 #' @return A list with `tick_size`, `tick_value`, `multiplier`, `maturity`,
 #'   `currency`, `fees`, `fee_type`, `slip_value`, `slippage_bps`,
 #'   `slippage_ticks`, `slippage_points`, `slippage_unit`, `ps_value`,
-#'   `ps_type`, and `root` entries.
+#'   `ps_type`, `root`, and exchange sizing filter entries.
 #' @keywords internal
 .collect_instrument_metadata <- function(object) {
   meta <- list(
@@ -238,7 +238,14 @@
     slippage_points = NULL,
     ps_value = NULL,
     ps_type = NULL,
-    root = NULL
+    root = NULL,
+    contract_model = NULL,
+    leverage = NULL,
+    quantity_step = NULL,
+    min_qty = NULL,
+    max_qty = NULL,
+    min_notional = NULL,
+    contract_size = NULL
   )
   if (is.null(object)) {
     return(meta)
@@ -249,9 +256,9 @@
   multiplier_names <- c("fut_multiplier", "multiplier", "Multiplier")
   maturity_names <- c("maturity", "maturity_date", "expiry", "expiration")
   currency_names <- c("currency", "Currency", "currency_id")
-  fee_value_names <- c("fee_value", "broker_fee", "style_fee")
+  fee_value_names <- c("fee_value", "broker_fee", "taker_fee")
   slip_value_names <- "slip_value"
-  fee_type_names <- "fee_type"
+  fee_type_names <- c("fee_type", "style_fee")
   slippage_bps_names <- "slippage_bps"
   slippage_ticks_names <- "slippage_ticks"
   slippage_points_names <- c("slippage_points", "slippage_points_per_contract")
@@ -259,9 +266,17 @@
   ps_value_names <- "ps_value"
   ps_type_names <- "ps_type"
   root_names <- "root"
+  contract_model_names <- c("contract_model", "model")
+  leverage_names <- c("leverage", "max_leverage")
+  quantity_step_names <- c("quantity_step", "qty_step", "step_size", "stepsize", "lot_size_step")
+  min_qty_names <- c("min_qty", "min_quantity", "minimum_qty")
+  max_qty_names <- c("max_qty", "max_quantity", "maximum_qty")
+  min_notional_names <- c("min_notional", "minimum_notional", "notional_min")
+  contract_size_names <- c("contract_size", "contractsize")
   contract_groups <- c("contract", "metadata")
   costs_groups <- c("costs", "execution", "metadata")
   risk_groups <- c("costs", "execution", "risk", "strategy", "metadata")
+  sizing_groups <- c("contract", "costs", "execution", "metadata")
 
   meta$tick_size <- .bt_xts_attr_first(object, tick_size_names, groups = contract_groups)
   meta$tick_value <- .bt_xts_attr_first(object, tick_value_names, groups = contract_groups)
@@ -279,6 +294,13 @@
   meta$slippage_unit <- .bt_xts_attr_first(object, slippage_unit_names, groups = costs_groups)
   meta$ps_value <- .bt_xts_attr_first(object, ps_value_names, groups = risk_groups)
   meta$ps_type <- .bt_xts_attr_first(object, ps_type_names, groups = risk_groups)
+  meta$contract_model <- .bt_xts_attr_first(object, contract_model_names, groups = sizing_groups)
+  meta$leverage <- .bt_xts_attr_first(object, leverage_names, groups = sizing_groups)
+  meta$quantity_step <- .bt_xts_attr_first(object, quantity_step_names, groups = sizing_groups)
+  meta$min_qty <- .bt_xts_attr_first(object, min_qty_names, groups = sizing_groups)
+  meta$max_qty <- .bt_xts_attr_first(object, max_qty_names, groups = sizing_groups)
+  meta$min_notional <- .bt_xts_attr_first(object, min_notional_names, groups = sizing_groups)
+  meta$contract_size <- .bt_xts_attr_first(object, contract_size_names, groups = sizing_groups)
 
   meta
 }

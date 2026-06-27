@@ -190,7 +190,13 @@ bt_risk_spec <- function(mode = c("risk", "notional", "fixed"),
   if (clean %in% c("order", "orders", "perorder", "trade", "pertrade")) {
     return("order")
   }
-  stop("'fee_type' must be either 'contract' or 'order'.", call. = FALSE)
+  if (clean %in% c("percent", "percentage", "pct", "perc")) {
+    return("percent")
+  }
+  if (clean %in% c("bps", "bp", "basispoints", "basispoint")) {
+    return("bps")
+  }
+  stop("'fee_type' must be one of 'contract', 'order', 'percent', or 'bps'.", call. = FALSE)
 }
 
 .bt_normalize_slippage_type <- function(slippage_type) {
@@ -290,6 +296,185 @@ bt_risk_spec <- function(mode = c("risk", "notional", "fixed"),
   NULL
 }
 
+.bt_native_clean_name <- function(x) {
+  tolower(gsub("[^A-Za-z0-9]", "", as.character(x)))
+}
+
+.bt_native_pick_named_col <- function(nms, candidates) {
+  if (!length(nms)) {
+    return(NA_character_)
+  }
+  clean_nms <- .bt_native_clean_name(nms)
+  clean_candidates <- .bt_native_clean_name(candidates)
+  hit <- match(clean_candidates, clean_nms, nomatch = 0L)
+  hit <- hit[hit > 0L]
+  if (length(hit)) {
+    return(nms[[hit[[1]]]])
+  }
+  NA_character_
+}
+
+.bt_native_empty_funding_frame <- function() {
+  data.frame(
+    timestamp = as.POSIXct(character(), tz = "UTC"),
+    funding_rate = numeric(),
+    mark_price = numeric(),
+    stringsAsFactors = FALSE
+  )
+}
+
+.bt_native_normalize_funding_object <- function(x) {
+  if (is.null(x) || identical(x, FALSE)) {
+    return(.bt_native_empty_funding_frame())
+  }
+  if (xts::is.xts(x)) {
+    df <- as.data.frame(zoo::coredata(x), stringsAsFactors = FALSE)
+    df$timestamp <- as.POSIXct(zoo::index(x), tz = "UTC")
+  } else if (is.data.frame(x)) {
+    df <- x
+  } else {
+    return(.bt_native_empty_funding_frame())
+  }
+  if (!nrow(df)) {
+    return(.bt_native_empty_funding_frame())
+  }
+
+  nms <- names(df)
+  time_col <- .bt_native_pick_named_col(nms, c("timestamp", "date", "datetime", "time"))
+  rate_col <- .bt_native_pick_named_col(nms, c("funding_rate", "fundingrate", "FundingRate", "rate"))
+  mark_col <- .bt_native_pick_named_col(nms, c("mark_price", "markprice", "FundingMarkPrice", "price"))
+  events_col <- .bt_native_pick_named_col(nms, c("funding_events", "FundingEvents", "events"))
+  if (is.na(time_col) || is.na(rate_col)) {
+    return(.bt_native_empty_funding_frame())
+  }
+
+  out <- data.frame(
+    timestamp = as.POSIXct(df[[time_col]], tz = "UTC"),
+    funding_rate = suppressWarnings(as.numeric(df[[rate_col]])),
+    mark_price = if (!is.na(mark_col)) suppressWarnings(as.numeric(df[[mark_col]])) else NA_real_,
+    stringsAsFactors = FALSE
+  )
+  if (!is.na(events_col)) {
+    event_count <- suppressWarnings(as.numeric(df[[events_col]]))
+    keep_events <- !is.finite(event_count) | event_count != 0 | out$funding_rate != 0
+    out <- out[keep_events, , drop = FALSE]
+  }
+  out <- out[!is.na(out$timestamp) & is.finite(out$funding_rate), , drop = FALSE]
+  if (!nrow(out)) {
+    return(.bt_native_empty_funding_frame())
+  }
+  out <- out[order(out$timestamp), , drop = FALSE]
+  split_idx <- split(seq_len(nrow(out)), as.character(out$timestamp))
+  out <- do.call(rbind, lapply(split_idx, function(idx) {
+    rows <- out[idx, , drop = FALSE]
+    mark <- rows$mark_price[is.finite(rows$mark_price) & rows$mark_price > 0]
+    data.frame(
+      timestamp = rows$timestamp[[1]],
+      funding_rate = sum(rows$funding_rate, na.rm = TRUE),
+      mark_price = if (length(mark)) mark[[length(mark)]] else NA_real_,
+      stringsAsFactors = FALSE
+    )
+  }))
+  rownames(out) <- NULL
+  out[order(out$timestamp), , drop = FALSE]
+}
+
+.bt_native_funding_from_list <- function(funding, symbol) {
+  if (!is.list(funding) || is.data.frame(funding) || xts::is.xts(funding)) {
+    return(NULL)
+  }
+  keys <- unique(c(
+    symbol,
+    paste0(.bt_base_contract_symbol(symbol), "_PERPETUAL"),
+    .bt_base_contract_symbol(symbol)
+  ))
+  keys <- keys[!is.na(keys) & nzchar(keys)]
+  for (key in keys) {
+    if (!is.null(funding[[key]])) {
+      return(funding[[key]])
+    }
+  }
+  if (length(funding)) funding[[1]] else NULL
+}
+
+.bt_native_funding_from_data <- function(data) {
+  direct <- attr(data, "funding", exact = TRUE) %||%
+    attr(data, "funding_events", exact = TRUE)
+  out <- .bt_native_normalize_funding_object(direct)
+  if (NROW(out)) {
+    return(out)
+  }
+  .bt_native_normalize_funding_object(data)
+}
+
+.bt_native_fetch_finharvest_funding <- function(symbol, start_date, end_date) {
+  if (!requireNamespace("finharvest", quietly = TRUE)) {
+    stop("`funding = TRUE` requires package 'finharvest' to fetch funding events.", call. = FALSE)
+  }
+  funding_symbol <- symbol
+  if (!grepl("PERPETUAL", toupper(funding_symbol), fixed = TRUE)) {
+    funding_symbol <- paste0(.bt_base_contract_symbol(symbol), "_PERPETUAL")
+  }
+  funding <- finharvest::finget_binance_fut_funding(
+    tickers = funding_symbol,
+    start_date = start_date,
+    end_date = end_date,
+    tz = "UTC",
+    tz_mode = "preserve",
+    verbose = FALSE
+  )
+  if (xts::is.xts(funding) || is.data.frame(funding)) {
+    return(funding)
+  }
+  if (is.list(funding)) {
+    if (!is.null(funding[[funding_symbol]])) {
+      return(funding[[funding_symbol]])
+    }
+    if (length(funding)) {
+      return(funding[[1]])
+    }
+  }
+  NULL
+}
+
+.bt_native_resolve_funding <- function(funding, data, symbol, start_date, end_date) {
+  if (is.null(funding) || identical(funding, FALSE)) {
+    return(.bt_native_empty_funding_frame())
+  }
+  source <- if (identical(funding, TRUE)) {
+    data_out <- .bt_native_funding_from_data(data)
+    if (NROW(data_out)) {
+      data_out
+    } else {
+      .bt_native_normalize_funding_object(
+        .bt_native_fetch_finharvest_funding(symbol, start_date, end_date)
+      )
+    }
+  } else if (is.character(funding) && length(funding) == 1L && nzchar(funding)) {
+    .bt_native_normalize_funding_object(
+      .bt_native_fetch_finharvest_funding(funding, start_date, end_date)
+    )
+  } else {
+    explicit <- .bt_native_funding_from_list(funding, symbol)
+    if (is.null(explicit)) explicit <- funding
+    .bt_native_normalize_funding_object(explicit)
+  }
+  if (!NROW(source)) {
+    warning("No funding events were resolved; funding is being treated as zero.", call. = FALSE)
+    return(.bt_native_empty_funding_frame())
+  }
+  start_ts <- as.POSIXct(start_date, tz = "UTC")
+  end_ts <- as.POSIXct(as.Date(end_date) + 1, tz = "UTC")
+  if (!is.na(start_ts)) {
+    source <- source[source$timestamp >= start_ts, , drop = FALSE]
+  }
+  if (!is.na(end_ts)) {
+    source <- source[source$timestamp < end_ts, , drop = FALSE]
+  }
+  rownames(source) <- NULL
+  source
+}
+
 .bt_native_ps_metadata <- function(data) {
   meta <- .collect_instrument_metadata(data)
   list(
@@ -308,8 +493,9 @@ bt_risk_spec <- function(mode = c("risk", "notional", "fixed"),
 #' @param fee_value Optional explicit commission amount in account currency.
 #'   Interpreted according to `fee_type`. If `NULL`, ticker metadata is used.
 #' @param fee_type Commission unit. `"contract"` charges `fee_value` per unit
-#'   traded; `"order"` charges `fee_value` once per executed order. If `NULL`,
-#'   ticker metadata is used.
+#'   traded; `"order"` charges `fee_value` once per executed order;
+#'   `"percent"` and `"bps"` charge against traded notional. If `NULL`, ticker
+#'   metadata is used.
 #' @param commission_per_contract Optional explicit commission per unit traded.
 #' @param commission_per_order Optional explicit commission per executed order.
 #' @param slip_value Optional explicit slippage amount. Interpreted according to
@@ -349,8 +535,11 @@ bt_execution_spec <- function(execution = c("breakout", "same_close", "next_open
     if (identical(fee_type, "order")) {
       commission_per_order <- fee_value
       commission_per_contract <- NULL
-    } else {
+    } else if (identical(fee_type, "contract")) {
       commission_per_contract <- fee_value
+      commission_per_order <- NULL
+    } else {
+      commission_per_contract <- NULL
       commission_per_order <- NULL
     }
   }
@@ -428,9 +617,46 @@ bt_execution_spec <- function(execution = c("breakout", "same_close", "next_open
   )
 }
 
+.bt_native_usdt_m_future <- function(symbol, data = NULL, metadata = NULL) {
+  base <- .bt_base_contract_symbol(symbol)
+  quote_match <- grepl("(USDT|USDC|BUSD|FDUSD)$", base)
+  if (!isTRUE(quote_match)) {
+    return(FALSE)
+  }
+  symbol_future <- grepl("(_PERPETUAL$|_(QTR|NQTR)$|_[0-9]{6}$)", toupper(as.character(symbol)[1]))
+  classification <- .bt_native_first_chr(
+    .bt_xts_attr_first(data, c("type", "class", "subtype"), groups = c("classification", "metadata"))
+  )
+  classified_future <- grepl("future|futures", classification, ignore.case = TRUE)
+  isTRUE(symbol_future) || isTRUE(metadata$is_futures) || isTRUE(classified_future)
+}
+
+.bt_native_default_integer_qty <- function(data, symbol, metadata = NULL) {
+  step <- suppressWarnings(as.numeric(metadata$quantity_step)[1])
+  if (is.finite(step) && step > 0 && step < 1) {
+    return(FALSE)
+  }
+  !.bt_native_usdt_m_future(symbol, data = data, metadata = metadata)
+}
+
+.bt_native_max_leverage_value <- function(max_leverage) {
+  if (is.null(max_leverage) || length(max_leverage) == 0) {
+    return(Inf)
+  }
+  value <- suppressWarnings(as.numeric(max_leverage)[1])
+  if (is.infinite(value) && value > 0) {
+    return(Inf)
+  }
+  if (!is.finite(value) || value <= 0) {
+    stop("'max_leverage' must be positive or Inf.", call. = FALSE)
+  }
+  value
+}
+
 .bt_native_resolve_risk <- function(risk, data, symbol, ps_value = NULL, ps_type = NULL,
                                     initial_equity = 100000, reinvest = TRUE,
-                                    atr_mult = 2) {
+                                    atr_mult = 2, max_leverage = NULL,
+                                    integer_qty = NULL, metadata = NULL) {
   if (inherits(risk, "bt_risk_spec")) {
     return(risk)
   }
@@ -448,6 +674,12 @@ bt_execution_spec <- function(execution = c("breakout", "same_close", "next_open
     .bt_native_missing_arg_error(symbol, missing, "position sizing")
   }
 
+  max_leverage <- .bt_native_max_leverage_value(max_leverage)
+  integer_qty <- if (is.null(integer_qty)) {
+    .bt_native_default_integer_qty(data, symbol, metadata = metadata)
+  } else {
+    isTRUE(integer_qty)
+  }
   mode <- .bt_ps_mode(type)
   stop_source <- if (identical(type, "atr")) {
     "atr"
@@ -464,6 +696,8 @@ bt_execution_spec <- function(execution = c("breakout", "same_close", "next_open
     ps_type = type,
     stop_source = stop_source,
     atr_mult = atr_mult,
+    max_leverage = max_leverage,
+    integer_qty = integer_qty,
     reinvest = reinvest
   )
 }
@@ -507,8 +741,11 @@ bt_execution_spec <- function(execution = c("breakout", "same_close", "next_open
   if (identical(fee_type, "order")) {
     execution$commission_per_order <- fee_value
     execution$commission_per_contract <- NULL
-  } else {
+  } else if (identical(fee_type, "contract")) {
     execution$commission_per_contract <- fee_value
+    execution$commission_per_order <- NULL
+  } else {
+    execution$commission_per_contract <- NULL
     execution$commission_per_order <- NULL
   }
 
@@ -586,12 +823,20 @@ bt_execution_spec <- function(execution = c("breakout", "same_close", "next_open
 #' @param initial_equity Starting account equity when `risk` is `NULL`.
 #' @param reinvest Whether risk sizing uses current equity when `risk` is `NULL`.
 #' @param execution A `bt_execution_spec`.
+#' @param max_leverage Optional notional cap as a multiple of equity when `risk`
+#'   is `NULL`.
+#' @param integer_qty Optional quantity rounding override when `risk` is `NULL`.
+#'   The default is integer quantities except for Binance-style USDT-M crypto
+#'   futures or metadata with sub-unit quantity steps.
 #' @param start_date,end_date Optional date bounds used when fetching/subsetting.
 #' @param normalize_risk Optional annualized risk target in percent.
 #' @param geometric Kept for wrapper compatibility.
 #' @param only_returns If `TRUE`, return only the `xts` returns object.
 #' @param verbose If `TRUE`, print detailed stats and transactions.
 #' @param clean_di If `TRUE`, apply DI cleanup before running.
+#' @param funding Optional funding events for perpetual futures. `TRUE` reads
+#'   funding columns from `data` or fetches `finharvest::finget_binance_fut_funding()`;
+#'   an `xts`/`data.frame` supplies explicit `date`/`FundingRate` events.
 #' @param report If `TRUE`, print the standard console performance tables.
 #' @param show_quarterly If `TRUE`, print quarterly return and net-profit
 #'   tables in the console report.
@@ -613,6 +858,8 @@ bt_run_native <- function(ticker,
                           initial_equity = 100000,
                           reinvest = TRUE,
                           execution = bt_execution_spec(),
+                          max_leverage = NULL,
+                          integer_qty = NULL,
                           start_date = "1900-01-01",
                           end_date = Sys.Date(),
                           normalize_risk = NULL,
@@ -620,6 +867,7 @@ bt_run_native <- function(ticker,
                           only_returns = FALSE,
                           verbose = FALSE,
                           clean_di = TRUE,
+                          funding = NULL,
                           report = TRUE,
                           show_quarterly = FALSE,
                           research_blocks = TRUE) {
@@ -648,6 +896,13 @@ bt_run_native <- function(ticker,
   indicators <- .bt_native_indicators(prepared$data, prices, strategy)
   signals <- .bt_native_signals(prepared$data, prices, indicators, strategy)
   metadata <- .bt_native_metadata(prepared$data, prepared$symbol)
+  funding_events <- .bt_native_resolve_funding(
+    funding = funding,
+    data = prepared$data,
+    symbol = prepared$symbol,
+    start_date = start_date,
+    end_date = end_date
+  )
   risk <- .bt_native_resolve_risk(
     risk = risk,
     data = prepared$data,
@@ -656,7 +911,10 @@ bt_run_native <- function(ticker,
     ps_type = ps_type,
     initial_equity = initial_equity,
     reinvest = reinvest,
-    atr_mult = strategy$params$atr_mult %||% 2
+    atr_mult = strategy$params$atr_mult %||% 2,
+    max_leverage = max_leverage,
+    integer_qty = integer_qty,
+    metadata = metadata
   )
   execution <- .bt_native_resolve_execution(execution, metadata, prepared$symbol)
 
@@ -679,7 +937,8 @@ bt_run_native <- function(ticker,
     risk = risk,
     execution = execution,
     metadata = metadata,
-    symbol = prepared$symbol
+    symbol = prepared$symbol,
+    funding_events = funding_events
   )
 
   if (isTRUE(report)) {
@@ -695,6 +954,7 @@ bt_run_native <- function(ticker,
     equity = sim$equity,
     rets = raw_rets,
     trades = sim$trades,
+    funding_events = sim$funding,
     risk = risk,
     execution = execution,
     metadata = metadata,
@@ -709,6 +969,7 @@ bt_run_native <- function(ticker,
     equity = performance_equity,
     rets = rets,
     trades = sim$trades,
+    funding_events = sim$funding,
     risk = risk,
     execution = execution,
     metadata = metadata,
@@ -721,7 +982,8 @@ bt_run_native <- function(ticker,
     mktdata = mktdata,
     strategy = strategy,
     risk = risk,
-    metadata = metadata
+    metadata = metadata,
+    funding_events = sim$funding
   )
   info_blocks <- .bt_native_info_blocks(
     symbol = prepared$symbol,
@@ -739,6 +1001,7 @@ bt_run_native <- function(ticker,
     episodes = trade_diagnostics$episodes,
     excursions = trade_diagnostics$excursions,
     pyramid_events = trade_diagnostics$pyramid_events,
+    funding_events = sim$funding,
     geometric = geometric,
     research_blocks = research_blocks
   )
@@ -774,6 +1037,7 @@ bt_run_native <- function(ticker,
     mktdata = mktdata,
     positions = sim$positions,
     equity = sim$equity,
+    funding_events = sim$funding,
     performance_equity = performance_equity,
     trade_episodes = trade_diagnostics$episodes,
     trade_excursions = trade_diagnostics$excursions,
@@ -1228,7 +1492,8 @@ bt_run_portfolio <- function(tickers,
       ps_type = ps_type_i,
       initial_equity = initial_equity,
       reinvest = isTRUE(reinvest_i),
-      atr_mult = strategy_i$params$atr_mult %||% 2
+      atr_mult = strategy_i$params$atr_mult %||% 2,
+      metadata = metadata
     )
     if (inherits(risk_i, "bt_risk_spec")) {
       risk_i$initial_equity <- initial_equity
@@ -1513,6 +1778,16 @@ bt_search_native <- function(ticker,
   fee_type <- first_chr(
     meta$fee_type
   )
+  contract_model <- tolower(first_chr(meta$contract_model))
+  if (is.na(contract_model) || !nzchar(contract_model)) {
+    contract_model <- "linear"
+  }
+  leverage <- first_num(meta$leverage)
+  quantity_step <- first_num(meta$quantity_step)
+  min_qty <- first_num(meta$min_qty)
+  max_qty <- first_num(meta$max_qty)
+  min_notional <- first_num(meta$min_notional)
+  contract_size <- first_num(meta$contract_size)
   slip_value <- first_num(
     meta$slip_value
   )
@@ -1572,7 +1847,14 @@ bt_search_native <- function(ticker,
     is_di = isTRUE(di),
     maturity = meta$maturity,
     symbol = symbol,
-    root = first_chr(meta$root, .bt_native_root(symbol))
+    root = first_chr(meta$root, .bt_native_root(symbol)),
+    contract_model = contract_model,
+    leverage = leverage,
+    quantity_step = quantity_step,
+    min_qty = min_qty,
+    max_qty = max_qty,
+    min_notional = min_notional,
+    contract_size = contract_size
   )
 }
 
@@ -1766,15 +2048,25 @@ bt_search_native <- function(ticker,
   }
   if (!is.finite(mult) || mult <= 0) mult <- 1
 
-  instrument <- positionsizer::ps_instrument_spec(
+  instrument_args <- list(
     ticker = metadata$symbol %||% "",
     root = metadata$root %||% NULL,
     asset_type = if (isTRUE(metadata$is_futures)) "future" else "asset",
-    contract_model = "linear",
+    contract_model = metadata$contract_model %||% "linear",
     price_mode = "price",
     multiplier = mult,
     ticksize = tick_size,
-    tickvalue = tick_value
+    tickvalue = tick_value,
+    leverage = metadata$leverage,
+    quantity_step = metadata$quantity_step,
+    min_qty = metadata$min_qty,
+    max_qty = metadata$max_qty,
+    min_notional = metadata$min_notional
+  )
+  ps_formals <- names(formals(positionsizer::ps_instrument_spec))
+  instrument <- do.call(
+    positionsizer::ps_instrument_spec,
+    instrument_args[names(instrument_args) %in% ps_formals]
   )
   out <- positionsizer::ps_size_position(
     side = side,
@@ -1884,18 +2176,28 @@ bt_search_native <- function(ticker,
   if (identical(execution$fee, "nofee")) return(empty)
   qty_abs <- abs(as.numeric(qty_delta)[1])
   if (!is.finite(qty_abs) || qty_abs <= 0) return(empty)
+  px <- suppressWarnings(as.numeric(price)[1])
+  mult <- suppressWarnings(as.numeric(metadata$multiplier)[1])
+  if (!is.finite(mult) || mult <= 0) mult <- 1
+  notional <- if (is.finite(px) && px > 0) qty_abs * px * mult else 0
   commission_per_order <- suppressWarnings(as.numeric(execution$commission_per_order)[1])
   commission <- execution$commission_per_contract
   if (is.null(commission) && !is.finite(commission_per_order)) commission <- metadata$fees
   slippage <- .bt_native_slippage_per_contract(price, execution, metadata, tick_value = tick_value)
   commission <- suppressWarnings(as.numeric(commission)[1])
   if (!is.finite(commission)) commission <- 0
-  fees <- if (is.finite(commission_per_order)) {
-    commission_per_order
-  } else if (identical(execution$fee_type, "order")) {
-    commission
-  } else {
-    qty_abs * commission
+  fee_value <- .bt_native_first_num(execution$fee_value, commission, metadata$fees)
+  if (!is.finite(fee_value)) fee_value <- 0
+  fees <- switch(
+    execution$fee_type %||% "contract",
+    order = if (is.finite(commission_per_order)) commission_per_order else fee_value,
+    percent = notional * fee_value / 100,
+    bps = notional * fee_value / 10000,
+    contract = qty_abs * fee_value,
+    qty_abs * fee_value
+  )
+  if (!is.finite(fees)) {
+    fees <- 0
   }
   slippage <- qty_abs * slippage
   c(fees = fees, slippage = slippage, total_cost = fees + slippage)
@@ -2068,7 +2370,20 @@ bt_search_native <- function(ticker,
   )
 }
 
-.bt_native_simulate <- function(data, prices, indicators, signals, strategy, risk, execution, metadata, symbol) {
+.bt_native_empty_funding_ledger <- function() {
+  data.frame(
+    timestamp = as.POSIXct(character(), tz = "UTC"),
+    symbol = character(),
+    qty = numeric(),
+    price = numeric(),
+    funding_rate = numeric(),
+    funding_cash = numeric(),
+    equity = numeric(),
+    stringsAsFactors = FALSE
+  )
+}
+
+.bt_native_simulate <- function(data, prices, indicators, signals, strategy, risk, execution, metadata, symbol, funding_events = NULL) {
   n <- length(prices$close)
   idx <- prices$index
   exec_open <- if (!is.null(prices$exec_open)) prices$exec_open else prices$open
@@ -2087,6 +2402,11 @@ bt_search_native <- function(ticker,
   unit_path <- integer(n)
   equity[1] <- risk$initial_equity
   trades <- list()
+  funding_ledger <- list()
+  funding_events <- .bt_native_normalize_funding_object(funding_events)
+  funding_times <- if (NROW(funding_events)) as.POSIXct(funding_events$timestamp, tz = "UTC") else as.POSIXct(character(), tz = "UTC")
+  funding_multiplier <- suppressWarnings(as.numeric(metadata$multiplier)[1])
+  if (!is.finite(funding_multiplier) || funding_multiplier <= 0) funding_multiplier <- 1
 
   add_trade <- function(i, qty_delta, price, costs, reason, equity_after) {
     if (!is.finite(qty_delta) || qty_delta == 0) return(invisible(NULL))
@@ -2100,6 +2420,20 @@ bt_search_native <- function(ticker,
       costs = costs,
       reason = reason,
       equity_after = equity_after
+    )
+    invisible(NULL)
+  }
+
+  add_funding <- function(timestamp, qty_now, price, funding_rate, funding_cash, equity_after) {
+    funding_ledger[[length(funding_ledger) + 1L]] <<- data.frame(
+      timestamp = as.POSIXct(timestamp, tz = "UTC"),
+      symbol = symbol,
+      qty = qty_now,
+      price = price,
+      funding_rate = funding_rate,
+      funding_cash = funding_cash,
+      equity = equity_after,
+      stringsAsFactors = FALSE
     )
     invisible(NULL)
   }
@@ -2215,6 +2549,38 @@ bt_search_native <- function(ticker,
       return(eq)
     }
     eq + qty * (to_px - from_px) * pnl_multiplier
+  }
+
+  apply_funding <- function(i, eq, fallback_price) {
+    if (!NROW(funding_events) || qty == 0 || i <= 1L) {
+      return(eq)
+    }
+    prev_time <- as.POSIXct(idx[i - 1L], tz = "UTC")
+    current_time <- as.POSIXct(idx[i], tz = "UTC")
+    rows <- which(funding_times > prev_time & funding_times <= current_time)
+    if (!length(rows)) {
+      return(eq)
+    }
+    for (row_i in rows) {
+      rate <- suppressWarnings(as.numeric(funding_events$funding_rate[row_i]))
+      if (!is.finite(rate)) {
+        next
+      }
+      mark <- suppressWarnings(as.numeric(funding_events$mark_price[row_i]))
+      if (!is.finite(mark) || mark <= 0) {
+        mark <- suppressWarnings(as.numeric(fallback_price)[1])
+      }
+      if (!is.finite(mark) || mark <= 0) {
+        next
+      }
+      cash <- -qty * mark * funding_multiplier * rate
+      if (!is.finite(cash) || cash == 0) {
+        next
+      }
+      eq <- eq + cash
+      add_funding(funding_times[row_i], qty, mark, rate, cash, eq)
+    }
+    eq
   }
 
   txn_cost <- function(qty_delta, price, i) {
@@ -2388,6 +2754,7 @@ bt_search_native <- function(ticker,
     if (signal_mode) {
       eq <- equity[i - 1L]
       last_px <- prev_close
+      eq <- apply_funding(i, eq, close_i)
       events <- stop_event_sequence(i, qty)
       for (event in events) {
         px <- stop_event_exec_price(i, event, fallback = close_i)
@@ -2438,6 +2805,7 @@ bt_search_native <- function(ticker,
     } else {
       eq <- eq + qty * (close_i - prev_close) * pnl_multiplier
     }
+    eq <- apply_funding(i, eq, close_i)
 
     sig_i <- i - execution$delay
     if (sig_i >= 1L && sig_i <= n && is.finite(px) && px > 0) {
@@ -2558,7 +2926,8 @@ bt_search_native <- function(ticker,
     order.by = idx
   )
   trades_df <- if (length(trades)) do.call(rbind, trades) else .bt_native_empty_trade_frame()
-  list(equity = equity_xts, positions = positions, trades = trades_df)
+  funding_df <- if (length(funding_ledger)) do.call(rbind, funding_ledger) else .bt_native_empty_funding_ledger()
+  list(equity = equity_xts, positions = positions, trades = trades_df, funding = funding_df)
 }
 
 .bt_native_simulate_portfolio <- function(items, initial_equity, max_positions = Inf, priority = c("order")) {
@@ -3199,6 +3568,7 @@ bt_search_native <- function(ticker,
     net_pnl = numeric(),
     fees = numeric(),
     slippage = numeric(),
+    funding = numeric(),
     total_cost = numeric(),
     entry_atr = numeric(),
     entry_atr_value_per_unit = numeric(),
@@ -3340,7 +3710,7 @@ bt_search_native <- function(ticker,
   NA_real_
 }
 
-.bt_native_trade_diagnostics <- function(trades, positions, mktdata, strategy, risk, metadata) {
+.bt_native_trade_diagnostics <- function(trades, positions, mktdata, strategy, risk, metadata, funding_events = NULL) {
   empty <- list(
     episodes = .bt_native_empty_trade_episodes(),
     excursions = .bt_native_empty_trade_excursions(),
@@ -3364,6 +3734,25 @@ bt_search_native <- function(ticker,
   multiplier <- abs(suppressWarnings(as.numeric(metadata$multiplier)[1]))
   if (!is.finite(multiplier) || multiplier <= 0) multiplier <- 1
   pnl_multiplier <- multiplier * if (isTRUE(metadata$is_di) && grepl("^PU_", price_cols$close)) -1 else 1
+  if (!is.data.frame(funding_events) || !"funding_cash" %in% names(funding_events)) {
+    funding_events <- .bt_native_empty_funding_ledger()
+  }
+  if (NROW(funding_events) && !"timestamp" %in% names(funding_events)) {
+    funding_events <- .bt_native_empty_funding_ledger()
+  }
+  funding_times <- if (NROW(funding_events)) as.POSIXct(funding_events$timestamp, tz = "UTC") else as.POSIXct(character(), tz = "UTC")
+  trade_funding_sum <- function(entry_time, exit_time) {
+    if (!NROW(funding_events)) {
+      return(0)
+    }
+    entry_time <- as.POSIXct(entry_time, tz = "UTC")
+    exit_time <- as.POSIXct(exit_time, tz = "UTC")
+    rows <- funding_times > entry_time & funding_times <= exit_time
+    if (!any(rows, na.rm = TRUE)) {
+      return(0)
+    }
+    sum(suppressWarnings(as.numeric(funding_events$funding_cash[rows])), na.rm = TRUE)
+  }
 
   episodes <- list()
   excursions <- list()
@@ -3408,7 +3797,8 @@ bt_search_native <- function(ticker,
     fees <- sum(current$rows$fees, na.rm = TRUE)
     slippage <- sum(current$rows$slippage, na.rm = TRUE)
     total_cost <- sum(current$rows$total_cost, na.rm = TRUE)
-    net_pnl <- gross_pnl - total_cost
+    funding_cash <- trade_funding_sum(current$entry_time, exit_row$timestamp)
+    net_pnl <- gross_pnl - total_cost + funding_cash
     initial_risk_cash <- risk_price * abs(current$entry_qty) * abs(pnl_multiplier)
     if (!is.finite(initial_risk_cash) || initial_risk_cash <= 0) initial_risk_cash <- NA_real_
     entry_atr_value_per_unit <- if (is.finite(entry_atr)) entry_atr * abs(pnl_multiplier) else NA_real_
@@ -3440,6 +3830,7 @@ bt_search_native <- function(ticker,
       net_pnl = net_pnl,
       fees = fees,
       slippage = slippage,
+      funding = funding_cash,
       total_cost = total_cost,
       entry_atr = entry_atr,
       entry_atr_value_per_unit = entry_atr_value_per_unit,
@@ -3981,6 +4372,7 @@ bt_search_native <- function(ticker,
 .bt_native_info_blocks <- function(symbol, strategy, risk, execution, metadata, raw_stats,
                                    performance_stats, trades, raw_rets, rets, equity,
                                    performance_equity, episodes, excursions, pyramid_events,
+                                   funding_events = NULL,
                                    geometric = TRUE, research_blocks = TRUE) {
   monthly_title <- paste0(
     "Monthly Returns",
@@ -4090,9 +4482,10 @@ bt_search_native <- function(ticker,
   }
   total_fees <- pick_stat("fees")
   total_slippage <- pick_stat("slippage")
+  total_funding <- pick_stat("funding")
   total_cost <- pick_stat("total_cost", total_fees + total_slippage)
   net_profit <- pick_stat("net_profit")
-  gross_before_costs <- net_profit + total_cost
+  gross_before_costs <- net_profit + total_cost - total_funding
   trade_count <- pick_stat("num_trades", NROW(trades))
   is_futures <- FALSE
   if (!is.null(stats) && "IsFutures" %in% names(stats)) {
@@ -4121,22 +4514,26 @@ bt_search_native <- function(ticker,
     rows,
     "Fees",
     "Slippage",
+    "Funding",
     "Gross P/L",
     "Net P/L",
     "Impact Basis",
     "Fees Impact",
     "Slippage Impact",
+    "Funding Impact",
     "Total Cost Impact"
   )
   vals <- c(
     vals,
     .bt_native_format_money(total_fees),
     .bt_native_format_money(total_slippage),
+    .bt_native_format_money(total_funding),
     .bt_native_format_money(gross_before_costs),
     .bt_native_format_money(net_profit),
     impact_basis,
     .bt_native_format_pct(impact(total_fees)),
     .bt_native_format_pct(impact(total_slippage)),
+    .bt_native_format_pct(impact(total_funding)),
     .bt_native_format_pct(impact(total_cost))
   )
   out <- matrix(vals, ncol = 1, dimnames = list(rows, "Value"))
@@ -4230,7 +4627,7 @@ bt_search_native <- function(ticker,
   .bt_return_summary_values(x, periods_per_year, geometric = geometric)
 }
 
-.bt_native_stats <- function(equity, rets, trades, risk, execution, metadata, strategy) {
+.bt_native_stats <- function(equity, rets, trades, risk, execution, metadata, strategy, funding_events = NULL) {
   eq <- as.numeric(equity)
   ret <- as.numeric(rets$Log)
   ret <- ret[is.finite(ret)]
@@ -4253,6 +4650,10 @@ bt_search_native <- function(ticker,
   fees <- trade_sum("fees")
   slippage <- trade_sum("slippage")
   total_cost <- if ("total_cost" %in% names(trades)) trade_sum("total_cost") else fees + slippage
+  funding <- 0
+  if (!is.null(funding_events) && is.data.frame(funding_events) && "funding_cash" %in% names(funding_events)) {
+    funding <- sum(suppressWarnings(as.numeric(funding_events$funding_cash)), na.rm = TRUE)
+  }
   resolved_slip_value <- .bt_native_first_num(
     execution$slip_value,
     execution$slippage_bps,
@@ -4285,6 +4686,7 @@ bt_search_native <- function(ticker,
     net_profit = tail(eq, 1) - eq[1],
     fees = fees,
     slippage = slippage,
+    funding = funding,
     total_cost = total_cost,
     contracts_traded = contracts_traded,
     IsFutures = isTRUE(metadata$is_futures),

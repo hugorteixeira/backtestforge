@@ -105,7 +105,10 @@ equity. Open positions keep their original quantity until the next order.}
 \item{plot}{Logical; if \code{TRUE}, plots the portfolio using \code{rTradingPlots::tplot}.}
 
 \item{...}{Advanced options. Currently supports \code{only_returns} (return only
-the returns \code{xts}) and \code{clean_di} (apply DI-specific bad-row filtering).}
+the returns \code{xts}), \code{clean_di} (apply DI-specific bad-row filtering), and
+\code{funding} (perpetual-futures funding events, or \code{TRUE} to resolve them from
+the input data / \code{finharvest}), \code{max_leverage} (notional cap when \code{risk} is
+\code{NULL}), and \code{integer_qty} (quantity rounding override).}
 }
 \description{
 Builds a two-line exponential moving average crossover system where trades

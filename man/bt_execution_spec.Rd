@@ -32,8 +32,9 @@ exact touched channel price. \code{"exact_price"} is an alias for \code{"breakou
 Interpreted according to \code{fee_type}. If \code{NULL}, ticker metadata is used.}
 
 \item{fee_type}{Commission unit. \code{"contract"} charges \code{fee_value} per unit
-traded; \code{"order"} charges \code{fee_value} once per executed order. If \code{NULL},
-ticker metadata is used.}
+traded; \code{"order"} charges \code{fee_value} once per executed order;
+\code{"percent"} and \code{"bps"} charge against traded notional. If \code{NULL}, ticker
+metadata is used.}
 
 \item{commission_per_contract}{Optional explicit commission per unit traded.}
 

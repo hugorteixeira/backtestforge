@@ -138,9 +138,11 @@ DI pyramiding must preserve the DI contract model:
   `classification`, and `information`; plus legacy flat attrs
   `fut_multiplier`, `multiplier`, `fut_tick_size`,
   `tick_size`, `ticksize`, `fut_tick_value`, `tick_value`, `tickvalue`,
-  `fee_value`, `fee_type`, `slip_value`, `slip_type`,
+  `fee_value`, `broker_fee`, `taker_fee`, `fee_type`, `style_fee`,
+  `slip_value`, `slip_type`,
   `slippage_bps`, `slippage_ticks`, `slippage_points`,
-  `ps_value`, and `ps_type`.
+  `quantity_step`, `min_qty`, `max_qty`, `min_notional`, `ps_value`, and
+  `ps_type`.
 - If `multiplier` is absent but both `tickvalue` and `ticksize` are present,
   derive `multiplier = tickvalue / ticksize`.
 - Keep `ticksize` and `multiplier` separate.
@@ -153,8 +155,8 @@ DI pyramiding must preserve the DI contract model:
   slippage cost, and `total_cost = fees + slippage` for the equity debit.
 - Print a `Costs & Slippage Summary` before `Returns Summary`, including
   cost values and cost impact percentages versus gross P/L.
-- Expose scenario-test cost overrides in wrappers and specs: `fee_value` in
-  account currency, `fee_type = "contract"` or `"order"`, plus
+- Expose scenario-test cost overrides in wrappers and specs: `fee_value` with
+  `fee_type = "contract"`, `"order"`, `"percent"`, or `"bps"`, plus
   `slip_value` with `slip_type = "bps"`, `"ticks"`, `"points"`, or
   `"cash"`.
 - Expose `ps_value` and `ps_type` for position sizing. `NULL` values are

@@ -111,9 +111,11 @@ trades <- results$trades    # Transaction details
 ```
 
 In `results$trades`, `fees` is commission only, `slippage` is the estimated
-slippage cost, and `total_cost` is the amount subtracted from equity.
-Console reports include a `Costs & Slippage Summary` section before the returns
-summary, with cost values and cost impact percentages.
+slippage cost, and `total_cost` is the execution-cost amount subtracted from
+equity. Perpetual-futures funding cashflows are kept separately in
+`results$funding_events` and summarized as `stats$funding`. Console reports
+include a `Costs & Slippage Summary` section before the returns summary, with
+fees, slippage, funding, and impact percentages.
 
 Parameter search for agents:
 
@@ -147,8 +149,8 @@ bt_eldoc(
   atr_n = 20,          # ATR lookback for ATR sizing
   atr_mult = 2,        # ATR risk multiple when ps_type = "atr"
   fee = "normal",      # Fee handling
-  fee_value = NULL,    # Account-currency commission; NULL reads metadata
-  fee_type = NULL,     # "contract" or "order"; NULL reads metadata
+  fee_value = NULL,    # Commission value; NULL reads metadata
+  fee_type = NULL,     # "contract", "order", "percent", or "bps"
   slip_value = NULL, # Optional slippage override; NULL reads metadata
   slip_type = NULL,# "bps", "ticks", "points", or "cash"; NULL reads metadata
   start_date = "1900-01-01",
@@ -164,10 +166,30 @@ When `ps_value`/`ps_type`, `fee_value`/`fee_type`, or
 metadata. If the required metadata is missing, the backtest errors and asks for
 the missing argument. `fee = "nofee"` disables fee and slippage requirements.
 
-`fee_value` is money. With `fee_type = "contract"`, `fee_value = 4` charges 4
-per contract/share traded. With `fee_type = "order"`, the same 4 is charged once
-for the whole executed order. Slippage can be overridden with the same native
-units used by metadata: basis points, ticks, price points, or cash per contract.
+`fee_type = "contract"` treats `fee_value` as money per contract/share traded.
+`fee_type = "order"` charges it once for the whole executed order.
+`fee_type = "percent"` and `"bps"` charge against traded notional
+(`abs(qty_delta) * price * multiplier`), which is the intended path for Binance
+USDT-M futures fees. When `finharvest` codigos attrs are present,
+`costs$style_fee = "percent"` is accepted as the fee type and `broker_fee` or
+`taker_fee` can provide the fee value. Slippage can be overridden with the same
+native units used by metadata: basis points, ticks, price points, or cash per
+contract.
+
+For Binance-style USDT-M crypto futures, wrapper-created risk specs default to
+decimal quantities and forward exchange filters such as `quantity_step`,
+`min_qty`, `max_qty`, and `min_notional` when they are present in metadata. Pass
+`max_leverage = 50` to cap notional at 50x equity when you want the sizing layer
+to model the exchange leverage setting as a notional limit/margin estimate;
+leverage does not multiply returns. Pass `integer_qty = TRUE` only when an
+instrument should trade whole units.
+
+Perpetual funding is a cashflow, not slippage and not a price adjustment. Pass
+`funding = TRUE` to read funding columns from the supplied `xts` or fetch
+`finharvest::finget_binance_fut_funding()` for `_PERPETUAL` tickers. You can
+also pass an explicit `xts`/`data.frame` with `date`/`timestamp`,
+`FundingRate`/`funding_rate`, and optional `FundingMarkPrice`/`mark_price`.
+Positive funding rates debit longs and credit shorts while the position is open.
 
 ElDoc execution modes:
 

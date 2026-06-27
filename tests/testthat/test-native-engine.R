@@ -145,6 +145,41 @@ test_that("native wrappers accept starting equity", {
   expect_equal(as.numeric(sma$equity$Equity[1]), 350000)
 })
 
+test_that("native wrappers pass leverage and default decimal quantity for USDT-M futures", {
+  x <- bt_test_ohlc(160)
+  attr(x, "symbol") <- "BTCUSDT_PERPETUAL"
+  attr(x, "classification") <- list(type = "Crypto Futures")
+
+  res <- bt_eldoc(
+    x,
+    up = 12,
+    down = 8,
+    ps_value = 100,
+    ps_type = "notional",
+    fee = "nofee",
+    hide_details = TRUE,
+    max_leverage = 50
+  )
+
+  expect_equal(res$spec$risk$max_leverage, 50)
+  expect_false(res$spec$risk$integer_qty)
+
+  forced <- bt_ema(
+    x,
+    fast = 8,
+    slow = 20,
+    ps_value = 100,
+    ps_type = "notional",
+    fee = "nofee",
+    hide_details = TRUE,
+    max_leverage = 25,
+    integer_qty = TRUE
+  )
+
+  expect_equal(forced$spec$risk$max_leverage, 25)
+  expect_true(forced$spec$risk$integer_qty)
+})
+
 test_that("native reinvest sizing uses current equity at entry", {
   metadata <- list(multiplier = 1, tick_size = 1)
   risk_reinvest <- bt_risk_spec(
@@ -354,6 +389,18 @@ test_that("native metadata uses finharvest xts contract attrs", {
   expect_equal(order_costs[["slippage"]], 0)
   expect_equal(order_costs[["total_cost"]], 4)
 
+  percent_execution <- bt_execution_spec(fee = "normal", fee_value = 0.05, fee_type = "percent", slip_value = 0)
+  percent_costs <- .bt_native_txn_cost_components(3, 100, percent_execution, meta)
+  expect_equal(percent_costs[["fees"]], 67.5)
+  expect_equal(percent_costs[["slippage"]], 0)
+  expect_equal(percent_costs[["total_cost"]], 67.5)
+
+  bps_execution <- bt_execution_spec(fee = "normal", fee_value = 5, fee_type = "bps", slip_value = 0)
+  bps_costs <- .bt_native_txn_cost_components(3, 100, bps_execution, meta)
+  expect_equal(bps_costs[["fees"]], 67.5)
+  expect_equal(bps_costs[["slippage"]], 0)
+  expect_equal(bps_costs[["total_cost"]], 67.5)
+
   tick_slip_execution <- bt_execution_spec(fee = "normal", fee_value = 0, slip_value = 2, slip_type = "ticks")
   tick_slip_costs <- .bt_native_txn_cost_components(3, 100, tick_slip_execution, meta)
   expect_equal(tick_slip_costs[["fees"]], 0)
@@ -448,9 +495,11 @@ test_that("native metadata uses finharvest xts contract attrs", {
   expect_equal(cost_table["Trades", "Value"], "4")
   expect_equal(cost_table["Fees", "Value"], "10,00")
   expect_equal(cost_table["Slippage", "Value"], "10,00")
+  expect_equal(cost_table["Funding", "Value"], "0,00")
   expect_equal(cost_table["Gross P/L", "Value"], "100,00")
   expect_equal(cost_table["Fees Impact", "Value"], "10.00%")
   expect_equal(cost_table["Slippage Impact", "Value"], "10.00%")
+  expect_equal(cost_table["Funding Impact", "Value"], "0.00%")
   expect_equal(cost_table["Total Cost Impact", "Value"], "20.00%")
   expect_equal(cost_table["Impact Basis", "Value"], "profit consumed")
   expect_false("Contracts" %in% rownames(cost_table))
@@ -475,6 +524,107 @@ test_that("native metadata uses finharvest xts contract attrs", {
   )
   expect_equal(res$stats$Multiplier, 450)
   expect_equal(res$stats$TickSize, 0.01)
+})
+
+test_that("native funding ledger applies long debits and short credits", {
+  idx <- as.POSIXct("2026-01-01 00:00:00", tz = "UTC") + c(0, 3600, 7200)
+  x <- xts::xts(
+    cbind(
+      Open = c(100, 100, 100),
+      High = c(100, 100, 100),
+      Low = c(100, 100, 100),
+      Close = c(100, 100, 100)
+    ),
+    order.by = idx
+  )
+  attr(x, "symbol") <- "BTCUSDT_PERPETUAL"
+  attr(x, "fut_tick_size") <- 0.1
+  attr(x, "fut_multiplier") <- 1
+
+  indicators <- xts::xts(
+    cbind(
+      DonchianUpper = c(NA, 101, 101),
+      DonchianLower = c(NA, 99, 99)
+    ),
+    order.by = idx
+  )
+  funding <- data.frame(
+    timestamp = idx[3],
+    funding_rate = 0.01,
+    mark_price = 100,
+    stringsAsFactors = FALSE
+  )
+  risk <- bt_risk_spec(
+    mode = "fixed",
+    fixed_qty = 1,
+    ps_type = "contract",
+    initial_equity = 1000,
+    integer_qty = FALSE
+  )
+  execution <- bt_execution_spec(execution = "same_close", fee = "nofee")
+  prices <- .bt_native_price_set(x, "BTCUSDT_PERPETUAL")
+  metadata <- .bt_native_metadata(x, "BTCUSDT_PERPETUAL")
+
+  long_signals <- xts::xts(
+    cbind(
+      LongEntry = c(FALSE, TRUE, FALSE),
+      LongExit = c(FALSE, FALSE, FALSE),
+      ShortEntry = c(FALSE, FALSE, FALSE),
+      ShortExit = c(FALSE, FALSE, FALSE)
+    ),
+    order.by = idx
+  )
+  long_strategy <- bt_strategy_spec("donchian", up = 2, down = 2, long = TRUE, short = FALSE)
+  long_sim <- .bt_native_simulate(
+    data = x,
+    prices = prices,
+    indicators = indicators,
+    signals = long_signals,
+    strategy = long_strategy,
+    risk = risk,
+    execution = execution,
+    metadata = metadata,
+    symbol = "BTCUSDT_PERPETUAL",
+    funding_events = funding
+  )
+  expect_equal(long_sim$funding$funding_cash, -1)
+  expect_equal(as.numeric(tail(long_sim$equity$Equity, 1)), 999)
+  long_diag <- .bt_native_trade_diagnostics(
+    trades = long_sim$trades,
+    positions = long_sim$positions,
+    mktdata = .bt_native_mktdata(x, indicators, long_signals),
+    strategy = long_strategy,
+    risk = risk,
+    metadata = metadata,
+    funding_events = long_sim$funding
+  )
+  expect_equal(long_diag$episodes$funding, -1)
+  expect_equal(long_diag$episodes$net_pnl, -1)
+
+  short_signals <- xts::xts(
+    cbind(
+      LongEntry = c(FALSE, FALSE, FALSE),
+      LongExit = c(FALSE, FALSE, FALSE),
+      ShortEntry = c(FALSE, TRUE, FALSE),
+      ShortExit = c(FALSE, FALSE, FALSE)
+    ),
+    order.by = idx
+  )
+  short_strategy <- bt_strategy_spec("donchian", up = 2, down = 2, long = FALSE, short = TRUE)
+  short_sim <- .bt_native_simulate(
+    data = x,
+    prices = prices,
+    indicators = indicators,
+    signals = short_signals,
+    strategy = short_strategy,
+    risk = risk,
+    execution = execution,
+    metadata = metadata,
+    symbol = "BTCUSDT_PERPETUAL",
+    funding_events = funding
+  )
+  expect_equal(short_sim$funding$funding_cash, 1)
+  expect_equal(as.numeric(tail(short_sim$equity$Equity, 1)), 1001)
 })
 
 test_that("native metadata reads nested plugin attrs", {
@@ -542,6 +692,41 @@ test_that("native metadata reads nested plugin attrs", {
   expect_equal(res$stats$SlipValue, 7)
   expect_equal(res$spec$risk$ps_type, "eldoc")
   expect_equal(res$spec$risk$risk_pct, 2)
+})
+
+test_that("native metadata maps finharvest Binance style_fee percent costs", {
+  x <- bt_test_ohlc(120)
+  attr(x, "symbol") <- "BTCUSDT_PERPETUAL"
+  attr(x, "fee_value") <- NULL
+  attr(x, "fee_type") <- NULL
+  attr(x, "contract") <- list(
+    ticksize = 0.1,
+    multiplier = 1,
+    contract_model = "linear",
+    quantity_step = 0.001,
+    min_qty = 0.001,
+    max_qty = 1000,
+    min_notional = 50
+  )
+  attr(x, "costs") <- list(
+    broker_fee = 0.05,
+    style_fee = "percent",
+    taker_fee = 0.05,
+    maker_fee = 0.02,
+    fee_tier = "VIP0",
+    slip_value = 2,
+    slip_type = "bps"
+  )
+
+  meta <- .bt_native_metadata(x, "BTCUSDT_PERPETUAL")
+  expect_equal(meta$fees, 0.05)
+  expect_equal(meta$fee_type, "percent")
+  expect_equal(meta$quantity_step, 0.001)
+  expect_equal(meta$max_qty, 1000)
+  execution <- .bt_native_resolve_execution(bt_execution_spec(fee = "normal"), meta, "BTCUSDT_PERPETUAL")
+  expect_equal(execution$fee_type, "percent")
+  costs <- .bt_native_txn_cost_components(0.5, 100000, execution, meta)
+  expect_equal(costs[["fees"]], 25)
 })
 
 test_that("native report prints costs before returns summary", {

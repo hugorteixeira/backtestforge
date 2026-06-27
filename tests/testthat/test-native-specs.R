@@ -35,6 +35,16 @@ test_that("native spec builders normalize public aliases", {
   expect_null(execution$commission_per_contract)
   expect_equal(execution$slippage_ticks, 2)
   expect_false(execution$close_on_end)
+
+  percent_execution <- bt_execution_spec(fee_value = 0.05, fee_type = "percent")
+  expect_equal(percent_execution$fee_type, "percent")
+  expect_null(percent_execution$commission_per_contract)
+  expect_null(percent_execution$commission_per_order)
+
+  bps_execution <- bt_execution_spec(fee_value = 5, fee_type = "bps")
+  expect_equal(bps_execution$fee_type, "bps")
+  expect_null(bps_execution$commission_per_contract)
+  expect_null(bps_execution$commission_per_order)
 })
 
 test_that("native spec builders reject invalid values", {

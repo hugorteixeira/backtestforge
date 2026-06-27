@@ -147,6 +147,21 @@
     clean_di <- isTRUE(extra_args$clean_di)
     extra_args$clean_di <- NULL
   }
+  funding <- NULL
+  if (length(extra_args) && "funding" %in% names(extra_args)) {
+    funding <- extra_args$funding
+    extra_args$funding <- NULL
+  }
+  max_leverage <- NULL
+  if (length(extra_args) && "max_leverage" %in% names(extra_args)) {
+    max_leverage <- extra_args$max_leverage
+    extra_args$max_leverage <- NULL
+  }
+  integer_qty <- NULL
+  if (length(extra_args) && "integer_qty" %in% names(extra_args)) {
+    integer_qty <- isTRUE(extra_args$integer_qty)
+    extra_args$integer_qty <- NULL
+  }
   if (length(extra_args)) {
     stop(sprintf("Unused argument(s): %s", paste(names(extra_args), collapse = ", ")), call. = FALSE)
   }
@@ -155,7 +170,10 @@
     ps_type = ps_type,
     slip_value = slip_value,
     only_returns = only_returns,
-    clean_di = clean_di
+    clean_di = clean_di,
+    funding = funding,
+    max_leverage = max_leverage,
+    integer_qty = integer_qty
   )
 }
 
@@ -236,7 +254,10 @@
 #'   equity. Open positions keep their original quantity until the next order.
 #' @param plot Logical; if `TRUE`, plots the portfolio using `rTradingPlots::tplot`.
 #' @param ... Advanced options. Currently supports `only_returns` (return only
-#'   the returns `xts`) and `clean_di` (apply DI-specific bad-row filtering).
+#'   the returns `xts`), `clean_di` (apply DI-specific bad-row filtering), and
+#'   `funding` (perpetual-futures funding events, or `TRUE` to resolve them from
+#'   the input data / `finharvest`), `max_leverage` (notional cap when `risk` is
+#'   `NULL`), and `integer_qty` (quantity rounding override).
 #'
 #' @return If `only_returns = TRUE`, returns an `xts` with discrete and log
 #'   returns. Otherwise, returns a named list with elements:
@@ -314,6 +335,8 @@ bt_eldoc_exp <- function(ticker, up = 40, down = 40, ps_value = NULL, initial_eq
       slip_value = opts$slip_value,
       slip_type = slip_type
     ),
+    max_leverage = opts$max_leverage,
+    integer_qty = opts$integer_qty,
     start_date = start_date,
     end_date = end_date,
     normalize_risk = normalize_risk,
@@ -321,6 +344,7 @@ bt_eldoc_exp <- function(ticker, up = 40, down = 40, ps_value = NULL, initial_eq
     only_returns = opts$only_returns,
     verbose = verbose,
     clean_di = opts$clean_di,
+    funding = opts$funding,
     report = !isTRUE(hide_details),
     show_quarterly = show_quarterly,
     research_blocks = research_blocks
@@ -340,7 +364,10 @@ bt_eldoc_exp <- function(ticker, up = 40, down = 40, ps_value = NULL, initial_eq
 #' @param atr_n Integer ATR lookback used when ATR sizing is selected and for
 #'   diagnostic columns.
 #' @param ... Advanced options. Currently supports `only_returns` (return only
-#'   the returns `xts`) and `clean_di` (apply DI-specific bad-row filtering).
+#'   the returns `xts`), `clean_di` (apply DI-specific bad-row filtering), and
+#'   `funding` (perpetual-futures funding events, or `TRUE` to resolve them from
+#'   the input data / `finharvest`), `max_leverage` (notional cap when `risk` is
+#'   `NULL`), and `integer_qty` (quantity rounding override).
 #'   Pyramiding/research arguments are intentionally rejected; use
 #'   `bt_eldoc_exp()` for that surface.
 #' @export
@@ -408,7 +435,10 @@ bt_eldoc <- function(ticker, up = 40, down = 40, ps_value = NULL, initial_equity
 #' @param fast Integer length of the fast EMA (default 20).
 #' @param slow Integer length of the slow EMA (default 50).
 #' @param ... Advanced options. Currently supports `only_returns` (return only
-#'   the returns `xts`) and `clean_di` (apply DI-specific bad-row filtering).
+#'   the returns `xts`), `clean_di` (apply DI-specific bad-row filtering), and
+#'   `funding` (perpetual-futures funding events, or `TRUE` to resolve them from
+#'   the input data / `finharvest`), `max_leverage` (notional cap when `risk` is
+#'   `NULL`), and `integer_qty` (quantity rounding override).
 #' @export
 bt_ema <- function(ticker, fast = 20, slow = 50, ps_value = NULL, initial_equity = 100000, ps_type = NULL, execution = "same_close", fee = "normal", fee_value = NULL, fee_type = NULL, slip_value = NULL, slip_type = NULL, start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, normalize_risk = NULL, geometric = TRUE, verbose = FALSE, hide_details = FALSE, show_quarterly = FALSE, reinvest = TRUE, plot = FALSE, ...) {
   opts <- .bt_wrapper_options(list(...), ps_value = ps_value, ps_type = ps_type, slip_value = slip_value)
@@ -436,6 +466,8 @@ bt_ema <- function(ticker, fast = 20, slow = 50, ps_value = NULL, initial_equity
       slip_value = opts$slip_value,
       slip_type = slip_type
     ),
+    max_leverage = opts$max_leverage,
+    integer_qty = opts$integer_qty,
     start_date = start_date,
     end_date = end_date,
     normalize_risk = normalize_risk,
@@ -443,6 +475,7 @@ bt_ema <- function(ticker, fast = 20, slow = 50, ps_value = NULL, initial_equity
     only_returns = opts$only_returns,
     verbose = verbose,
     clean_di = opts$clean_di,
+    funding = opts$funding,
     report = !isTRUE(hide_details),
     show_quarterly = show_quarterly
   )
@@ -484,6 +517,8 @@ bt_sma <- function(ticker, fast = 20, slow = 50, ps_value = NULL, initial_equity
       slip_value = opts$slip_value,
       slip_type = slip_type
     ),
+    max_leverage = opts$max_leverage,
+    integer_qty = opts$integer_qty,
     start_date = start_date,
     end_date = end_date,
     normalize_risk = normalize_risk,
@@ -491,6 +526,7 @@ bt_sma <- function(ticker, fast = 20, slow = 50, ps_value = NULL, initial_equity
     only_returns = opts$only_returns,
     verbose = verbose,
     clean_di = opts$clean_di,
+    funding = opts$funding,
     report = !isTRUE(hide_details),
     show_quarterly = show_quarterly
   )
@@ -512,7 +548,10 @@ bt_sma <- function(ticker, fast = 20, slow = 50, ps_value = NULL, initial_equity
 #' @param atr_n Integer ATR lookback used when ATR sizing is selected and for
 #'   diagnostic columns.
 #' @param ... Advanced options. Currently supports `only_returns` (return only
-#'   the returns `xts`) and `clean_di` (apply DI-specific bad-row filtering).
+#'   the returns `xts`), `clean_di` (apply DI-specific bad-row filtering), and
+#'   `funding` (perpetual-futures funding events, or `TRUE` to resolve them from
+#'   the input data / `finharvest`), `max_leverage` (notional cap when `risk` is
+#'   `NULL`), and `integer_qty` (quantity rounding override).
 #' @export
 bt_tsmom <- function(ticker, lookback = 252, threshold = 0, ps_value = 100, initial_equity = 100000, ps_type = "notional", execution = "next_open", atr_n = 20, fee = "normal", fee_value = NULL, fee_type = NULL, slip_value = NULL, slip_type = NULL, start_date = "1900-01-01", end_date = Sys.Date(), long = TRUE, short = TRUE, invert_signals = FALSE, normalize_risk = NULL, geometric = TRUE, verbose = FALSE, hide_details = FALSE, show_quarterly = FALSE, reinvest = TRUE, plot = FALSE, ...) {
   if (is.null(ps_value)) ps_value <- 100
@@ -543,6 +582,8 @@ bt_tsmom <- function(ticker, lookback = 252, threshold = 0, ps_value = 100, init
       slip_value = opts$slip_value,
       slip_type = slip_type
     ),
+    max_leverage = opts$max_leverage,
+    integer_qty = opts$integer_qty,
     start_date = start_date,
     end_date = end_date,
     normalize_risk = normalize_risk,
@@ -550,6 +591,7 @@ bt_tsmom <- function(ticker, lookback = 252, threshold = 0, ps_value = 100, init
     only_returns = opts$only_returns,
     verbose = verbose,
     clean_di = opts$clean_di,
+    funding = opts$funding,
     report = !isTRUE(hide_details),
     show_quarterly = show_quarterly,
     research_blocks = FALSE

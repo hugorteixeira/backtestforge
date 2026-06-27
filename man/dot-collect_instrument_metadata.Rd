@@ -13,7 +13,7 @@
 A list with \code{tick_size}, \code{tick_value}, \code{multiplier}, \code{maturity},
 \code{currency}, \code{fees}, \code{fee_type}, \code{slip_value}, \code{slippage_bps},
 \code{slippage_ticks}, \code{slippage_points}, \code{slippage_unit}, \code{ps_value},
-\code{ps_type}, and \code{root} entries.
+\code{ps_type}, \code{root}, and exchange sizing filter entries.
 }
 \description{
 Inspects direct and nested plugin attributes of an xts time series to collect

@@ -14,6 +14,8 @@ bt_run_native(
   initial_equity = 1e+05,
   reinvest = TRUE,
   execution = bt_execution_spec(),
+  max_leverage = NULL,
+  integer_qty = NULL,
   start_date = "1900-01-01",
   end_date = Sys.Date(),
   normalize_risk = NULL,
@@ -21,6 +23,7 @@ bt_run_native(
   only_returns = FALSE,
   verbose = FALSE,
   clean_di = TRUE,
+  funding = NULL,
   report = TRUE,
   show_quarterly = FALSE,
   research_blocks = TRUE
@@ -45,6 +48,13 @@ resolved from arguments or ticker metadata.}
 
 \item{execution}{A \code{bt_execution_spec}.}
 
+\item{max_leverage}{Optional notional cap as a multiple of equity when \code{risk}
+is \code{NULL}.}
+
+\item{integer_qty}{Optional quantity rounding override when \code{risk} is \code{NULL}.
+The default is integer quantities except for Binance-style USDT-M crypto
+futures or metadata with sub-unit quantity steps.}
+
 \item{start_date, end_date}{Optional date bounds used when fetching/subsetting.}
 
 \item{normalize_risk}{Optional annualized risk target in percent.}
@@ -56,6 +66,10 @@ resolved from arguments or ticker metadata.}
 \item{verbose}{If \code{TRUE}, print detailed stats and transactions.}
 
 \item{clean_di}{If \code{TRUE}, apply DI cleanup before running.}
+
+\item{funding}{Optional funding events for perpetual futures. \code{TRUE} reads
+funding columns from \code{data} or fetches \code{finharvest::finget_binance_fut_funding()};
+an \code{xts}/\code{data.frame} supplies explicit \code{date}/\code{FundingRate} events.}
 
 \item{report}{If \code{TRUE}, print the standard console performance tables.}
 

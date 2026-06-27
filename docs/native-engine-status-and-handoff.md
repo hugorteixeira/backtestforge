@@ -174,9 +174,10 @@ Contract metadata comes from the `xts` object only. Do not infer multiplier,
 tick size, fees, or slippage from ticker roots. The current `finharvest` runtime
 shape stores stable attrs as nested plugin lists:
 `contract` carries contract specs such as `ticksize`, `tickvalue`, `multiplier`,
-`root`, and `timeframe`; `costs` carries `fee_value`, `fee_type`, `slip_value`,
-`slip_type`, `ps_value`, and `ps_type`. Direct legacy attrs are still accepted
-for older objects.
+`root`, `timeframe`, `quantity_step`, `min_qty`, `max_qty`, and
+`min_notional`; `costs` carries `fee_value`, `broker_fee`, `taker_fee`,
+`fee_type`, `style_fee`, `slip_value`, `slip_type`, `ps_value`, and `ps_type`.
+Direct legacy attrs are still accepted for older objects.
 
 Recognized metadata fields include:
 
@@ -189,12 +190,19 @@ Recognized metadata fields include:
 - `tick_value`
 - `tickvalue`
 - `fee_value`
+- `broker_fee`
+- `taker_fee`
 - `fee_type`
+- `style_fee`
 - `slip_value`
 - `slip_type`
 - `slippage_bps`
 - `slippage_ticks`
 - `slippage_points`
+- `quantity_step`
+- `min_qty`
+- `max_qty`
+- `min_notional`
 - `ps_value`
 - `ps_type`
 
@@ -225,9 +233,10 @@ When `backtestforge` fetches symbols through `finharvest::finget()`, it requests
 `attrs_source = "fintickers"` remains an explicit opt-in path for callers that
 preload an `xts` object and pass it directly.
 
-Backtest wrappers expose cost overrides directly. `fee_value` is account
-currency, with `fee_type = "contract"` charging per unit traded and
-`fee_type = "order"` charging once for the whole executed order.
+Backtest wrappers expose cost overrides directly. `fee_type = "contract"`
+charges `fee_value` in account currency per unit traded, `fee_type = "order"`
+charges it once for the whole executed order, and `fee_type = "percent"` /
+`"bps"` charges against traded notional.
 `slip_value` uses `slip_type` (`"bps"`, `"ticks"`, `"points"`, or
 `"cash"`) and overrides the instrument slippage metadata for scenario tests.
 The public position-sizing arguments are `ps_value` and `ps_type`;
@@ -240,7 +249,19 @@ metadata is missing, the native engine errors instead of guessing. `fee =
 sizing from arguments or metadata.
 
 Backtest wrappers also expose `initial_equity`, defaulting to `100000`, and pass
-it through to `bt_risk_spec()` for Donchian, EMA, SMA, and `bt_batch()` runs.
+it through to `bt_risk_spec()` for Donchian, EMA, SMA, TSMOM, and `bt_batch()`
+runs.
+They also forward `max_leverage` and `integer_qty` through `...` when `risk` is
+not supplied. Binance-style USDT-M crypto futures default to decimal quantities;
+`max_leverage` is a notional cap/margin estimate, not a return multiplier.
+
+Single-instrument native runs can also apply perpetual funding cashflows.
+`funding = TRUE` reads funding columns from the input `xts` or fetches
+`finharvest::finget_binance_fut_funding()` for `_PERPETUAL` symbols.
+Explicit funding can be supplied as an `xts`/`data.frame` with
+`date`/`timestamp`, `funding_rate`, and optional `mark_price`. Funding is kept
+out of `trades$total_cost`; it is returned in `funding_events`, summarized in
+`stats$funding`, and included in the equity curve while the position is open.
 
 `ticksize` and `multiplier` are intentionally separate: `ticksize` is the minimum
 price increment, while `multiplier` is the cash value of one full price point.
