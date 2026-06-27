@@ -5,7 +5,7 @@
 \title{Build a serializable trend-following strategy specification}
 \usage{
 bt_strategy_spec(
-  type = c("donchian", "eldoc", "ema", "sma", "tsmom"),
+  type = c("donchian", "eldoc", "ema", "sma", "tsmom", "hold"),
   ...,
   long = TRUE,
   short = TRUE,
@@ -13,8 +13,8 @@ bt_strategy_spec(
 )
 }
 \arguments{
-\item{type}{Strategy type. Use \code{"eldoc"}/\code{"donchian"}, \code{"ema"}, \code{"sma"}, or
-\code{"tsmom"}.}
+\item{type}{Strategy type. Use \code{"eldoc"}/\code{"donchian"}, \code{"ema"}, \code{"sma"},
+\code{"tsmom"}, or \code{"hold"}.}
 
 \item{...}{Indicator parameters (\code{up}/\code{down} for ElDoc, \code{fast}/\code{slow} for
 moving averages, \code{lookback} for TSMOM), plus advanced ElDoc settings.}

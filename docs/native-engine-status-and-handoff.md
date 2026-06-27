@@ -253,15 +253,29 @@ it through to `bt_risk_spec()` for Donchian, EMA, SMA, TSMOM, and `bt_batch()`
 runs.
 They also forward `max_leverage` and `integer_qty` through `...` when `risk` is
 not supplied. Binance-style USDT-M crypto futures default to decimal quantities;
-`max_leverage` is a notional cap/margin estimate, not a return multiplier.
+`max_leverage` is a notional cap/margin estimate, not a return multiplier. The
+same decimal linear-futures path applies to Binance `_PERPETUAL`, `QTR`/`NQTR`,
+and dated delivery tickers such as `BTCUSDT_260627`.
 
 Single-instrument native runs can also apply perpetual funding cashflows.
 `funding = TRUE` reads funding columns from the input `xts` or fetches
-`finharvest::finget_binance_fut_funding()` for `_PERPETUAL` symbols.
-Explicit funding can be supplied as an `xts`/`data.frame` with
-`date`/`timestamp`, `funding_rate`, and optional `mark_price`. Funding is kept
-out of `trades$total_cost`; it is returned in `funding_events`, summarized in
-`stats$funding`, and included in the equity curve while the position is open.
+`finharvest::finget_binance_fut_funding()` only for explicit `_PERPETUAL`
+symbols. Binance `QTR`/`NQTR`/dated delivery futures are not auto-mapped to the
+matching perpetual; they keep zero funding unless explicit funding events are
+supplied as an `xts`/`data.frame` with `date`/`timestamp`, `funding_rate`, and
+optional `mark_price`. Funding is kept out of `trades$total_cost`; it is
+returned in `funding_events`, summarized in `stats$funding`, and included in the
+equity curve while the position is open.
+
+Completed trades also produce `trade_audit`. This audit ledger contains
+order-level `entry`, `pyramid`, and `exit` rows with signal price,
+slippage-adjusted fill price, fees, slippage, total cost, and bars held.
+Perpetual-funding runs add a separate `event_type = "funding"` row per
+completed trade with funding paid/received and event count.
+
+`bt_hold()` is a native wrapper for first-close to last-close hold tests. It
+uses the same execution, fee, slippage, funding, and audit ledgers as the other
+wrappers, and defaults to 100% notional sizing with fractional quantity.
 
 `ticksize` and `multiplier` are intentionally separate: `ticksize` is the minimum
 price increment, while `multiplier` is the cash value of one full price point.

@@ -99,10 +99,17 @@ test_that("native Donchian engine returns finite shaped results", {
   expect_true(all(c("Discrete", "Log") %in% colnames(res$rets)))
   expect_true(all(is.finite(as.numeric(res$rets))))
   expect_true(all(c("trades", "positions", "mktdata", "stats") %in% names(res)))
-  expect_true(all(c("trade_episodes", "trade_excursions", "pyramid_events", "info_blocks") %in% names(res)))
+  expect_true(all(c("trade_audit", "trade_episodes", "trade_excursions", "pyramid_events", "info_blocks") %in% names(res)))
   expect_true(NROW(res$positions) == NROW(x))
+  expect_s3_class(res$trade_audit, "data.frame")
   expect_s3_class(res$trade_episodes, "data.frame")
   expect_s3_class(res$trade_excursions, "data.frame")
+  expect_true(all(c(
+    "trade_id", "event_type", "event_time", "entry_time", "exit_time",
+    "bars_held", "signal_price", "fill_price", "fees", "slippage",
+    "total_cost", "funding_cash", "funding_received", "funding_paid",
+    "funding_events", "gross_pnl", "net_pnl"
+  ) %in% names(res$trade_audit)))
   expect_true(all(c("entry_atr", "entry_atr_value_per_unit", "initial_stop_atr", "initial_risk_per_unit") %in% names(res$trade_episodes)))
   expect_true(all(c("mfe_pct", "mae_pct", "mfe_atr", "mae_atr", "final_R", "hit_5_0_atr", "hit_10_0_atr", "hit_20_0_atr", "hit_40_0_atr", "post_5_0_atr_R", "post_20_0_atr_R", "post_40_0_atr_R") %in% names(res$trade_excursions)))
   expect_true(all(is.finite(res$trade_excursions$mfe_pct)))
@@ -178,6 +185,22 @@ test_that("native wrappers pass leverage and default decimal quantity for USDT-M
 
   expect_equal(forced$spec$risk$max_leverage, 25)
   expect_true(forced$spec$risk$integer_qty)
+
+  for (symbol in c("BTCUSDT_QTR", "BTCUSDT_NQTR", "BTCUSDT_260627")) {
+    attr(x, "symbol") <- symbol
+    qtr <- bt_eldoc(
+      x,
+      up = 12,
+      down = 8,
+      ps_value = 100,
+      ps_type = "notional",
+      fee = "nofee",
+      hide_details = TRUE,
+      max_leverage = 50
+    )
+    expect_equal(qtr$spec$risk$max_leverage, 50)
+    expect_false(qtr$spec$risk$integer_qty)
+  }
 })
 
 test_that("native reinvest sizing uses current equity at entry", {
@@ -406,6 +429,20 @@ test_that("native metadata uses finharvest xts contract attrs", {
   expect_equal(tick_slip_costs[["fees"]], 0)
   expect_equal(tick_slip_costs[["slippage"]], 27)
   expect_equal(tick_slip_costs[["total_cost"]], 27)
+  expect_equal(
+    .bt_native_slippage_adjusted_price(
+      data.frame(price = 100, qty_delta = 2, slippage = 10),
+      multiplier = 5
+    ),
+    101
+  )
+  expect_equal(
+    .bt_native_slippage_adjusted_price(
+      data.frame(price = 100, qty_delta = -2, slippage = 10),
+      multiplier = 5
+    ),
+    99
+  )
 
   attr(x, "slip_type") <- "ticks"
   expect_no_warning(tick_meta <- .bt_native_metadata(x, "CCMFUT_1H_AGG"))
@@ -432,6 +469,9 @@ test_that("native metadata uses finharvest xts contract attrs", {
   expect_equal(cost_res$stats$fees, sum(cost_res$trades$fees, na.rm = TRUE))
   expect_equal(cost_res$stats$slippage, sum(cost_res$trades$slippage, na.rm = TRUE))
   expect_equal(cost_res$stats$total_cost, sum(cost_res$trades$total_cost, na.rm = TRUE))
+  cost_audit_orders <- cost_res$trade_audit[cost_res$trade_audit$event_type != "funding", , drop = FALSE]
+  expect_true(any(cost_audit_orders$slippage > 0))
+  expect_true(any(cost_audit_orders$fill_price != cost_audit_orders$signal_price))
 
   expect_no_warning(
     order_fee_res <- bt_eldoc(
@@ -600,6 +640,14 @@ test_that("native funding ledger applies long debits and short credits", {
   )
   expect_equal(long_diag$episodes$funding, -1)
   expect_equal(long_diag$episodes$net_pnl, -1)
+  long_funding_audit <- long_diag$audit[long_diag$audit$event_type == "funding", , drop = FALSE]
+  expect_equal(NROW(long_funding_audit), 1)
+  expect_equal(long_funding_audit$funding_cash, -1)
+  expect_equal(long_funding_audit$funding_received, 0)
+  expect_equal(long_funding_audit$funding_paid, 1)
+  expect_equal(long_funding_audit$funding_events, 1L)
+  expect_equal(long_funding_audit$bars_held, 1L)
+  expect_true(all(c("entry", "exit", "funding") %in% long_diag$audit$event_type))
 
   short_signals <- xts::xts(
     cbind(
@@ -625,6 +673,34 @@ test_that("native funding ledger applies long debits and short credits", {
   )
   expect_equal(short_sim$funding$funding_cash, 1)
   expect_equal(as.numeric(tail(short_sim$equity$Equity, 1)), 1001)
+})
+
+test_that("native funding TRUE does not fetch perpetual funding for quarterly futures", {
+  x <- bt_test_ohlc(120)
+  attr(x, "symbol") <- "BTCUSDT_QTR"
+  attr(x, "classification") <- list(type = "Crypto Futures")
+  attr(x, "contract") <- list(multiplier = 1, quantity_step = 0.001)
+
+  expect_equal(.bt_native_perpetual_funding_symbol("BTCUSDT_PERPETUAL_1d"), "BTCUSDT_PERPETUAL")
+  expect_true(is.na(.bt_native_perpetual_funding_symbol("BTCUSDT_QTR_1d")))
+  expect_true(is.na(.bt_native_perpetual_funding_symbol("BTCUSDT_260627_1d")))
+
+  expect_warning(
+    res <- bt_eldoc(
+      x,
+      up = 20,
+      down = 10,
+      ps_value = 100,
+      ps_type = "notional",
+      fee = "nofee",
+      funding = TRUE,
+      hide_details = TRUE
+    ),
+    "No funding events were resolved"
+  )
+  expect_equal(NROW(res$funding_events), 0)
+  expect_equal(res$stats$funding, 0)
+  expect_false(any(res$trade_audit$event_type == "funding"))
 })
 
 test_that("native metadata reads nested plugin attrs", {
@@ -1096,6 +1172,44 @@ test_that("native moving-average wrappers run on synthetic data", {
   expect_true(all(is.finite(as.numeric(ema$rets))))
   expect_true(all(is.finite(as.numeric(sma$rets))))
   expect_true(all(is.finite(as.numeric(tsmom$rets))))
+})
+
+test_that("bt_hold trades from first close to last close", {
+  idx <- as.Date("2020-01-01") + 0:3
+  x <- xts::xts(
+    cbind(
+      Open = c(100, 120, 140, 150),
+      High = c(100, 120, 140, 150),
+      Low = c(100, 120, 140, 150),
+      Close = c(100, 120, 140, 150)
+    ),
+    order.by = idx
+  )
+  attr(x, "symbol") <- "HOLDTEST"
+  attr(x, "ticksize") <- 0.01
+  attr(x, "tickvalue") <- 0.01
+  attr(x, "fut_multiplier") <- 1
+
+  long <- bt_hold(x, side = "long", fee = "nofee", hide_details = TRUE)
+  short <- bt_hold(x, side = "short", fee = "nofee", hide_details = TRUE)
+
+  expect_equal(long$spec$strategy$type, "hold")
+  expect_equal(long$spec$risk$ps_type, "notional")
+  expect_equal(long$spec$risk$risk_pct, 100)
+  expect_false(long$spec$risk$integer_qty)
+  expect_equal(long$trades$reason, c("long_entry", "long_exit"))
+  expect_equal(as.Date(long$trades$timestamp), c(idx[1], idx[4]))
+  expect_equal(long$trades$price, c(100, 150))
+  expect_equal(long$trades$qty_delta, c(1000, -1000))
+  expect_equal(as.numeric(tail(long$equity$Equity, 1)), 150000)
+  expect_equal(long$stats$total_return, 0.5)
+
+  expect_equal(short$trades$reason, c("short_entry", "short_exit"))
+  expect_equal(as.Date(short$trades$timestamp), c(idx[1], idx[4]))
+  expect_equal(short$trades$price, c(100, 150))
+  expect_equal(short$trades$qty_delta, c(-1000, 1000))
+  expect_equal(as.numeric(tail(short$equity$Equity, 1)), 50000)
+  expect_equal(short$stats$total_return, -0.5)
 })
 
 test_that("native Donchian stop mode can reverse twice in one bar", {

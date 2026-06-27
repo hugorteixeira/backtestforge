@@ -108,6 +108,7 @@ results <- bt_eldoc(
 returns <- results$rets     # Portfolio returns
 stats <- results$stats      # Trade statistics
 trades <- results$trades    # Transaction details
+audit <- results$trade_audit # Completed-trade audit ledger
 ```
 
 In `results$trades`, `fees` is commission only, `slippage` is the estimated
@@ -116,6 +117,12 @@ equity. Perpetual-futures funding cashflows are kept separately in
 `results$funding_events` and summarized as `stats$funding`. Console reports
 include a `Costs & Slippage Summary` section before the returns summary, with
 fees, slippage, funding, and impact percentages.
+
+`results$trade_audit` expands completed trades into order-level rows. Entry,
+pyramid, and exit rows show `signal_price`, slippage-adjusted `fill_price`,
+fees, slippage, total cost, and bars held. Perpetual runs with funding add a
+separate `event_type = "funding"` row per completed trade with funding paid or
+received.
 
 Parameter search for agents:
 
@@ -182,14 +189,24 @@ decimal quantities and forward exchange filters such as `quantity_step`,
 `max_leverage = 50` to cap notional at 50x equity when you want the sizing layer
 to model the exchange leverage setting as a notional limit/margin estimate;
 leverage does not multiply returns. Pass `integer_qty = TRUE` only when an
-instrument should trade whole units.
+instrument should trade whole units. This same linear USDT-M path applies to
+Binance perpetual, `QTR`/`NQTR`, and dated delivery futures such as
+`BTCUSDT_260627`; the quarterly/delivery variants do not get funding unless
+explicit funding events are supplied.
 
 Perpetual funding is a cashflow, not slippage and not a price adjustment. Pass
 `funding = TRUE` to read funding columns from the supplied `xts` or fetch
-`finharvest::finget_binance_fut_funding()` for `_PERPETUAL` tickers. You can
-also pass an explicit `xts`/`data.frame` with `date`/`timestamp`,
+`finharvest::finget_binance_fut_funding()` only for explicit `_PERPETUAL`
+tickers. `QTR`/`NQTR`/dated Binance delivery futures keep zero funding under
+`funding = TRUE`; use explicit funding data only for a deliberate scenario test.
+You can pass an `xts`/`data.frame` with `date`/`timestamp`,
 `FundingRate`/`funding_rate`, and optional `FundingMarkPrice`/`mark_price`.
 Positive funding rates debit longs and credit shorts while the position is open.
+
+`bt_hold()` opens on the first available close and exits on the last close. It
+defaults to 100% notional sizing with fractional quantity, so it is useful for
+sanity-checking spot, perpetual, and quarterly futures returns against simple
+long or short hold behavior.
 
 ElDoc execution modes:
 

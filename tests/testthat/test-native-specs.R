@@ -11,6 +11,11 @@ test_that("native spec builders normalize public aliases", {
   expect_equal(strategy$params$threshold, 0.5)
   expect_false(strategy$short)
 
+  hold <- bt_strategy_spec("buy_and_hold", long = FALSE, short = TRUE)
+  expect_equal(hold$type, "hold")
+  expect_true(hold$short)
+  expect_false(hold$long)
+
   risk <- bt_risk_spec(
     mode = "risk",
     ps_type = "ATR",

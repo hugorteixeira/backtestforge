@@ -143,8 +143,9 @@ in the default report and \code{bt_stats()} output.}
 \item{...}{Advanced options. Currently supports \code{only_returns} (return only
 the returns \code{xts}), \code{clean_di} (apply DI-specific bad-row filtering), and
 \code{funding} (perpetual-futures funding events, or \code{TRUE} to resolve them from
-the input data / \code{finharvest}), \code{max_leverage} (notional cap when \code{risk} is
-\code{NULL}), and \code{integer_qty} (quantity rounding override).}
+input data / \code{finharvest} only for explicit \verb{_PERPETUAL} symbols),
+\code{max_leverage} (notional cap when \code{risk} is \code{NULL}), and \code{integer_qty}
+(quantity rounding override).}
 }
 \value{
 If \code{only_returns = TRUE}, returns an \code{xts} with discrete and log
@@ -162,6 +163,9 @@ returns. Otherwise, returns a named list with elements:
 \item \code{equity}: native account equity curve
 \item \code{performance_equity}: equity curve rebuilt from \code{rets}, risk-normalized
 when \code{normalize_risk} is supplied
+\item \code{trade_audit}: order-level audit rows for complete trades, including
+signal price, slippage-adjusted fill price, fees, slippage, bars held, and
+per-trade funding cash when funding applies
 \item \code{trade_episodes}: one row per complete trade episode
 \item \code{trade_excursions}: per-trade MFE/MAE diagnostics in percent, ATR, and R units
 \item \code{pyramid_events}: one row per pyramid add when pyramiding is active,

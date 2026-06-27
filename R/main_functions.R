@@ -256,8 +256,9 @@
 #' @param ... Advanced options. Currently supports `only_returns` (return only
 #'   the returns `xts`), `clean_di` (apply DI-specific bad-row filtering), and
 #'   `funding` (perpetual-futures funding events, or `TRUE` to resolve them from
-#'   the input data / `finharvest`), `max_leverage` (notional cap when `risk` is
-#'   `NULL`), and `integer_qty` (quantity rounding override).
+#'   input data / `finharvest` only for explicit `_PERPETUAL` symbols),
+#'   `max_leverage` (notional cap when `risk` is `NULL`), and `integer_qty`
+#'   (quantity rounding override).
 #'
 #' @return If `only_returns = TRUE`, returns an `xts` with discrete and log
 #'   returns. Otherwise, returns a named list with elements:
@@ -273,6 +274,9 @@
 #'   - `equity`: native account equity curve
 #'   - `performance_equity`: equity curve rebuilt from `rets`, risk-normalized
 #'     when `normalize_risk` is supplied
+#'   - `trade_audit`: order-level audit rows for complete trades, including
+#'     signal price, slippage-adjusted fill price, fees, slippage, bars held, and
+#'     per-trade funding cash when funding applies
 #'   - `trade_episodes`: one row per complete trade episode
 #'   - `trade_excursions`: per-trade MFE/MAE diagnostics in percent, ATR, and R units
 #'   - `pyramid_events`: one row per pyramid add when pyramiding is active,
@@ -584,6 +588,70 @@ bt_tsmom <- function(ticker, lookback = 252, threshold = 0, ps_value = 100, init
     ),
     max_leverage = opts$max_leverage,
     integer_qty = opts$integer_qty,
+    start_date = start_date,
+    end_date = end_date,
+    normalize_risk = normalize_risk,
+    geometric = geometric,
+    only_returns = opts$only_returns,
+    verbose = verbose,
+    clean_di = opts$clean_di,
+    funding = opts$funding,
+    report = !isTRUE(hide_details),
+    show_quarterly = show_quarterly,
+    research_blocks = FALSE
+  )
+  if (isTRUE(plot) && !isTRUE(opts$only_returns)) .bt_tplot(res$rets)
+  res
+}
+
+#' Run a first-close to last-close hold backtest
+#'
+#' Opens one position on the first available close and closes it on the last
+#' available close. The default uses 100% notional sizing so the result behaves
+#' like buy-and-hold for long tests. It uses fractional quantity by default so
+#' `ps_value = 100` maps to the full notional return of the price series; pass
+#' `integer_qty = TRUE` through `...` to force whole-unit sizing. The wrapper
+#' still passes through the same native execution, fee, slippage, funding, and
+#' reporting machinery used by the other backtest wrappers.
+#'
+#' @inheritParams bt_eldoc
+#' @param side Direction to hold, either `"long"` or `"short"`.
+#' @param ... Advanced options. Currently supports `only_returns` (return only
+#'   the returns `xts`), `clean_di` (apply DI-specific bad-row filtering), and
+#'   `funding` (perpetual-futures funding events, or `TRUE` to resolve them from
+#'   the input data / `finharvest`), `max_leverage` (notional cap when `risk` is
+#'   `NULL`), and `integer_qty` (quantity rounding override).
+#' @export
+bt_hold <- function(ticker, side = c("long", "short"), ps_value = 100, initial_equity = 100000, ps_type = "notional", execution = "same_close", fee = "normal", fee_value = NULL, fee_type = NULL, slip_value = NULL, slip_type = NULL, start_date = "1900-01-01", end_date = Sys.Date(), normalize_risk = NULL, geometric = TRUE, verbose = FALSE, hide_details = FALSE, show_quarterly = FALSE, reinvest = TRUE, plot = FALSE, ...) {
+  side <- match.arg(side)
+  if (is.null(ps_value)) ps_value <- 100
+  if (is.null(ps_type)) ps_type <- "notional"
+  opts <- .bt_wrapper_options(list(...), ps_value = ps_value, ps_type = ps_type, slip_value = slip_value)
+  integer_qty <- if (is.null(opts$integer_qty)) FALSE else opts$integer_qty
+  ticker_input <- .bt_resolve_ticker_input(ticker, substitute(ticker))
+  res <- bt_run_native(
+    ticker = ticker_input$symbol,
+    data = ticker_input$data,
+    strategy = bt_strategy_spec(
+      "hold",
+      long = identical(side, "long"),
+      short = identical(side, "short"),
+      invert_signals = FALSE
+    ),
+    ps_value = opts$ps_value,
+    ps_type = opts$ps_type,
+    initial_equity = initial_equity,
+    reinvest = reinvest,
+    execution = .bt_backtest_execution(
+      execution = execution,
+      fee = fee,
+      fee_value = fee_value,
+      fee_type = fee_type,
+      slip_value = opts$slip_value,
+      slip_type = slip_type
+    ),
+    max_leverage = opts$max_leverage,
+    integer_qty = integer_qty,
     start_date = start_date,
     end_date = end_date,
     normalize_risk = normalize_risk,

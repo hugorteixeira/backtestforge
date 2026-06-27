@@ -68,8 +68,12 @@ futures or metadata with sub-unit quantity steps.}
 \item{clean_di}{If \code{TRUE}, apply DI cleanup before running.}
 
 \item{funding}{Optional funding events for perpetual futures. \code{TRUE} reads
-funding columns from \code{data} or fetches \code{finharvest::finget_binance_fut_funding()};
-an \code{xts}/\code{data.frame} supplies explicit \code{date}/\code{FundingRate} events.}
+funding columns from \code{data} or fetches
+\code{finharvest::finget_binance_fut_funding()} only for explicit
+\verb{_PERPETUAL} symbols; Binance \code{QTR}/\code{NQTR}/dated delivery futures keep zero
+funding unless an explicit \code{xts}/\code{data.frame} is supplied. Explicit
+funding data should include \code{date}/\code{FundingRate} or
+\code{timestamp}/\code{funding_rate} events.}
 
 \item{report}{If \code{TRUE}, print the standard console performance tables.}
 
@@ -83,6 +87,9 @@ such as excursion thresholds in default reports and \code{bt_stats()}.}
 A \code{bt_native_result} list, or an \code{xts} returns object when
 \code{only_returns = TRUE}. In \code{trades}, \code{fees} is commission only,
 \code{slippage} is slippage cost, and \code{total_cost} is their sum.
+\code{trade_audit} expands completed trade episodes into order-level rows with
+signal price, slippage-adjusted fill price, costs, bars held, and funding
+summaries when funding applies.
 When \code{normalize_risk} is supplied, \code{rets}, \code{stats}, and report performance
 blocks use the risk-normalized return stream; \code{raw_rets}, \code{raw_stats},
 trades, positions, and cost blocks keep the unnormalised execution path.

@@ -1,14 +1,14 @@
 #' Build a serializable trend-following strategy specification
 #'
-#' @param type Strategy type. Use `"eldoc"`/`"donchian"`, `"ema"`, `"sma"`, or
-#'   `"tsmom"`.
+#' @param type Strategy type. Use `"eldoc"`/`"donchian"`, `"ema"`, `"sma"`,
+#'   `"tsmom"`, or `"hold"`.
 #' @param ... Indicator parameters (`up`/`down` for ElDoc, `fast`/`slow` for
 #'   moving averages, `lookback` for TSMOM), plus advanced ElDoc settings.
 #' @param long,short Logical flags enabling long and short trades.
 #' @param invert_signals Logical; swaps entry and exit signals for experiments.
 #' @return A list with class `bt_strategy_spec`.
 #' @export
-bt_strategy_spec <- function(type = c("donchian", "eldoc", "ema", "sma", "tsmom"),
+bt_strategy_spec <- function(type = c("donchian", "eldoc", "ema", "sma", "tsmom", "hold"),
                              ...,
                              long = TRUE,
                              short = TRUE,
@@ -22,6 +22,9 @@ bt_strategy_spec <- function(type = c("donchian", "eldoc", "ema", "sma", "tsmom"
     tsmom = "tsmom",
     timeseriesmomentum = "tsmom",
     time_series_momentum = "tsmom",
+    hold = "hold",
+    buyandhold = "hold",
+    buy_and_hold = "hold",
     stop(sprintf("Unsupported native strategy type '%s'.", raw_type), call. = FALSE)
   )
   args <- list(...)
@@ -64,7 +67,8 @@ bt_strategy_spec <- function(type = c("donchian", "eldoc", "ema", "sma", "tsmom"
       lookback = as.integer(.bt_first_non_null(args$lookback, args$mup, args$up, 252L)),
       threshold = as.numeric(.bt_first_non_null(args$threshold, 0)),
       atr_n = as.integer(.bt_first_non_null(args$atr_n, args$atr, 20L))
-    )
+    ),
+    hold = list()
   )
   numeric_params <- unlist(params[!names(params) %in% c("pyramid", "pyramid_sizing", "threshold")], use.names = FALSE)
   if (any(!is.finite(numeric_params)) || any(numeric_params <= 0)) {
@@ -407,13 +411,26 @@ bt_risk_spec <- function(mode = c("risk", "notional", "fixed"),
   .bt_native_normalize_funding_object(data)
 }
 
+.bt_native_perpetual_funding_symbol <- function(symbol) {
+  symbol <- toupper(trimws(as.character(symbol)[1]))
+  if (is.na(symbol) || !nzchar(symbol) || !grepl("(^|_)PERPETUAL(_|$)", symbol)) {
+    return(NA_character_)
+  }
+  clean <- sub("^CONTINUOUS_", "", symbol)
+  base <- strsplit(clean, "_", fixed = TRUE)[[1]][1]
+  if (!nzchar(base)) {
+    return(NA_character_)
+  }
+  paste0(base, "_PERPETUAL")
+}
+
 .bt_native_fetch_finharvest_funding <- function(symbol, start_date, end_date) {
+  funding_symbol <- .bt_native_perpetual_funding_symbol(symbol)
+  if (is.na(funding_symbol) || !nzchar(funding_symbol)) {
+    return(.bt_native_empty_funding_frame())
+  }
   if (!requireNamespace("finharvest", quietly = TRUE)) {
     stop("`funding = TRUE` requires package 'finharvest' to fetch funding events.", call. = FALSE)
-  }
-  funding_symbol <- symbol
-  if (!grepl("PERPETUAL", toupper(funding_symbol), fixed = TRUE)) {
-    funding_symbol <- paste0(.bt_base_contract_symbol(symbol), "_PERPETUAL")
   }
   funding <- finharvest::finget_binance_fut_funding(
     tickers = funding_symbol,
@@ -835,8 +852,12 @@ bt_execution_spec <- function(execution = c("breakout", "same_close", "next_open
 #' @param verbose If `TRUE`, print detailed stats and transactions.
 #' @param clean_di If `TRUE`, apply DI cleanup before running.
 #' @param funding Optional funding events for perpetual futures. `TRUE` reads
-#'   funding columns from `data` or fetches `finharvest::finget_binance_fut_funding()`;
-#'   an `xts`/`data.frame` supplies explicit `date`/`FundingRate` events.
+#'   funding columns from `data` or fetches
+#'   `finharvest::finget_binance_fut_funding()` only for explicit
+#'   `_PERPETUAL` symbols; Binance `QTR`/`NQTR`/dated delivery futures keep zero
+#'   funding unless an explicit `xts`/`data.frame` is supplied. Explicit
+#'   funding data should include `date`/`FundingRate` or
+#'   `timestamp`/`funding_rate` events.
 #' @param report If `TRUE`, print the standard console performance tables.
 #' @param show_quarterly If `TRUE`, print quarterly return and net-profit
 #'   tables in the console report.
@@ -845,6 +866,9 @@ bt_execution_spec <- function(execution = c("breakout", "same_close", "next_open
 #' @return A `bt_native_result` list, or an `xts` returns object when
 #'   `only_returns = TRUE`. In `trades`, `fees` is commission only,
 #'   `slippage` is slippage cost, and `total_cost` is their sum.
+#'   `trade_audit` expands completed trade episodes into order-level rows with
+#'   signal price, slippage-adjusted fill price, costs, bars held, and funding
+#'   summaries when funding applies.
 #'   When `normalize_risk` is supplied, `rets`, `stats`, and report performance
 #'   blocks use the risk-normalized return stream; `raw_rets`, `raw_stats`,
 #'   trades, positions, and cost blocks keep the unnormalised execution path.
@@ -1039,6 +1063,7 @@ bt_run_native <- function(ticker,
     equity = sim$equity,
     funding_events = sim$funding,
     performance_equity = performance_equity,
+    trade_audit = trade_diagnostics$audit,
     trade_episodes = trade_diagnostics$episodes,
     trade_excursions = trade_diagnostics$excursions,
     pyramid_events = trade_diagnostics$pyramid_events,
@@ -1944,6 +1969,8 @@ bt_search_native <- function(ticker,
       cbind(TSMOMReturn = momentum, ATR = atr_raw),
       order.by = idx
     )
+  } else if (identical(type, "hold")) {
+    out <- xts::xts(cbind(Hold = rep(1, n)), order.by = idx)
   } else {
     fast_n <- strategy$params$fast
     slow_n <- strategy$params$slow
@@ -2004,6 +2031,20 @@ bt_search_native <- function(ticker,
     long_exit <- state_exit(long_state)
     short_entry <- state_entry(short_state)
     short_exit <- state_exit(short_state)
+  } else if (identical(strategy$type, "hold")) {
+    n <- length(idx)
+    long_entry <- rep(FALSE, n)
+    long_exit <- rep(FALSE, n)
+    short_entry <- rep(FALSE, n)
+    short_exit <- rep(FALSE, n)
+    if (n > 0) {
+      long_entry[1L] <- isTRUE(strategy$long)
+      short_entry[1L] <- !isTRUE(strategy$long) && isTRUE(strategy$short)
+      if (n > 1L) {
+        long_exit[n] <- isTRUE(strategy$long)
+        short_exit[n] <- !isTRUE(strategy$long) && isTRUE(strategy$short)
+      }
+    }
   } else {
     fast <- as.numeric(indicators[, 1])
     slow <- as.numeric(indicators[, 2])
@@ -2597,6 +2638,43 @@ bt_search_native <- function(ticker,
     if (is.finite(basis) && basis > 0) basis else NA_real_
   }
 
+  open_hold_position <- function() {
+    if (!identical(strategy$type, "hold") || n < 1L || qty != 0) {
+      return(invisible(NULL))
+    }
+    px <- exec_close[1L]
+    if (!is.finite(px) || px <= 0) {
+      return(invisible(NULL))
+    }
+    side <- if (isTRUE(strategy$long)) {
+      "long"
+    } else if (isTRUE(strategy$short)) {
+      "short"
+    } else {
+      NULL
+    }
+    if (is.null(side)) {
+      return(invisible(NULL))
+    }
+    delta <- .bt_native_size(side, px, NA_real_, equity[1L], risk, metadata,
+      tick_value = .bt_native_tick_value_at(data, 1L, metadata)
+    )
+    if (!is.finite(delta) || delta == 0) {
+      return(invisible(NULL))
+    }
+    costs <- txn_cost(delta, px, 1L)
+    qty <<- qty + delta
+    unit_count <<- 1L
+    entry_qty_abs <<- abs(delta)
+    last_add_price <<- px
+    last_add_signal_price <<- add_signal_basis(1L, px)
+    equity[1L] <<- equity[1L] - costs[["total_cost"]]
+    qty_path[1L] <<- qty
+    unit_path[1L] <<- unit_count
+    add_trade(1L, delta, px, costs, paste0(side, "_entry"), equity[1L])
+    invisible(NULL)
+  }
+
   process_stop_event <- function(i, sig_i, event, eq, px) {
     if (identical(event, "upper")) {
       if (qty < 0 && isTRUE(as.logical(signals[sig_i, "ShortExit"]))) {
@@ -2732,6 +2810,8 @@ bt_search_native <- function(ticker,
     add_trade(i, delta, px, costs, paste0(side, "_pyramid"), eq)
     eq
   }
+
+  open_hold_position()
 
   for (i in seq_len(n)) {
     if (i == 1L) {
@@ -3583,6 +3663,67 @@ bt_search_native <- function(ticker,
   )
 }
 
+.bt_native_empty_trade_audit <- function() {
+  data.frame(
+    trade_id = integer(),
+    symbol = character(),
+    side = character(),
+    event_type = character(),
+    event_time = as.POSIXct(character(), tz = "UTC"),
+    reason = character(),
+    entry_time = as.POSIXct(character(), tz = "UTC"),
+    exit_time = as.POSIXct(character(), tz = "UTC"),
+    bars_held = integer(),
+    signal_price = numeric(),
+    fill_price = numeric(),
+    qty_delta = numeric(),
+    position_qty = numeric(),
+    units = integer(),
+    fees = numeric(),
+    slippage = numeric(),
+    total_cost = numeric(),
+    funding_cash = numeric(),
+    funding_received = numeric(),
+    funding_paid = numeric(),
+    funding_events = integer(),
+    gross_pnl = numeric(),
+    net_pnl = numeric(),
+    equity = numeric(),
+    stringsAsFactors = FALSE
+  )
+}
+
+.bt_native_audit_event_type <- function(reason) {
+  reason <- as.character(reason)[1]
+  if (reason %in% c("long_entry", "short_entry")) {
+    return("entry")
+  }
+  if (reason %in% c("long_pyramid", "short_pyramid")) {
+    return("pyramid")
+  }
+  if (reason %in% c("long_exit", "short_exit", "end_exit")) {
+    return("exit")
+  }
+  "order"
+}
+
+.bt_native_slippage_adjusted_price <- function(row, multiplier) {
+  price <- suppressWarnings(as.numeric(row$price[1]))
+  qty_delta <- suppressWarnings(as.numeric(row$qty_delta[1]))
+  slippage <- suppressWarnings(as.numeric(row$slippage[1]))
+  multiplier <- suppressWarnings(abs(as.numeric(multiplier)[1]))
+  if (!is.finite(price) || !is.finite(qty_delta) || qty_delta == 0 ||
+      !is.finite(slippage) || slippage == 0 ||
+      !is.finite(multiplier) || multiplier <= 0) {
+    return(price)
+  }
+  slip_price <- slippage / (abs(qty_delta) * multiplier)
+  if (!is.finite(slip_price)) {
+    return(price)
+  }
+  if (qty_delta > 0) price + slip_price else price - slip_price
+}
+
 .bt_native_excursion_thresholds <- function() {
   c(5, 10, 15, 20, 25, 30, 35, 40)
 }
@@ -3713,6 +3854,7 @@ bt_search_native <- function(ticker,
 .bt_native_trade_diagnostics <- function(trades, positions, mktdata, strategy, risk, metadata, funding_events = NULL) {
   empty <- list(
     episodes = .bt_native_empty_trade_episodes(),
+    audit = .bt_native_empty_trade_audit(),
     excursions = .bt_native_empty_trade_excursions(),
     pyramid_events = .bt_native_empty_pyramid_events()
   )
@@ -3741,24 +3883,95 @@ bt_search_native <- function(ticker,
     funding_events <- .bt_native_empty_funding_ledger()
   }
   funding_times <- if (NROW(funding_events)) as.POSIXct(funding_events$timestamp, tz = "UTC") else as.POSIXct(character(), tz = "UTC")
-  trade_funding_sum <- function(entry_time, exit_time) {
+  trade_funding_rows <- function(entry_time, exit_time) {
     if (!NROW(funding_events)) {
-      return(0)
+      return(integer())
     }
     entry_time <- as.POSIXct(entry_time, tz = "UTC")
     exit_time <- as.POSIXct(exit_time, tz = "UTC")
     rows <- funding_times > entry_time & funding_times <= exit_time
     if (!any(rows, na.rm = TRUE)) {
-      return(0)
+      return(integer())
     }
-    sum(suppressWarnings(as.numeric(funding_events$funding_cash[rows])), na.rm = TRUE)
+    which(rows)
   }
-
   episodes <- list()
+  audit <- list()
   excursions <- list()
   pyramid_events <- list()
   current <- NULL
   trade_id <- 0L
+
+  add_audit_rows <- function(exit_row, bars_held, gross_pnl, net_pnl, funding_cash, funding_count) {
+    if (is.null(current) || !NROW(current$rows)) {
+      return(invisible(NULL))
+    }
+    exit_time <- as.POSIXct(exit_row$timestamp[1], tz = "UTC")
+    order_rows <- current$rows
+    for (row_i in seq_len(NROW(order_rows))) {
+      row <- order_rows[row_i, , drop = FALSE]
+      reason <- as.character(row$reason[1])
+      event_type <- .bt_native_audit_event_type(reason)
+      is_exit <- identical(event_type, "exit")
+      audit[[length(audit) + 1L]] <<- data.frame(
+        trade_id = current$trade_id,
+        symbol = current$symbol,
+        side = current$side,
+        event_type = event_type,
+        event_time = as.POSIXct(row$timestamp[1], tz = "UTC"),
+        reason = reason,
+        entry_time = current$entry_time,
+        exit_time = exit_time,
+        bars_held = if (is_exit) bars_held else NA_integer_,
+        signal_price = suppressWarnings(as.numeric(row$price[1])),
+        fill_price = .bt_native_slippage_adjusted_price(row, multiplier),
+        qty_delta = suppressWarnings(as.numeric(row$qty_delta[1])),
+        position_qty = suppressWarnings(as.numeric(row$qty[1])),
+        units = suppressWarnings(as.integer(row$units[1])),
+        fees = suppressWarnings(as.numeric(row$fees[1])),
+        slippage = suppressWarnings(as.numeric(row$slippage[1])),
+        total_cost = suppressWarnings(as.numeric(row$total_cost[1])),
+        funding_cash = 0,
+        funding_received = 0,
+        funding_paid = 0,
+        funding_events = 0L,
+        gross_pnl = if (is_exit) gross_pnl else NA_real_,
+        net_pnl = if (is_exit) net_pnl else NA_real_,
+        equity = suppressWarnings(as.numeric(row$equity[1])),
+        stringsAsFactors = FALSE
+      )
+    }
+    if (funding_count > 0L || !identical(funding_cash, 0)) {
+      audit[[length(audit) + 1L]] <<- data.frame(
+        trade_id = current$trade_id,
+        symbol = current$symbol,
+        side = current$side,
+        event_type = "funding",
+        event_time = exit_time,
+        reason = "funding_settlement",
+        entry_time = current$entry_time,
+        exit_time = exit_time,
+        bars_held = bars_held,
+        signal_price = NA_real_,
+        fill_price = NA_real_,
+        qty_delta = 0,
+        position_qty = 0,
+        units = 0L,
+        fees = 0,
+        slippage = 0,
+        total_cost = 0,
+        funding_cash = funding_cash,
+        funding_received = max(funding_cash, 0),
+        funding_paid = max(-funding_cash, 0),
+        funding_events = as.integer(funding_count),
+        gross_pnl = gross_pnl,
+        net_pnl = net_pnl,
+        equity = suppressWarnings(as.numeric(exit_row$equity[1])),
+        stringsAsFactors = FALSE
+      )
+    }
+    invisible(NULL)
+  }
 
   close_episode <- function(exit_row) {
     if (is.null(current)) {
@@ -3797,8 +4010,14 @@ bt_search_native <- function(ticker,
     fees <- sum(current$rows$fees, na.rm = TRUE)
     slippage <- sum(current$rows$slippage, na.rm = TRUE)
     total_cost <- sum(current$rows$total_cost, na.rm = TRUE)
-    funding_cash <- trade_funding_sum(current$entry_time, exit_row$timestamp)
+    funding_rows <- trade_funding_rows(current$entry_time, exit_row$timestamp)
+    funding_cash <- if (length(funding_rows)) {
+      sum(suppressWarnings(as.numeric(funding_events$funding_cash[funding_rows])), na.rm = TRUE)
+    } else {
+      0
+    }
     net_pnl <- gross_pnl - total_cost + funding_cash
+    bars_held <- length(window) - 1L
     initial_risk_cash <- risk_price * abs(current$entry_qty) * abs(pnl_multiplier)
     if (!is.finite(initial_risk_cash) || initial_risk_cash <= 0) initial_risk_cash <- NA_real_
     entry_atr_value_per_unit <- if (is.finite(entry_atr)) entry_atr * abs(pnl_multiplier) else NA_real_
@@ -3825,7 +4044,7 @@ bt_search_native <- function(ticker,
       entry_qty = abs(current$entry_qty),
       max_qty = max_qty,
       units_max = units_max,
-      bars_held = length(window) - 1L,
+      bars_held = bars_held,
       gross_pnl = gross_pnl,
       net_pnl = net_pnl,
       fees = fees,
@@ -3842,6 +4061,15 @@ bt_search_native <- function(ticker,
       final_R = final_R,
       exit_reason = as.character(exit_row$reason),
       stringsAsFactors = FALSE
+    )
+
+    add_audit_rows(
+      exit_row = exit_row,
+      bars_held = bars_held,
+      gross_pnl = gross_pnl,
+      net_pnl = net_pnl,
+      funding_cash = funding_cash,
+      funding_count = length(funding_rows)
     )
 
     thresholds <- .bt_native_excursion_thresholds()
@@ -3989,6 +4217,7 @@ bt_search_native <- function(ticker,
 
   list(
     episodes = if (length(episodes)) do.call(rbind, episodes) else empty$episodes,
+    audit = if (length(audit)) do.call(rbind, audit) else empty$audit,
     excursions = if (length(excursions)) do.call(rbind, excursions) else empty$excursions,
     pyramid_events = if (length(pyramid_events)) do.call(rbind, pyramid_events) else empty$pyramid_events
   )
@@ -4032,6 +4261,11 @@ bt_search_native <- function(ticker,
       "Lookback Bars" = strategy$params$lookback,
       Threshold = .bt_native_format_pct(strategy$params$threshold),
       "ATR Lookback" = strategy$params$atr_n
+    ))
+  } else if (identical(strategy$type, "hold")) {
+    rows <- c(rows, list(
+      "Entry" = "first close",
+      "Exit" = "last close"
     ))
   } else {
     rows <- c(rows, list(
@@ -4590,6 +4824,7 @@ bt_search_native <- function(ticker,
     ema = "EMA",
     sma = "SMA",
     tsmom = "TSMOM",
+    hold = "HOLD",
     toupper(strategy$type)
   )
 }
@@ -4723,6 +4958,8 @@ bt_search_native <- function(ticker,
     paste0("ElDoc ", strategy$params$up, "/", strategy$params$down)
   } else if (identical(strategy$type, "tsmom")) {
     paste0("TSMOM ", strategy$params$lookback)
+  } else if (identical(strategy$type, "hold")) {
+    "Hold"
   } else if (identical(strategy$type, "portfolio")) {
     "Portfolio mixed"
   } else {
