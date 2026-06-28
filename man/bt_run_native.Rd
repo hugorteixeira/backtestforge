@@ -24,6 +24,7 @@ bt_run_native(
   verbose = FALSE,
   clean_di = TRUE,
   funding = NULL,
+  execution_data = NULL,
   report = TRUE,
   show_quarterly = FALSE,
   research_blocks = TRUE
@@ -74,6 +75,10 @@ funding columns from \code{data} or fetches
 funding unless an explicit \code{xts}/\code{data.frame} is supplied. Explicit
 funding data should include \code{date}/\code{FundingRate} or
 \code{timestamp}/\code{funding_rate} events.}
+
+\item{execution_data}{Optional explicit lower/equal-timeframe OHLC \code{xts}
+used when \code{execution$execution_timeframe} is not \code{"same"}. Character
+tickers are fetched from \code{finharvest} automatically when omitted.}
 
 \item{report}{If \code{TRUE}, print the standard console performance tables.}
 

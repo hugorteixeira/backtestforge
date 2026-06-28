@@ -217,6 +217,17 @@ ElDoc execution modes:
 - `next_close`: fill at the next candle close.
 - `next_avg`: fill at the next candle OHLC average.
 
+`execution_timeframe` is an advanced single-instrument option for Donchian
+breakout intrabar execution. The default `"same"` uses the strategy bars exactly
+as before. `"5m"`, `"1h"`, and `"4h"` derive and fetch a matching execution
+ticker such as `BTCUSDT_PERPETUAL_5m`, require the execution timeframe to be
+lower/equal than the strategy timeframe, and fail if the lower series is missing
+or does not cover the signal window. The engine iterates every execution candle
+inside each signal candle, so repeated upper/lower touches can trigger multiple
+reversals within the same strategy bar. Indicators, Donchian levels, sizing
+stops, funding lookup, and the returned equity frequency remain on the strategy
+timeframe. Audit rows expose both `event_time` and `signal_time`.
+
 ElDoc position sizing modes:
 
 - `eldoc`: risk `ps_value` percent of equity to the opposite channel.

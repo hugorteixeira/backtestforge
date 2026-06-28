@@ -17,7 +17,8 @@ bt_execution_spec(
   slippage_bps = NULL,
   slippage_ticks = NULL,
   slippage_points = NULL,
-  close_on_end = TRUE
+  close_on_end = TRUE,
+  execution_timeframe = "same"
 )
 }
 \arguments{
@@ -57,6 +58,12 @@ is a basis-point fraction of execution price.}
 \item{slippage_points}{Optional explicit slippage in quoted price points.}
 
 \item{close_on_end}{Whether open positions are flattened on the last bar.}
+
+\item{execution_timeframe}{Timeframe used to simulate intrabar Donchian
+breakout execution. \code{"same"} uses the strategy bars; \code{"5m"}, \code{"1h"}, and
+\code{"4h"} require a resolvable lower/equal timeframe OHLC series, iterate
+every execution bar inside each signal bar, and fail fast when data is
+unavailable.}
 }
 \value{
 A list with class \code{bt_execution_spec}.

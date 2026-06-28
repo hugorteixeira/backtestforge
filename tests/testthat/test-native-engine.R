@@ -136,6 +136,132 @@ test_that("native Donchian engine returns finite shaped results", {
   expect_equal(res$stats$InitialEquity, 100000)
 })
 
+test_that("native Donchian breakout can resolve stricter execution timeframe", {
+  idx <- as.POSIXct("2024-01-01 00:00:00", tz = "UTC") + 0:5 * 3600
+  x <- xts::xts(
+    cbind(
+      Open = c(9, 9, 9.2, 9.5, 10.5, 11),
+      High = c(10, 10, 9.5, 11, 11.5, 12),
+      Low = c(8.8, 8.7, 8.5, 9.4, 10, 10.8),
+      Close = c(9, 9, 9.2, 10.8, 11, 11.5)
+    ),
+    order.by = idx
+  )
+  attr(x, "symbol") <- "BT_HAND_1h"
+  attr(x, "fut_tick_size") <- 1
+  attr(x, "fut_multiplier") <- 1
+
+  exec_idx <- seq(idx[1], idx[6] + 55 * 60, by = "5 min")
+  exec_open <- rep(9.5, length(exec_idx))
+  exec_high <- rep(9.8, length(exec_idx))
+  exec_low <- rep(9.2, length(exec_idx))
+  exec_close <- rep(9.5, length(exec_idx))
+  hit <- which(exec_idx == as.POSIXct("2024-01-01 03:15:00", tz = "UTC"))
+  exec_high[hit] <- 10.25
+  exec_close[exec_idx >= exec_idx[hit]] <- 10.2
+  exec <- xts::xts(
+    cbind(Open = exec_open, High = exec_high, Low = exec_low, Close = exec_close),
+    order.by = exec_idx
+  )
+  attr(exec, "symbol") <- "BT_HAND_5m"
+  attr(exec, "fut_tick_size") <- 1
+  attr(exec, "fut_multiplier") <- 1
+
+  res <- bt_run_native(
+    ticker = "BT_HAND_1h",
+    data = x,
+    strategy = bt_strategy_spec("donchian", up = 2, down = 2, long = TRUE, short = FALSE),
+    ps_value = 50,
+    ps_type = "notional",
+    execution = bt_execution_spec("breakout", fee = "nofee", execution_timeframe = "5m", close_on_end = FALSE),
+    execution_data = exec,
+    report = FALSE
+  )
+
+  entry <- res$trades[res$trades$reason == "long_entry", , drop = FALSE]
+  expect_equal(NROW(entry), 1L)
+  expect_equal(as.POSIXct(entry$timestamp[1], tz = "UTC"), as.POSIXct("2024-01-01 03:15:00", tz = "UTC"))
+  expect_equal(as.POSIXct(entry$signal_time[1], tz = "UTC"), as.POSIXct("2024-01-01 03:00:00", tz = "UTC"))
+  expect_equal(entry$execution_timeframe[1], "5m")
+  expect_equal(entry$execution_source_ticker[1], "BT_HAND_5m")
+})
+
+test_that("native Donchian execution timeframe processes repeated intrabar breakouts", {
+  idx <- as.POSIXct("2024-01-01 00:00:00", tz = "UTC") + 0:5 * 3600
+  x <- xts::xts(
+    cbind(
+      Open = c(9, 9, 9, 9, 8.8, 8.7),
+      High = c(10, 10, 9.8, 10.5, 9.2, 9),
+      Low = c(8, 8, 8.2, 7.5, 8.4, 8.3),
+      Close = c(9, 9, 9, 8.8, 8.7, 8.6)
+    ),
+    order.by = idx
+  )
+  attr(x, "symbol") <- "BT_HAND_1h"
+  attr(x, "fut_tick_size") <- 1
+  attr(x, "fut_multiplier") <- 1
+
+  exec_idx <- seq(idx[1], idx[6] + 55 * 60, by = "5 min")
+  exec_open <- rep(9, length(exec_idx))
+  exec_high <- rep(9.5, length(exec_idx))
+  exec_low <- rep(8.5, length(exec_idx))
+  exec_close <- rep(9, length(exec_idx))
+  exec_low[exec_idx == as.POSIXct("2024-01-01 03:05:00", tz = "UTC")] <- 7.8
+  exec_high[exec_idx == as.POSIXct("2024-01-01 03:20:00", tz = "UTC")] <- 10.2
+  exec_low[exec_idx == as.POSIXct("2024-01-01 03:40:00", tz = "UTC")] <- 7.7
+  exec <- xts::xts(
+    cbind(Open = exec_open, High = exec_high, Low = exec_low, Close = exec_close),
+    order.by = exec_idx
+  )
+  attr(exec, "symbol") <- "BT_HAND_5m"
+  attr(exec, "fut_tick_size") <- 1
+  attr(exec, "fut_multiplier") <- 1
+
+  res <- bt_run_native(
+    ticker = "BT_HAND_1h",
+    data = x,
+    strategy = bt_strategy_spec("donchian", up = 2, down = 2, long = TRUE, short = TRUE),
+    ps_value = 50,
+    ps_type = "notional",
+    execution = bt_execution_spec("breakout", fee = "nofee", execution_timeframe = "5m", close_on_end = FALSE),
+    execution_data = exec,
+    report = FALSE
+  )
+
+  intrabar <- res$trades[res$trades$signal_time == idx[4], , drop = FALSE]
+  expect_equal(
+    intrabar$reason,
+    c("short_entry", "short_exit", "long_entry", "long_exit", "short_entry")
+  )
+  expect_equal(
+    as.POSIXct(intrabar$timestamp, tz = "UTC"),
+    as.POSIXct(c(
+      "2024-01-01 03:05:00",
+      "2024-01-01 03:20:00",
+      "2024-01-01 03:20:00",
+      "2024-01-01 03:40:00",
+      "2024-01-01 03:40:00"
+    ), tz = "UTC")
+  )
+})
+
+test_that("native execution timeframe rejects coarser data than signal timeframe", {
+  x <- bt_test_eldoc_breakout_ohlc()
+  attr(x, "symbol") <- "BT_HAND_1h"
+  expect_error(
+    bt_run_native(
+      ticker = "BT_HAND_1h",
+      data = x,
+      strategy = bt_strategy_spec("donchian", up = 2, down = 2),
+      ps_value = 50,
+      ps_type = "notional",
+      execution = bt_execution_spec("breakout", fee = "nofee", execution_timeframe = "4h"),
+      report = FALSE
+    ),
+    "coarser"
+  )
+})
+
 test_that("native wrappers accept starting equity", {
   x <- bt_test_ohlc(160)
 

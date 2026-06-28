@@ -50,6 +50,12 @@ test_that("native spec builders normalize public aliases", {
   expect_equal(bps_execution$fee_type, "bps")
   expect_null(bps_execution$commission_per_contract)
   expect_null(bps_execution$commission_per_order)
+
+  intrabar_execution <- bt_execution_spec(execution_timeframe = "5min")
+  expect_equal(intrabar_execution$execution_timeframe, "5m")
+
+  hourly_execution <- bt_execution_spec(execution_timeframe = "1 hora")
+  expect_equal(hourly_execution$execution_timeframe, "1h")
 })
 
 test_that("native spec builders reject invalid values", {
@@ -76,5 +82,9 @@ test_that("native spec builders reject invalid values", {
   expect_error(
     bt_execution_spec(slip_type = "shares"),
     "slip_type"
+  )
+  expect_error(
+    bt_execution_spec(execution_timeframe = "15m"),
+    "execution_timeframe"
   )
 })

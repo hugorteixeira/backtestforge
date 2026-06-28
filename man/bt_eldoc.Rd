@@ -115,7 +115,10 @@ equity. Open positions keep their original quantity until the next order.}
 the returns \code{xts}), \code{clean_di} (apply DI-specific bad-row filtering), and
 \code{funding} (perpetual-futures funding events, or \code{TRUE} to resolve them from
 the input data / \code{finharvest}), \code{max_leverage} (notional cap when \code{risk} is
-\code{NULL}), and \code{integer_qty} (quantity rounding override).
+\code{NULL}), \code{integer_qty} (quantity rounding override),
+\code{execution_timeframe} (\code{"same"}, \code{"5m"}, \code{"1h"}, or \code{"4h"} for Donchian
+breakout intrabar execution simulation), and \code{execution_data}
+(explicit execution-timeframe OHLC \code{xts} for tests or custom data).
 Pyramiding/research arguments are intentionally rejected; use
 \code{bt_eldoc_exp()} for that surface.}
 }

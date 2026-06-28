@@ -96,12 +96,20 @@
   xts_object
 }
 
+.bt_finharvest_symbol_needs_utc <- function(symbol) {
+  symbol <- toupper(trimws(as.character(symbol %||% "")[1]))
+  if (!nzchar(symbol)) {
+    return(FALSE)
+  }
+  grepl("_(PERPETUAL|QTR|NQTR)(_|$)|_[0-9]{6}(_|$)", symbol, perl = TRUE)
+}
+
 .bt_fetch_finharvest_data <- function(symbol, start_date, end_date) {
   if (!requireNamespace("finharvest", quietly = TRUE)) {
     stop("Package 'finharvest' is required to fetch market data.", call. = FALSE)
   }
 
-  finharvest::finget(
+  args <- list(
     tickers = symbol,
     start_date = start_date,
     end_date = end_date,
@@ -114,6 +122,10 @@
     mode = "raw",
     verbose = FALSE
   )
+  if (isTRUE(.bt_finharvest_symbol_needs_utc(symbol))) {
+    args$tz <- "UTC"
+  }
+  do.call(finharvest::finget, args)
 }
 
 .bt_backtest_execution <- function(execution = "breakout",
@@ -121,14 +133,16 @@
                                    fee_value = NULL,
                                    fee_type = NULL,
                                    slip_value = NULL,
-                                   slip_type = NULL) {
+                                   slip_type = NULL,
+                                   execution_timeframe = "same") {
   bt_execution_spec(
     execution = execution,
     fee = fee,
     fee_value = fee_value,
     fee_type = fee_type,
     slip_value = slip_value,
-    slip_type = slip_type
+    slip_type = slip_type,
+    execution_timeframe = execution_timeframe
   )
 }
 
@@ -152,6 +166,16 @@
     funding <- extra_args$funding
     extra_args$funding <- NULL
   }
+  execution_timeframe <- "same"
+  if (length(extra_args) && "execution_timeframe" %in% names(extra_args)) {
+    execution_timeframe <- extra_args$execution_timeframe
+    extra_args$execution_timeframe <- NULL
+  }
+  execution_data <- NULL
+  if (length(extra_args) && "execution_data" %in% names(extra_args)) {
+    execution_data <- extra_args$execution_data
+    extra_args$execution_data <- NULL
+  }
   max_leverage <- NULL
   if (length(extra_args) && "max_leverage" %in% names(extra_args)) {
     max_leverage <- extra_args$max_leverage
@@ -172,6 +196,8 @@
     only_returns = only_returns,
     clean_di = clean_di,
     funding = funding,
+    execution_timeframe = execution_timeframe,
+    execution_data = execution_data,
     max_leverage = max_leverage,
     integer_qty = integer_qty
   )
@@ -337,7 +363,8 @@ bt_eldoc_exp <- function(ticker, up = 40, down = 40, ps_value = NULL, initial_eq
       fee_value = fee_value,
       fee_type = fee_type,
       slip_value = opts$slip_value,
-      slip_type = slip_type
+      slip_type = slip_type,
+      execution_timeframe = opts$execution_timeframe
     ),
     max_leverage = opts$max_leverage,
     integer_qty = opts$integer_qty,
@@ -349,6 +376,7 @@ bt_eldoc_exp <- function(ticker, up = 40, down = 40, ps_value = NULL, initial_eq
     verbose = verbose,
     clean_di = opts$clean_di,
     funding = opts$funding,
+    execution_data = opts$execution_data,
     report = !isTRUE(hide_details),
     show_quarterly = show_quarterly,
     research_blocks = research_blocks
@@ -371,7 +399,10 @@ bt_eldoc_exp <- function(ticker, up = 40, down = 40, ps_value = NULL, initial_eq
 #'   the returns `xts`), `clean_di` (apply DI-specific bad-row filtering), and
 #'   `funding` (perpetual-futures funding events, or `TRUE` to resolve them from
 #'   the input data / `finharvest`), `max_leverage` (notional cap when `risk` is
-#'   `NULL`), and `integer_qty` (quantity rounding override).
+#'   `NULL`), `integer_qty` (quantity rounding override),
+#'   `execution_timeframe` (`"same"`, `"5m"`, `"1h"`, or `"4h"` for Donchian
+#'   breakout intrabar execution simulation), and `execution_data`
+#'   (explicit execution-timeframe OHLC `xts` for tests or custom data).
 #'   Pyramiding/research arguments are intentionally rejected; use
 #'   `bt_eldoc_exp()` for that surface.
 #' @export
@@ -468,7 +499,8 @@ bt_ema <- function(ticker, fast = 20, slow = 50, ps_value = NULL, initial_equity
       fee_value = fee_value,
       fee_type = fee_type,
       slip_value = opts$slip_value,
-      slip_type = slip_type
+      slip_type = slip_type,
+      execution_timeframe = opts$execution_timeframe
     ),
     max_leverage = opts$max_leverage,
     integer_qty = opts$integer_qty,
@@ -480,6 +512,7 @@ bt_ema <- function(ticker, fast = 20, slow = 50, ps_value = NULL, initial_equity
     verbose = verbose,
     clean_di = opts$clean_di,
     funding = opts$funding,
+    execution_data = opts$execution_data,
     report = !isTRUE(hide_details),
     show_quarterly = show_quarterly
   )
@@ -519,7 +552,8 @@ bt_sma <- function(ticker, fast = 20, slow = 50, ps_value = NULL, initial_equity
       fee_value = fee_value,
       fee_type = fee_type,
       slip_value = opts$slip_value,
-      slip_type = slip_type
+      slip_type = slip_type,
+      execution_timeframe = opts$execution_timeframe
     ),
     max_leverage = opts$max_leverage,
     integer_qty = opts$integer_qty,
@@ -531,6 +565,7 @@ bt_sma <- function(ticker, fast = 20, slow = 50, ps_value = NULL, initial_equity
     verbose = verbose,
     clean_di = opts$clean_di,
     funding = opts$funding,
+    execution_data = opts$execution_data,
     report = !isTRUE(hide_details),
     show_quarterly = show_quarterly
   )
@@ -584,7 +619,8 @@ bt_tsmom <- function(ticker, lookback = 252, threshold = 0, ps_value = 100, init
       fee_value = fee_value,
       fee_type = fee_type,
       slip_value = opts$slip_value,
-      slip_type = slip_type
+      slip_type = slip_type,
+      execution_timeframe = opts$execution_timeframe
     ),
     max_leverage = opts$max_leverage,
     integer_qty = opts$integer_qty,
@@ -596,6 +632,7 @@ bt_tsmom <- function(ticker, lookback = 252, threshold = 0, ps_value = 100, init
     verbose = verbose,
     clean_di = opts$clean_di,
     funding = opts$funding,
+    execution_data = opts$execution_data,
     report = !isTRUE(hide_details),
     show_quarterly = show_quarterly,
     research_blocks = FALSE
@@ -648,7 +685,8 @@ bt_hold <- function(ticker, side = c("long", "short"), ps_value = 100, initial_e
       fee_value = fee_value,
       fee_type = fee_type,
       slip_value = opts$slip_value,
-      slip_type = slip_type
+      slip_type = slip_type,
+      execution_timeframe = opts$execution_timeframe
     ),
     max_leverage = opts$max_leverage,
     integer_qty = integer_qty,
@@ -660,6 +698,7 @@ bt_hold <- function(ticker, side = c("long", "short"), ps_value = 100, initial_e
     verbose = verbose,
     clean_di = opts$clean_di,
     funding = opts$funding,
+    execution_data = opts$execution_data,
     report = !isTRUE(hide_details),
     show_quarterly = show_quarterly,
     research_blocks = FALSE

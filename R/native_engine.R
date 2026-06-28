@@ -227,6 +227,91 @@ bt_risk_spec <- function(mode = c("risk", "notional", "fixed"),
   stop("'slip_type' must be one of 'bps', 'ticks', 'points', or 'cash'.", call. = FALSE)
 }
 
+.bt_normalize_execution_timeframe <- function(timeframe) {
+  if (is.null(timeframe) || length(timeframe) == 0) {
+    return("same")
+  }
+  value <- trimws(as.character(timeframe)[1])
+  if (is.na(value) || !nzchar(value)) {
+    return("same")
+  }
+  clean <- tolower(gsub("[^A-Za-z0-9]", "", value))
+  out <- switch(clean,
+    same = "same",
+    mesmo = "same",
+    signal = "same",
+    signaltimeframe = "same",
+    current = "same",
+    `5m` = "5m",
+    `5min` = "5m",
+    `5minute` = "5m",
+    `5minutes` = "5m",
+    `5minutos` = "5m",
+    `1h` = "1h",
+    `1hr` = "1h",
+    `1hour` = "1h",
+    `1hora` = "1h",
+    `1horas` = "1h",
+    `4h` = "4h",
+    `4hr` = "4h",
+    `4hour` = "4h",
+    `4hours` = "4h",
+    `4hora` = "4h",
+    `4horas` = "4h",
+    NA_character_
+  )
+  if (is.na(out)) {
+    stop("'execution_timeframe' must be one of 'same', '5m', '1h', or '4h'.", call. = FALSE)
+  }
+  out
+}
+
+.bt_timeframe_seconds <- function(timeframe) {
+  tf <- .bt_normalize_execution_timeframe(timeframe)
+  switch(tf,
+    same = NA_real_,
+    `5m` = 5 * 60,
+    `1h` = 60 * 60,
+    `4h` = 4 * 60 * 60,
+    NA_real_
+  )
+}
+
+.bt_normalize_data_timeframe <- function(timeframe) {
+  if (is.null(timeframe) || length(timeframe) == 0) {
+    return(NA_character_)
+  }
+  value <- trimws(as.character(timeframe)[1])
+  if (is.na(value) || !nzchar(value)) {
+    return(NA_character_)
+  }
+  clean <- tolower(gsub("[^A-Za-z0-9]", "", value))
+  switch(clean,
+    `5m` = "5m",
+    `5min` = "5m",
+    `1h` = "1h",
+    `1hr` = "1h",
+    `4h` = "4h",
+    `4hr` = "4h",
+    `1d` = "1d",
+    `1day` = "1d",
+    daily = "1d",
+    d = "1d",
+    NA_character_
+  )
+}
+
+.bt_data_timeframe_seconds <- function(timeframe) {
+  tf <- .bt_normalize_data_timeframe(timeframe)
+  switch(tf,
+    `5m` = 5 * 60,
+    `1h` = 60 * 60,
+    `4h` = 4 * 60 * 60,
+    `1d` = 24 * 60 * 60,
+    NA_real_
+  )
+}
+
 .bt_normalize_ps_type <- function(ps_type) {
   if (is.null(ps_type) || length(ps_type) == 0) {
     return(NULL)
@@ -526,6 +611,11 @@ bt_risk_spec <- function(mode = c("risk", "notional", "fixed"),
 #' @param slippage_ticks Optional explicit slippage in ticks.
 #' @param slippage_points Optional explicit slippage in quoted price points.
 #' @param close_on_end Whether open positions are flattened on the last bar.
+#' @param execution_timeframe Timeframe used to simulate intrabar Donchian
+#'   breakout execution. `"same"` uses the strategy bars; `"5m"`, `"1h"`, and
+#'   `"4h"` require a resolvable lower/equal timeframe OHLC series, iterate
+#'   every execution bar inside each signal bar, and fail fast when data is
+#'   unavailable.
 #' @return A list with class `bt_execution_spec`.
 #' @export
 bt_execution_spec <- function(execution = c("breakout", "same_close", "next_open", "next_close", "next_avg"),
@@ -540,8 +630,10 @@ bt_execution_spec <- function(execution = c("breakout", "same_close", "next_open
                               slippage_bps = NULL,
                               slippage_ticks = NULL,
                               slippage_points = NULL,
-                              close_on_end = TRUE) {
+                              close_on_end = TRUE,
+                              execution_timeframe = "same") {
   execution <- .bt_normalize_execution_mode(execution)
+  execution_timeframe <- .bt_normalize_execution_timeframe(execution_timeframe)
   delay <- if (startsWith(execution, "next_")) 1L else 0L
   fee_type <- .bt_normalize_fee_type(fee_type)
   fee_value <- .bt_optional_non_negative_number(fee_value, "fee_value")
@@ -590,6 +682,7 @@ bt_execution_spec <- function(execution = c("breakout", "same_close", "next_open
     slippage_bps = slippage_bps,
     slippage_ticks = slippage_ticks,
     slippage_points = slippage_points,
+    execution_timeframe = execution_timeframe,
     close_on_end = isTRUE(close_on_end)
   )
   class(spec) <- c("bt_execution_spec", "list")
@@ -858,6 +951,9 @@ bt_execution_spec <- function(execution = c("breakout", "same_close", "next_open
 #'   funding unless an explicit `xts`/`data.frame` is supplied. Explicit
 #'   funding data should include `date`/`FundingRate` or
 #'   `timestamp`/`funding_rate` events.
+#' @param execution_data Optional explicit lower/equal-timeframe OHLC `xts`
+#'   used when `execution$execution_timeframe` is not `"same"`. Character
+#'   tickers are fetched from `finharvest` automatically when omitted.
 #' @param report If `TRUE`, print the standard console performance tables.
 #' @param show_quarterly If `TRUE`, print quarterly return and net-profit
 #'   tables in the console report.
@@ -892,6 +988,7 @@ bt_run_native <- function(ticker,
                           verbose = FALSE,
                           clean_di = TRUE,
                           funding = NULL,
+                          execution_data = NULL,
                           report = TRUE,
                           show_quarterly = FALSE,
                           research_blocks = TRUE) {
@@ -941,6 +1038,18 @@ bt_run_native <- function(ticker,
     metadata = metadata
   )
   execution <- .bt_native_resolve_execution(execution, metadata, prepared$symbol)
+  signal_timeframe <- .bt_native_data_timeframe(prepared$data, prepared$symbol)
+  execution_detail <- .bt_native_prepare_execution_detail(
+    signal_data = prepared$data,
+    symbol = prepared$symbol,
+    signal_timeframe = signal_timeframe,
+    execution = execution,
+    strategy = strategy,
+    start_date = start_date,
+    end_date = end_date,
+    clean_di = clean_di,
+    execution_data = execution_data
+  )
 
   if (isTRUE(report)) {
     .dbg("Is it DI?", .bt_is_di_symbol(prepared$symbol))
@@ -962,7 +1071,8 @@ bt_run_native <- function(ticker,
     execution = execution,
     metadata = metadata,
     symbol = prepared$symbol,
-    funding_events = funding_events
+    funding_events = funding_events,
+    execution_detail = execution_detail
   )
 
   if (isTRUE(report)) {
@@ -1676,6 +1786,193 @@ bt_search_native <- function(ticker,
   .bt_fetch_finharvest_data(symbol, start_date = start_date, end_date = end_date)
 }
 
+.bt_native_parse_symbol_timeframe <- function(symbol) {
+  symbol <- as.character(symbol %||% "")[1]
+  if (!nzchar(symbol)) {
+    return(NA_character_)
+  }
+  parts <- strsplit(symbol, "_", fixed = TRUE)[[1]]
+  if (!length(parts)) {
+    return(NA_character_)
+  }
+  tf <- .bt_normalize_data_timeframe(utils::tail(parts, 1))
+  if (!is.na(tf)) {
+    return(tf)
+  }
+  # Binance futures without a suffix use finharvest's default daily table.
+  if (grepl("_(PERPETUAL|QTR|NQTR)$|_[0-9]{6}$", toupper(symbol), perl = TRUE)) {
+    return("1d")
+  }
+  NA_character_
+}
+
+.bt_native_data_timeframe <- function(data, symbol) {
+  attr_tf <- .bt_xts_attr_first(
+    data,
+    c("timeframe", "bar_size", "interval"),
+    groups = c("information", "contract", "metadata")
+  )
+  tf <- .bt_normalize_data_timeframe(attr_tf)
+  if (!is.na(tf)) {
+    return(tf)
+  }
+  .bt_native_parse_symbol_timeframe(symbol)
+}
+
+.bt_native_signal_bar_end <- function(idx, i, signal_seconds) {
+  if (i < length(idx)) {
+    return(as.POSIXct(idx[i + 1L], tz = "UTC"))
+  }
+  start <- as.POSIXct(idx[i], tz = "UTC")
+  if (is.finite(signal_seconds) && signal_seconds > 0) {
+    return(start + signal_seconds)
+  }
+  if (i > 1L) {
+    prev <- as.POSIXct(idx[i - 1L], tz = "UTC")
+    delta <- as.numeric(difftime(start, prev, units = "secs"))
+    if (is.finite(delta) && delta > 0) {
+      return(start + delta)
+    }
+  }
+  start
+}
+
+.bt_native_execution_symbol <- function(symbol, execution_timeframe) {
+  exec_tf <- .bt_normalize_execution_timeframe(execution_timeframe)
+  if (identical(exec_tf, "same")) {
+    return(as.character(symbol)[1])
+  }
+  symbol <- as.character(symbol %||% "")[1]
+  if (!nzchar(symbol)) {
+    stop("Cannot derive an execution-timeframe ticker from an unnamed xts object.", call. = FALSE)
+  }
+  parts <- strsplit(symbol, "_", fixed = TRUE)[[1]]
+  if (!length(parts)) {
+    stop(sprintf("Cannot derive execution-timeframe ticker for '%s'.", symbol), call. = FALSE)
+  }
+  last_tf <- .bt_normalize_data_timeframe(utils::tail(parts, 1))
+  if (!is.na(last_tf)) {
+    parts[length(parts)] <- exec_tf
+    return(paste(parts, collapse = "_"))
+  }
+  if (grepl("_(PERPETUAL|QTR|NQTR)$|_[0-9]{6}$", toupper(symbol), perl = TRUE)) {
+    return(paste0(symbol, "_", exec_tf))
+  }
+  stop(
+    sprintf(
+      "Cannot derive execution-timeframe ticker for '%s'. Add an explicit timeframe suffix or use execution_timeframe = 'same'.",
+      symbol
+    ),
+    call. = FALSE
+  )
+}
+
+.bt_native_prepare_execution_detail <- function(signal_data,
+                                                symbol,
+                                                signal_timeframe,
+                                                execution,
+                                                strategy,
+                                                start_date,
+                                                end_date,
+                                                clean_di = TRUE,
+                                                execution_data = NULL) {
+  exec_tf <- execution$execution_timeframe %||% "same"
+  exec_tf <- .bt_normalize_execution_timeframe(exec_tf)
+  if (identical(exec_tf, "same")) {
+    return(NULL)
+  }
+  if (!identical(strategy$type, "donchian") || !identical(execution$execution, "breakout")) {
+    stop("execution_timeframe other than 'same' is currently supported only for Donchian breakout execution.", call. = FALSE)
+  }
+  if (isTRUE(strategy$params$pyramid)) {
+    stop("execution_timeframe other than 'same' is not supported with pyramiding yet.", call. = FALSE)
+  }
+  signal_tf <- .bt_normalize_data_timeframe(signal_timeframe)
+  signal_secs <- .bt_data_timeframe_seconds(signal_tf)
+  if (!is.finite(signal_secs) || signal_secs <= 0) {
+    stop(
+      sprintf(
+        "Cannot validate execution_timeframe='%s' because '%s' has no recognized strategy timeframe. Use a ticker suffix such as _1d, _4h, or _1h.",
+        exec_tf,
+        symbol
+      ),
+      call. = FALSE
+    )
+  }
+  exec_secs <- .bt_timeframe_seconds(exec_tf)
+  if (!is.finite(exec_secs) || exec_secs <= 0) {
+    stop("'execution_timeframe' must be one of 'same', '5m', '1h', or '4h'.", call. = FALSE)
+  }
+  if (exec_secs > signal_secs) {
+    stop(
+      sprintf(
+        "execution_timeframe='%s' is coarser than strategy timeframe '%s' for '%s'.",
+        exec_tf,
+        signal_tf,
+        symbol
+      ),
+      call. = FALSE
+    )
+  }
+  if (identical(exec_secs, signal_secs)) {
+    return(NULL)
+  }
+
+  exec_symbol <- .bt_native_execution_symbol(symbol, exec_tf)
+  prepared <- .bt_native_prepare_data(
+    ticker = exec_symbol,
+    data = execution_data,
+    start_date = start_date,
+    end_date = end_date,
+    clean_di = clean_di
+  )
+  exec_data <- prepared$data
+  exec_prices <- .bt_native_price_set(exec_data, prepared$symbol)
+  exec_data_tf <- .bt_native_data_timeframe(exec_data, prepared$symbol)
+  exec_data_secs <- .bt_data_timeframe_seconds(exec_data_tf)
+  if (is.finite(exec_data_secs) && exec_data_secs != exec_secs) {
+    stop(
+      sprintf(
+        "Execution ticker '%s' resolved timeframe '%s', not requested '%s'.",
+        prepared$symbol,
+        exec_data_tf,
+        exec_tf
+      ),
+      call. = FALSE
+    )
+  }
+
+  signal_idx <- as.POSIXct(zoo::index(signal_data), tz = "UTC")
+  exec_idx <- as.POSIXct(zoo::index(exec_data), tz = "UTC")
+  if (!length(exec_idx) || all(is.na(exec_idx))) {
+    stop(sprintf("Execution timeframe data for '%s' has no timestamps.", prepared$symbol), call. = FALSE)
+  }
+  needed_start <- min(signal_idx, na.rm = TRUE)
+  needed_end <- .bt_native_signal_bar_end(signal_idx, length(signal_idx), signal_secs)
+  if (min(exec_idx, na.rm = TRUE) > needed_start || max(exec_idx, na.rm = TRUE) < max(signal_idx, na.rm = TRUE)) {
+    stop(
+      sprintf(
+        "Execution timeframe '%s' for '%s' does not cover the strategy data window for '%s'.",
+        exec_tf,
+        prepared$symbol,
+        symbol
+      ),
+      call. = FALSE
+    )
+  }
+
+  list(
+    symbol = prepared$symbol,
+    data = exec_data,
+    prices = exec_prices,
+    timeframe = exec_tf,
+    timeframe_seconds = exec_secs,
+    signal_timeframe = signal_tf,
+    signal_timeframe_seconds = signal_secs,
+    index = exec_idx
+  )
+}
+
 .bt_native_enrich_futures_data <- function(data, symbol, clean_di = TRUE) {
   if (.bt_is_di_symbol(symbol)) {
     data <- .bt_fill_di_maturity(data, symbol)
@@ -2374,10 +2671,16 @@ bt_search_native <- function(ticker,
   "flat"
 }
 
-.bt_native_trade_row <- function(timestamp, symbol, qty, qty_delta, units, price, costs, reason, equity_after) {
+.bt_native_trade_row <- function(timestamp, symbol, qty, qty_delta, units, price, costs, reason, equity_after,
+                                 signal_time = NULL, execution_timeframe = "same", execution_source_ticker = NA_character_) {
   costs <- .bt_native_clean_cost_components(costs)
+  timestamp <- as.POSIXct(timestamp, tz = "UTC")
+  signal_time <- if (is.null(signal_time)) timestamp else as.POSIXct(signal_time, tz = "UTC")
   data.frame(
-    timestamp = as.POSIXct(timestamp, tz = "UTC"),
+    timestamp = timestamp,
+    signal_time = signal_time,
+    execution_timeframe = as.character(execution_timeframe %||% "same")[1],
+    execution_source_ticker = as.character(execution_source_ticker %||% NA_character_)[1],
     symbol = symbol,
     side = .bt_native_trade_side(qty),
     qty = qty,
@@ -2396,6 +2699,9 @@ bt_search_native <- function(ticker,
 .bt_native_empty_trade_frame <- function() {
   data.frame(
     timestamp = as.POSIXct(character()),
+    signal_time = as.POSIXct(character()),
+    execution_timeframe = character(),
+    execution_source_ticker = character(),
     symbol = character(),
     side = character(),
     qty = numeric(),
@@ -2424,7 +2730,7 @@ bt_search_native <- function(ticker,
   )
 }
 
-.bt_native_simulate <- function(data, prices, indicators, signals, strategy, risk, execution, metadata, symbol, funding_events = NULL) {
+.bt_native_simulate <- function(data, prices, indicators, signals, strategy, risk, execution, metadata, symbol, funding_events = NULL, execution_detail = NULL) {
   n <- length(prices$close)
   idx <- prices$index
   exec_open <- if (!is.null(prices$exec_open)) prices$exec_open else prices$open
@@ -2448,11 +2754,33 @@ bt_search_native <- function(ticker,
   funding_times <- if (NROW(funding_events)) as.POSIXct(funding_events$timestamp, tz = "UTC") else as.POSIXct(character(), tz = "UTC")
   funding_multiplier <- suppressWarnings(as.numeric(metadata$multiplier)[1])
   if (!is.finite(funding_multiplier) || funding_multiplier <= 0) funding_multiplier <- 1
+  execution_timeframe <- execution$execution_timeframe %||% "same"
+  execution_source_ticker <- if (!is.null(execution_detail)) execution_detail$symbol else NA_character_
+  execution_index_num <- if (!is.null(execution_detail)) as.numeric(execution_detail$index) else numeric()
+  execution_open <- if (!is.null(execution_detail)) execution_detail$prices$open else numeric()
+  execution_high <- if (!is.null(execution_detail)) execution_detail$prices$high else numeric()
+  execution_low <- if (!is.null(execution_detail)) execution_detail$prices$low else numeric()
+  lower_bound <- function(vec, value) {
+    n_vec <- length(vec)
+    lo <- 1L
+    hi <- n_vec + 1L
+    while (lo < hi) {
+      mid <- floor((lo + hi) / 2)
+      if (vec[[mid]] < value) {
+        lo <- mid + 1L
+      } else {
+        hi <- mid
+      }
+    }
+    lo
+  }
 
-  add_trade <- function(i, qty_delta, price, costs, reason, equity_after) {
+  add_trade <- function(i, qty_delta, price, costs, reason, equity_after, event_time = NULL, signal_time = NULL) {
     if (!is.finite(qty_delta) || qty_delta == 0) return(invisible(NULL))
+    timestamp <- if (is.null(event_time)) idx[i] else event_time
+    signal_ts <- if (is.null(signal_time)) idx[i] else signal_time
     trades[[length(trades) + 1L]] <<- .bt_native_trade_row(
-      timestamp = idx[i],
+      timestamp = timestamp,
       symbol = symbol,
       qty = qty,
       qty_delta = qty_delta,
@@ -2460,7 +2788,10 @@ bt_search_native <- function(ticker,
       price = price,
       costs = costs,
       reason = reason,
-      equity_after = equity_after
+      equity_after = equity_after,
+      signal_time = signal_ts,
+      execution_timeframe = execution_timeframe,
+      execution_source_ticker = execution_source_ticker
     )
     invisible(NULL)
   }
@@ -2541,6 +2872,17 @@ bt_search_native <- function(ticker,
   }
 
   signal_mode <- identical(execution_mode, "breakout") && identical(strategy$type, "donchian")
+  signal_long_entry <- as.logical(signals[, "LongEntry"])
+  signal_long_entry[is.na(signal_long_entry)] <- FALSE
+  signal_long_exit <- as.logical(signals[, "LongExit"])
+  signal_long_exit[is.na(signal_long_exit)] <- FALSE
+  signal_short_entry <- as.logical(signals[, "ShortEntry"])
+  signal_short_entry[is.na(signal_short_entry)] <- FALSE
+  signal_short_exit <- as.logical(signals[, "ShortExit"])
+  signal_short_exit[is.na(signal_short_exit)] <- FALSE
+  signal_upper_enabled <- signal_long_entry | signal_short_exit
+  signal_lower_enabled <- signal_long_exit | signal_short_entry
+  signal_has_stop_event <- signal_upper_enabled | signal_lower_enabled
 
   stop_event_price <- function(sig_i, event) {
     column <- if (identical(event, "upper")) "DonchianUpper" else "DonchianLower"
@@ -2556,6 +2898,54 @@ bt_search_native <- function(ticker,
     if (is.finite(pu) && pu > 0) pu else fallback
   }
 
+  execution_touch_time <- function(sig_i, event, signal_price) {
+    fallback <- as.POSIXct(idx[sig_i], tz = "UTC")
+    if (is.null(execution_detail)) {
+      return(fallback)
+    }
+    signal_price <- suppressWarnings(as.numeric(signal_price)[1])
+    if (!is.finite(signal_price) || signal_price <= 0) {
+      return(fallback)
+    }
+    start <- as.POSIXct(idx[sig_i], tz = "UTC")
+    end <- .bt_native_signal_bar_end(idx, sig_i, execution_detail$signal_timeframe_seconds)
+    ex_idx <- execution_detail$index
+    rows <- which(ex_idx >= start & ex_idx < end)
+    if (!length(rows)) {
+      stop(
+        sprintf(
+          "Execution timeframe '%s' for '%s' has no bars inside signal bar %s.",
+          execution_detail$timeframe,
+          execution_detail$symbol,
+          format(start, "%Y-%m-%d %H:%M:%S")
+        ),
+        call. = FALSE
+      )
+    }
+    px <- execution_detail$prices
+    touched <- if (identical(event, "upper")) {
+      suppressWarnings(as.numeric(px$high[rows])) >= signal_price
+    } else {
+      suppressWarnings(as.numeric(px$low[rows])) <= signal_price
+    }
+    touched[is.na(touched)] <- FALSE
+    hit <- rows[which(touched)[1]]
+    if (!length(hit) || is.na(hit)) {
+      stop(
+        sprintf(
+          "Execution timeframe '%s' for '%s' did not confirm %s breakout %.10g inside signal bar %s.",
+          execution_detail$timeframe,
+          execution_detail$symbol,
+          event,
+          signal_price,
+          format(start, "%Y-%m-%d %H:%M:%S")
+        ),
+        call. = FALSE
+      )
+    }
+    ex_idx[hit]
+  }
+
   stop_event_sequence <- function(sig_i, qty_now) {
     upper_touched <- isTRUE(as.logical(signals[sig_i, "LongEntry"])) ||
       isTRUE(as.logical(signals[sig_i, "ShortExit"]))
@@ -2563,6 +2953,16 @@ bt_search_native <- function(ticker,
       isTRUE(as.logical(signals[sig_i, "ShortEntry"]))
     if (!upper_touched && !lower_touched) {
       return(character())
+    }
+    if (upper_touched && lower_touched && !is.null(execution_detail)) {
+      upper_time <- execution_touch_time(sig_i, "upper", stop_event_price(sig_i, "upper"))
+      lower_time <- execution_touch_time(sig_i, "lower", stop_event_price(sig_i, "lower"))
+      if (!is.na(upper_time) && !is.na(lower_time) && upper_time != lower_time) {
+        if (upper_time < lower_time) {
+          return(c("upper", "lower"))
+        }
+        return(c("lower", "upper"))
+      }
     }
     if (upper_touched && lower_touched) {
       if (qty_now > 0) {
@@ -2578,6 +2978,95 @@ bt_search_native <- function(ticker,
         return(character())
       }
       if (abs(open_i - upper) <= abs(open_i - lower)) {
+        return(c("upper", "lower"))
+      }
+      return(c("lower", "upper"))
+    }
+    if (upper_touched) "upper" else "lower"
+  }
+
+  stop_event_enabled <- function(sig_i, event) {
+    if (identical(event, "upper")) {
+      return(isTRUE(signal_upper_enabled[[sig_i]]))
+    }
+    isTRUE(signal_lower_enabled[[sig_i]])
+  }
+
+  execution_rows_for_signal <- function(sig_i) {
+    if (is.null(execution_detail)) {
+      return(integer())
+    }
+    if (!isTRUE(signal_has_stop_event[[sig_i]])) {
+      return(integer())
+    }
+    start <- as.POSIXct(idx[sig_i], tz = "UTC")
+    end <- .bt_native_signal_bar_end(idx, sig_i, execution_detail$signal_timeframe_seconds)
+    start_num <- as.numeric(start)
+    end_num <- as.numeric(end)
+    first <- lower_bound(execution_index_num, start_num)
+    last_exclusive <- lower_bound(execution_index_num, end_num)
+    rows <- if (first < last_exclusive) seq.int(first, last_exclusive - 1L) else integer()
+    if (!length(rows)) {
+      stop(
+        sprintf(
+          "Execution timeframe '%s' for '%s' has no bars inside signal bar %s.",
+          execution_detail$timeframe,
+          execution_detail$symbol,
+          format(start, "%Y-%m-%d %H:%M:%S")
+        ),
+        call. = FALSE
+      )
+    }
+    upper_enabled <- isTRUE(signal_upper_enabled[[sig_i]])
+    lower_enabled <- isTRUE(signal_lower_enabled[[sig_i]])
+    upper_price <- if (upper_enabled) stop_event_price(sig_i, "upper") else NA_real_
+    lower_price <- if (lower_enabled) stop_event_price(sig_i, "lower") else NA_real_
+    touched <- rep(FALSE, length(rows))
+    if (upper_enabled && is.finite(upper_price)) {
+      touched <- touched | execution_high[rows] >= upper_price
+    }
+    if (lower_enabled && is.finite(lower_price)) {
+      touched <- touched | execution_low[rows] <= lower_price
+    }
+    touched[is.na(touched)] <- FALSE
+    rows[touched]
+  }
+
+  execution_bar_event_sequence <- function(sig_i, exec_row, qty_now) {
+    if (is.null(execution_detail)) {
+      return(character())
+    }
+    upper_price <- stop_event_price(sig_i, "upper")
+    lower_price <- stop_event_price(sig_i, "lower")
+    upper_touched <- stop_event_enabled(sig_i, "upper") &&
+      is.finite(upper_price) &&
+      execution_high[exec_row] >= upper_price
+    lower_touched <- stop_event_enabled(sig_i, "lower") &&
+      is.finite(lower_price) &&
+      execution_low[exec_row] <= lower_price
+    if (!upper_touched && !lower_touched) {
+      return(character())
+    }
+    if (upper_touched && lower_touched) {
+      open_px <- execution_open[exec_row]
+      if (is.finite(open_px)) {
+        if (open_px >= upper_price) {
+          return(c("upper", "lower"))
+        }
+        if (open_px <= lower_price) {
+          return(c("lower", "upper"))
+        }
+      }
+      if (qty_now > 0) {
+        return(c("lower", "upper"))
+      }
+      if (qty_now < 0) {
+        return(c("upper", "lower"))
+      }
+      if (!is.finite(open_px)) {
+        return(character())
+      }
+      if (abs(open_px - upper_price) <= abs(open_px - lower_price)) {
         return(c("upper", "lower"))
       }
       return(c("lower", "upper"))
@@ -2675,7 +3164,14 @@ bt_search_native <- function(ticker,
     invisible(NULL)
   }
 
-  process_stop_event <- function(i, sig_i, event, eq, px) {
+  process_stop_event <- function(i, sig_i, event, eq, px, event_time = NULL) {
+    event_signal_price <- stop_event_price(sig_i, event)
+    event_timestamp <- if (is.null(event_time)) {
+      execution_touch_time(sig_i, event, event_signal_price)
+    } else {
+      as.POSIXct(event_time, tz = "UTC")
+    }
+    signal_time <- as.POSIXct(idx[sig_i], tz = "UTC")
     if (identical(event, "upper")) {
       if (qty < 0 && isTRUE(as.logical(signals[sig_i, "ShortExit"]))) {
         delta <- -qty
@@ -2686,7 +3182,7 @@ bt_search_native <- function(ticker,
         last_add_price <<- NA_real_
         last_add_signal_price <<- NA_real_
         eq <- eq - costs[["total_cost"]]
-        add_trade(i, delta, px, costs, "short_exit", eq)
+        add_trade(i, delta, px, costs, "short_exit", eq, event_time = event_timestamp, signal_time = signal_time)
       }
       if (qty == 0 && strategy$long && isTRUE(as.logical(signals[sig_i, "LongEntry"]))) {
         delta <- maybe_enter(i, sig_i, "long", eq, px)
@@ -2698,7 +3194,7 @@ bt_search_native <- function(ticker,
           last_add_price <<- px
           last_add_signal_price <<- add_signal_basis(sig_i, px, event)
           eq <- eq - costs[["total_cost"]]
-          add_trade(i, delta, px, costs, "long_entry", eq)
+          add_trade(i, delta, px, costs, "long_entry", eq, event_time = event_timestamp, signal_time = signal_time)
         }
       }
     } else {
@@ -2711,7 +3207,7 @@ bt_search_native <- function(ticker,
         last_add_price <<- NA_real_
         last_add_signal_price <<- NA_real_
         eq <- eq - costs[["total_cost"]]
-        add_trade(i, delta, px, costs, "long_exit", eq)
+        add_trade(i, delta, px, costs, "long_exit", eq, event_time = event_timestamp, signal_time = signal_time)
       }
       if (qty == 0 && strategy$short && isTRUE(as.logical(signals[sig_i, "ShortEntry"]))) {
         delta <- maybe_enter(i, sig_i, "short", eq, px)
@@ -2723,7 +3219,7 @@ bt_search_native <- function(ticker,
           last_add_price <<- px
           last_add_signal_price <<- add_signal_basis(sig_i, px, event)
           eq <- eq - costs[["total_cost"]]
-          add_trade(i, delta, px, costs, "short_entry", eq)
+          add_trade(i, delta, px, costs, "short_entry", eq, event_time = event_timestamp, signal_time = signal_time)
         }
       }
     }
@@ -2835,42 +3331,63 @@ bt_search_native <- function(ticker,
       eq <- equity[i - 1L]
       last_px <- prev_close
       eq <- apply_funding(i, eq, close_i)
-      events <- stop_event_sequence(i, qty)
-      for (event in events) {
-        px <- stop_event_exec_price(i, event, fallback = close_i)
-        if (!is.finite(px) || px <= 0) {
-          next
-        }
-        eq <- mark_to_price(eq, last_px, px)
-        eq <- process_stop_event(i, i, event, eq, px)
-        last_px <- px
-      }
-      while (pyramid_enabled && qty != 0 && unit_count < strategy$params$max_units) {
-        pyr <- pyramid_touched(i)
-        pyr_px <- pyr[["exec_price"]]
-        if (!is.finite(pyr_px)) {
-          break
-        }
-        if (uses_pu) {
-          if (qty > 0 && pyr_px > last_px) {
-            pyr_px <- last_px
-          } else if (qty < 0 && pyr_px < last_px) {
-            pyr_px <- last_px
+
+      if (!is.null(execution_detail)) {
+        exec_rows <- execution_rows_for_signal(i)
+        for (exec_row in exec_rows) {
+          events <- execution_bar_event_sequence(i, exec_row, qty)
+          if (!length(events)) {
+            next
           }
-        } else {
-          if (qty > 0 && pyr_px < last_px) {
-            pyr_px <- last_px
-          } else if (qty < 0 && pyr_px > last_px) {
-            pyr_px <- last_px
+          event_time <- execution_detail$index[exec_row]
+          for (event in events) {
+            px <- stop_event_exec_price(i, event, fallback = close_i)
+            if (!is.finite(px) || px <= 0) {
+              next
+            }
+            eq <- mark_to_price(eq, last_px, px)
+            eq <- process_stop_event(i, i, event, eq, px, event_time = event_time)
+            last_px <- px
           }
         }
-        eq <- mark_to_price(eq, last_px, pyr_px)
-        unit_before <- unit_count
-        eq <- process_pyramid(i, i, eq, pyr_px, signal_px = pyr[["signal_price"]])
-        if (unit_count <= unit_before) {
-          break
+      } else {
+        events <- stop_event_sequence(i, qty)
+        for (event in events) {
+          px <- stop_event_exec_price(i, event, fallback = close_i)
+          if (!is.finite(px) || px <= 0) {
+            next
+          }
+          eq <- mark_to_price(eq, last_px, px)
+          eq <- process_stop_event(i, i, event, eq, px)
+          last_px <- px
         }
-        last_px <- pyr_px
+        while (pyramid_enabled && qty != 0 && unit_count < strategy$params$max_units) {
+          pyr <- pyramid_touched(i)
+          pyr_px <- pyr[["exec_price"]]
+          if (!is.finite(pyr_px)) {
+            break
+          }
+          if (uses_pu) {
+            if (qty > 0 && pyr_px > last_px) {
+              pyr_px <- last_px
+            } else if (qty < 0 && pyr_px < last_px) {
+              pyr_px <- last_px
+            }
+          } else {
+            if (qty > 0 && pyr_px < last_px) {
+              pyr_px <- last_px
+            } else if (qty < 0 && pyr_px > last_px) {
+              pyr_px <- last_px
+            }
+          }
+          eq <- mark_to_price(eq, last_px, pyr_px)
+          unit_before <- unit_count
+          eq <- process_pyramid(i, i, eq, pyr_px, signal_px = pyr[["signal_price"]])
+          if (unit_count <= unit_before) {
+            break
+          }
+          last_px <- pyr_px
+        }
       }
       eq <- mark_to_price(eq, last_px, close_i)
       equity[i] <- eq
@@ -3670,6 +4187,9 @@ bt_search_native <- function(ticker,
     side = character(),
     event_type = character(),
     event_time = as.POSIXct(character(), tz = "UTC"),
+    signal_time = as.POSIXct(character(), tz = "UTC"),
+    execution_timeframe = character(),
+    execution_source_ticker = character(),
     reason = character(),
     entry_time = as.POSIXct(character(), tz = "UTC"),
     exit_time = as.POSIXct(character(), tz = "UTC"),
@@ -3913,12 +4433,18 @@ bt_search_native <- function(ticker,
       reason <- as.character(row$reason[1])
       event_type <- .bt_native_audit_event_type(reason)
       is_exit <- identical(event_type, "exit")
+      row_signal_time <- if ("signal_time" %in% names(row)) row$signal_time[1] else row$timestamp[1]
+      row_execution_timeframe <- if ("execution_timeframe" %in% names(row)) row$execution_timeframe[1] else "same"
+      row_execution_source <- if ("execution_source_ticker" %in% names(row)) row$execution_source_ticker[1] else NA_character_
       audit[[length(audit) + 1L]] <<- data.frame(
         trade_id = current$trade_id,
         symbol = current$symbol,
         side = current$side,
         event_type = event_type,
         event_time = as.POSIXct(row$timestamp[1], tz = "UTC"),
+        signal_time = as.POSIXct(row_signal_time, tz = "UTC"),
+        execution_timeframe = as.character(row_execution_timeframe %||% "same"),
+        execution_source_ticker = as.character(row_execution_source %||% NA_character_),
         reason = reason,
         entry_time = current$entry_time,
         exit_time = exit_time,
@@ -3948,6 +4474,9 @@ bt_search_native <- function(ticker,
         side = current$side,
         event_type = "funding",
         event_time = exit_time,
+        signal_time = exit_time,
+        execution_timeframe = "same",
+        execution_source_ticker = NA_character_,
         reason = "funding_settlement",
         entry_time = current$entry_time,
         exit_time = exit_time,
@@ -4302,6 +4831,7 @@ bt_search_native <- function(ticker,
 .bt_native_execution_block <- function(execution) {
   rows <- list(
     Execution = execution$execution,
+    "Execution Timeframe" = execution$execution_timeframe %||% "same",
     "Close On End" = .bt_native_bool_label(execution$close_on_end),
     "Fee Mode" = execution$fee,
     "Fee Value" = .bt_native_format_plain_num(execution$fee_value),
@@ -4931,6 +5461,7 @@ bt_search_native <- function(ticker,
     RiskPct = risk$risk_pct,
     Reinvest = risk$reinvest,
     Execution = execution$execution,
+    ExecutionTimeframe = execution$execution_timeframe %||% "same",
     AtrLookback = strategy$params$atr_n %||% NA_integer_,
     FeeMode = execution$fee,
     FeeType = execution$fee_type %||% NA_character_,

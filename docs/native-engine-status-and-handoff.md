@@ -257,15 +257,33 @@ not supplied. Binance-style USDT-M crypto futures default to decimal quantities;
 same decimal linear-futures path applies to Binance `_PERPETUAL`, `QTR`/`NQTR`,
 and dated delivery tickers such as `BTCUSDT_260627`.
 
+Single-instrument Donchian breakout runs can set `execution_timeframe` in
+`...` to `"5m"`, `"1h"`, or `"4h"`; `"same"` is the default. Non-`same` values
+derive a matching execution ticker, for example `BTCUSDT_PERPETUAL_1h` ->
+`BTCUSDT_PERPETUAL_5m`, fetch that series through the same `finharvest`
+contract, require the execution timeframe to be lower/equal than the strategy
+timeframe, and error if the series is unavailable or does not cover the signal
+window. The lower timeframe is iterated candle by candle inside each signal bar:
+upper/lower touches can repeat and can generate multiple reversals before the
+strategy bar closes. Indicators, Donchian levels, sizing stops, funding lookup,
+and the returned equity frequency stay on the strategy timeframe. Trade ledgers
+and `trade_audit` include `signal_time`, `execution_timeframe`, and
+`execution_source_ticker` so consumers can distinguish the signal candle from
+the resolved execution candle.
+
 Single-instrument native runs can also apply perpetual funding cashflows.
 `funding = TRUE` reads funding columns from the input `xts` or fetches
 `finharvest::finget_binance_fut_funding()` only for explicit `_PERPETUAL`
 symbols. Binance `QTR`/`NQTR`/dated delivery futures are not auto-mapped to the
 matching perpetual; they keep zero funding unless explicit funding events are
 supplied as an `xts`/`data.frame` with `date`/`timestamp`, `funding_rate`, and
-optional `mark_price`. Funding is kept out of `trades$total_cost`; it is
-returned in `funding_events`, summarized in `stats$funding`, and included in the
-equity curve while the position is open.
+optional `mark_price`. For Binance perpetuals, current `finharvest` fills
+missing historical funding marks from Binance mark-price klines before the
+events reach the simulator. The engine uses that event mark for
+`-quantity * mark_price * multiplier * funding_rate`; the candle-price fallback
+exists only for manually supplied incomplete funding data. Funding is kept out
+of `trades$total_cost`; it is returned in `funding_events`, summarized in
+`stats$funding`, and included in the equity curve while the position is open.
 
 Completed trades also produce `trade_audit`. This audit ledger contains
 order-level `entry`, `pyramid`, and `exit` rows with signal price,
