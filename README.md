@@ -114,15 +114,21 @@ audit <- results$trade_audit # Completed-trade audit ledger
 In `results$trades`, `fees` is commission only, `slippage` is the estimated
 slippage cost, and `total_cost` is the execution-cost amount subtracted from
 equity. Perpetual-futures funding cashflows are kept separately in
-`results$funding_events` and summarized as `stats$funding`. Console reports
-include a `Costs & Slippage Summary` section before the returns summary, with
-fees, slippage, funding, and impact percentages.
+`results$funding_events`; each event carries the active `trade_id`, side,
+quantity, mark price, notional, rate, net cashflow, paid/received split,
+absolute funding, bps of notional, and post-event equity when available.
+Funding is summarized as net `stats$funding` plus `stats$funding_paid`,
+`stats$funding_received`, `stats$funding_abs`, and `stats$funding_events`.
+Console reports include a `Costs & Slippage Summary` section before the returns
+summary, with fees, slippage, funding, and impact percentages.
 
-`results$trade_audit` expands completed trades into order-level rows. Entry,
-pyramid, and exit rows show `signal_price`, slippage-adjusted `fill_price`,
-fees, slippage, total cost, and bars held. Perpetual runs with funding add a
-separate `event_type = "funding"` row per completed trade with funding paid or
-received.
+`results$trade_episodes` is the compact one-row-per-trade audit, including net
+funding, funding paid, funding received, absolute funding, and funding event
+count when perpetual funding is active. `results$trade_audit` expands completed
+trades into order-level rows. Entry, pyramid, and exit rows show `signal_price`,
+slippage-adjusted `fill_price`, fees, slippage, total cost, and bars held.
+Perpetual runs with funding add a separate `event_type = "funding"` row per
+completed trade with funding paid/received and event count.
 
 Parameter search for agents:
 

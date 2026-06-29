@@ -108,9 +108,12 @@ test_that("native Donchian engine returns finite shaped results", {
     "trade_id", "event_type", "event_time", "entry_time", "exit_time",
     "bars_held", "signal_price", "fill_price", "fees", "slippage",
     "total_cost", "funding_cash", "funding_received", "funding_paid",
-    "funding_events", "gross_pnl", "net_pnl"
+    "abs_funding", "funding_events", "gross_pnl", "net_pnl"
   ) %in% names(res$trade_audit)))
-  expect_true(all(c("entry_atr", "entry_atr_value_per_unit", "initial_stop_atr", "initial_risk_per_unit") %in% names(res$trade_episodes)))
+  expect_true(all(c(
+    "funding_received", "funding_paid", "abs_funding", "funding_events",
+    "entry_atr", "entry_atr_value_per_unit", "initial_stop_atr", "initial_risk_per_unit"
+  ) %in% names(res$trade_episodes)))
   expect_true(all(c("mfe_pct", "mae_pct", "mfe_atr", "mae_atr", "final_R", "hit_5_0_atr", "hit_10_0_atr", "hit_20_0_atr", "hit_40_0_atr", "post_5_0_atr_R", "post_20_0_atr_R", "post_40_0_atr_R") %in% names(res$trade_excursions)))
   expect_true(all(is.finite(res$trade_excursions$mfe_pct)))
   expect_true(all(res$trade_excursions$mfe_pct >= 0))
@@ -662,6 +665,10 @@ test_that("native metadata uses finharvest xts contract attrs", {
   expect_equal(cost_table["Fees", "Value"], "10,00")
   expect_equal(cost_table["Slippage", "Value"], "10,00")
   expect_equal(cost_table["Funding", "Value"], "0,00")
+  expect_equal(cost_table["Funding Received", "Value"], "0,00")
+  expect_equal(cost_table["Funding Paid", "Value"], "0,00")
+  expect_equal(cost_table["Funding Abs", "Value"], "0,00")
+  expect_equal(cost_table["Funding Events", "Value"], "0")
   expect_equal(cost_table["Gross P/L", "Value"], "100,00")
   expect_equal(cost_table["Fees Impact", "Value"], "10.00%")
   expect_equal(cost_table["Slippage Impact", "Value"], "10.00%")
@@ -754,6 +761,13 @@ test_that("native funding ledger applies long debits and short credits", {
     funding_events = funding
   )
   expect_equal(long_sim$funding$funding_cash, -1)
+  expect_equal(long_sim$funding$trade_id, 1L)
+  expect_equal(long_sim$funding$side, "long")
+  expect_equal(long_sim$funding$notional, 100)
+  expect_equal(long_sim$funding$funding_paid, 1)
+  expect_equal(long_sim$funding$funding_received, 0)
+  expect_equal(long_sim$funding$abs_funding, 1)
+  expect_equal(long_sim$funding$funding_bps_notional, -100)
   expect_equal(as.numeric(tail(long_sim$equity$Equity, 1)), 999)
   long_diag <- .bt_native_trade_diagnostics(
     trades = long_sim$trades,
@@ -765,6 +779,10 @@ test_that("native funding ledger applies long debits and short credits", {
     funding_events = long_sim$funding
   )
   expect_equal(long_diag$episodes$funding, -1)
+  expect_equal(long_diag$episodes$funding_received, 0)
+  expect_equal(long_diag$episodes$funding_paid, 1)
+  expect_equal(long_diag$episodes$abs_funding, 1)
+  expect_equal(long_diag$episodes$funding_events, 1L)
   expect_equal(long_diag$episodes$net_pnl, -1)
   long_funding_audit <- long_diag$audit[long_diag$audit$event_type == "funding", , drop = FALSE]
   expect_equal(NROW(long_funding_audit), 1)
@@ -798,6 +816,9 @@ test_that("native funding ledger applies long debits and short credits", {
     funding_events = funding
   )
   expect_equal(short_sim$funding$funding_cash, 1)
+  expect_equal(short_sim$funding$side, "short")
+  expect_equal(short_sim$funding$funding_received, 1)
+  expect_equal(short_sim$funding$funding_paid, 0)
   expect_equal(as.numeric(tail(short_sim$equity$Equity, 1)), 1001)
 })
 

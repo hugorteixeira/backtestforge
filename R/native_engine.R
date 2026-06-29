@@ -2719,12 +2719,21 @@ bt_search_native <- function(ticker,
 
 .bt_native_empty_funding_ledger <- function() {
   data.frame(
+    trade_id = integer(),
     timestamp = as.POSIXct(character(), tz = "UTC"),
     symbol = character(),
+    side = character(),
     qty = numeric(),
     price = numeric(),
+    mark_price = numeric(),
+    multiplier = numeric(),
+    notional = numeric(),
     funding_rate = numeric(),
     funding_cash = numeric(),
+    funding_received = numeric(),
+    funding_paid = numeric(),
+    abs_funding = numeric(),
+    funding_bps_notional = numeric(),
     equity = numeric(),
     stringsAsFactors = FALSE
   )
@@ -2742,6 +2751,8 @@ bt_search_native <- function(ticker,
   qty <- 0
   unit_count <- 0L
   entry_qty_abs <- NA_real_
+  next_trade_id <- 0L
+  active_trade_id <- NA_integer_
   last_add_price <- NA_real_
   last_add_signal_price <- NA_real_
   equity <- numeric(n)
@@ -2796,14 +2807,25 @@ bt_search_native <- function(ticker,
     invisible(NULL)
   }
 
-  add_funding <- function(timestamp, qty_now, price, funding_rate, funding_cash, equity_after) {
+  add_funding <- function(timestamp, trade_id, qty_now, price, funding_rate, funding_cash, equity_after) {
+    notional <- abs(qty_now) * price * funding_multiplier
+    funding_bps_notional <- if (is.finite(notional) && notional > 0) funding_cash / notional * 10000 else NA_real_
     funding_ledger[[length(funding_ledger) + 1L]] <<- data.frame(
+      trade_id = as.integer(trade_id %||% NA_integer_),
       timestamp = as.POSIXct(timestamp, tz = "UTC"),
       symbol = symbol,
+      side = if (qty_now > 0) "long" else if (qty_now < 0) "short" else "flat",
       qty = qty_now,
       price = price,
+      mark_price = price,
+      multiplier = funding_multiplier,
+      notional = notional,
       funding_rate = funding_rate,
       funding_cash = funding_cash,
+      funding_received = max(funding_cash, 0),
+      funding_paid = max(-funding_cash, 0),
+      abs_funding = abs(funding_cash),
+      funding_bps_notional = funding_bps_notional,
       equity = equity_after,
       stringsAsFactors = FALSE
     )
@@ -2869,6 +2891,17 @@ bt_search_native <- function(ticker,
       return(0)
     }
     if (identical(side, "long")) qty_abs else -qty_abs
+  }
+
+  open_trade <- function() {
+    next_trade_id <<- next_trade_id + 1L
+    active_trade_id <<- next_trade_id
+    invisible(active_trade_id)
+  }
+
+  close_trade <- function() {
+    active_trade_id <<- NA_integer_
+    invisible(NULL)
   }
 
   signal_mode <- identical(execution_mode, "breakout") && identical(strategy$type, "donchian")
@@ -3108,7 +3141,7 @@ bt_search_native <- function(ticker,
         next
       }
       eq <- eq + cash
-      add_funding(funding_times[row_i], qty, mark, rate, cash, eq)
+      add_funding(funding_times[row_i], active_trade_id, qty, mark, rate, cash, eq)
     }
     eq
   }
@@ -3160,6 +3193,7 @@ bt_search_native <- function(ticker,
     equity[1L] <<- equity[1L] - costs[["total_cost"]]
     qty_path[1L] <<- qty
     unit_path[1L] <<- unit_count
+    open_trade()
     add_trade(1L, delta, px, costs, paste0(side, "_entry"), equity[1L])
     invisible(NULL)
   }
@@ -3183,6 +3217,7 @@ bt_search_native <- function(ticker,
         last_add_signal_price <<- NA_real_
         eq <- eq - costs[["total_cost"]]
         add_trade(i, delta, px, costs, "short_exit", eq, event_time = event_timestamp, signal_time = signal_time)
+        close_trade()
       }
       if (qty == 0 && strategy$long && isTRUE(as.logical(signals[sig_i, "LongEntry"]))) {
         delta <- maybe_enter(i, sig_i, "long", eq, px)
@@ -3194,6 +3229,7 @@ bt_search_native <- function(ticker,
           last_add_price <<- px
           last_add_signal_price <<- add_signal_basis(sig_i, px, event)
           eq <- eq - costs[["total_cost"]]
+          open_trade()
           add_trade(i, delta, px, costs, "long_entry", eq, event_time = event_timestamp, signal_time = signal_time)
         }
       }
@@ -3208,6 +3244,7 @@ bt_search_native <- function(ticker,
         last_add_signal_price <<- NA_real_
         eq <- eq - costs[["total_cost"]]
         add_trade(i, delta, px, costs, "long_exit", eq, event_time = event_timestamp, signal_time = signal_time)
+        close_trade()
       }
       if (qty == 0 && strategy$short && isTRUE(as.logical(signals[sig_i, "ShortEntry"]))) {
         delta <- maybe_enter(i, sig_i, "short", eq, px)
@@ -3219,6 +3256,7 @@ bt_search_native <- function(ticker,
           last_add_price <<- px
           last_add_signal_price <<- add_signal_basis(sig_i, px, event)
           eq <- eq - costs[["total_cost"]]
+          open_trade()
           add_trade(i, delta, px, costs, "short_entry", eq, event_time = event_timestamp, signal_time = signal_time)
         }
       }
@@ -3426,6 +3464,7 @@ bt_search_native <- function(ticker,
         eq <- eq - costs[["total_cost"]]
         exited_long <- TRUE
         add_trade(i, delta, px, costs, "long_exit", eq)
+        close_trade()
       }
       if (qty < 0 && sx) {
         delta <- -qty
@@ -3438,6 +3477,7 @@ bt_search_native <- function(ticker,
         eq <- eq - costs[["total_cost"]]
         exited_short <- TRUE
         add_trade(i, delta, px, costs, "short_exit", eq)
+        close_trade()
       }
 
       if (qty == 0) {
@@ -3470,6 +3510,7 @@ bt_search_native <- function(ticker,
             last_add_price <- px
             last_add_signal_price <- add_signal_basis(sig_i, px)
             eq <- eq - costs[["total_cost"]]
+            open_trade()
             add_trade(i, delta, px, costs, paste0(entry_side, "_entry"), eq)
           }
         }
@@ -3506,6 +3547,7 @@ bt_search_native <- function(ticker,
       qty_path[n] <- qty
       unit_path[n] <- unit_count
       add_trade(n, delta, px, costs, "end_exit", equity[n])
+      close_trade()
     }
   }
 
@@ -4166,6 +4208,10 @@ bt_search_native <- function(ticker,
     fees = numeric(),
     slippage = numeric(),
     funding = numeric(),
+    funding_received = numeric(),
+    funding_paid = numeric(),
+    abs_funding = numeric(),
+    funding_events = integer(),
     total_cost = numeric(),
     entry_atr = numeric(),
     entry_atr_value_per_unit = numeric(),
@@ -4205,6 +4251,7 @@ bt_search_native <- function(ticker,
     funding_cash = numeric(),
     funding_received = numeric(),
     funding_paid = numeric(),
+    abs_funding = numeric(),
     funding_events = integer(),
     gross_pnl = numeric(),
     net_pnl = numeric(),
@@ -4403,9 +4450,16 @@ bt_search_native <- function(ticker,
     funding_events <- .bt_native_empty_funding_ledger()
   }
   funding_times <- if (NROW(funding_events)) as.POSIXct(funding_events$timestamp, tz = "UTC") else as.POSIXct(character(), tz = "UTC")
-  trade_funding_rows <- function(entry_time, exit_time) {
+  trade_funding_rows <- function(trade_id, entry_time, exit_time) {
     if (!NROW(funding_events)) {
       return(integer())
+    }
+    if ("trade_id" %in% names(funding_events)) {
+      ids <- suppressWarnings(as.integer(funding_events$trade_id))
+      rows <- which(!is.na(ids) & ids == as.integer(trade_id))
+      if (length(rows)) {
+        return(rows)
+      }
     }
     entry_time <- as.POSIXct(entry_time, tz = "UTC")
     exit_time <- as.POSIXct(exit_time, tz = "UTC")
@@ -4422,7 +4476,8 @@ bt_search_native <- function(ticker,
   current <- NULL
   trade_id <- 0L
 
-  add_audit_rows <- function(exit_row, bars_held, gross_pnl, net_pnl, funding_cash, funding_count) {
+  add_audit_rows <- function(exit_row, bars_held, gross_pnl, net_pnl, funding_cash,
+                             funding_received, funding_paid, abs_funding, funding_count) {
     if (is.null(current) || !NROW(current$rows)) {
       return(invisible(NULL))
     }
@@ -4460,6 +4515,7 @@ bt_search_native <- function(ticker,
         funding_cash = 0,
         funding_received = 0,
         funding_paid = 0,
+        abs_funding = 0,
         funding_events = 0L,
         gross_pnl = if (is_exit) gross_pnl else NA_real_,
         net_pnl = if (is_exit) net_pnl else NA_real_,
@@ -4490,8 +4546,9 @@ bt_search_native <- function(ticker,
         slippage = 0,
         total_cost = 0,
         funding_cash = funding_cash,
-        funding_received = max(funding_cash, 0),
-        funding_paid = max(-funding_cash, 0),
+        funding_received = funding_received,
+        funding_paid = funding_paid,
+        abs_funding = abs_funding,
         funding_events = as.integer(funding_count),
         gross_pnl = gross_pnl,
         net_pnl = net_pnl,
@@ -4539,11 +4596,26 @@ bt_search_native <- function(ticker,
     fees <- sum(current$rows$fees, na.rm = TRUE)
     slippage <- sum(current$rows$slippage, na.rm = TRUE)
     total_cost <- sum(current$rows$total_cost, na.rm = TRUE)
-    funding_rows <- trade_funding_rows(current$entry_time, exit_row$timestamp)
+    funding_rows <- trade_funding_rows(current$trade_id, current$entry_time, exit_row$timestamp)
     funding_cash <- if (length(funding_rows)) {
       sum(suppressWarnings(as.numeric(funding_events$funding_cash[funding_rows])), na.rm = TRUE)
     } else {
       0
+    }
+    funding_received <- if (length(funding_rows) && "funding_received" %in% names(funding_events)) {
+      sum(suppressWarnings(as.numeric(funding_events$funding_received[funding_rows])), na.rm = TRUE)
+    } else {
+      max(funding_cash, 0)
+    }
+    funding_paid <- if (length(funding_rows) && "funding_paid" %in% names(funding_events)) {
+      sum(suppressWarnings(as.numeric(funding_events$funding_paid[funding_rows])), na.rm = TRUE)
+    } else {
+      max(-funding_cash, 0)
+    }
+    abs_funding <- if (length(funding_rows) && "abs_funding" %in% names(funding_events)) {
+      sum(suppressWarnings(as.numeric(funding_events$abs_funding[funding_rows])), na.rm = TRUE)
+    } else {
+      abs(funding_cash)
     }
     net_pnl <- gross_pnl - total_cost + funding_cash
     bars_held <- length(window) - 1L
@@ -4579,6 +4651,10 @@ bt_search_native <- function(ticker,
       fees = fees,
       slippage = slippage,
       funding = funding_cash,
+      funding_received = funding_received,
+      funding_paid = funding_paid,
+      abs_funding = abs_funding,
+      funding_events = as.integer(length(funding_rows)),
       total_cost = total_cost,
       entry_atr = entry_atr,
       entry_atr_value_per_unit = entry_atr_value_per_unit,
@@ -4598,6 +4674,9 @@ bt_search_native <- function(ticker,
       gross_pnl = gross_pnl,
       net_pnl = net_pnl,
       funding_cash = funding_cash,
+      funding_received = funding_received,
+      funding_paid = funding_paid,
+      abs_funding = abs_funding,
       funding_count = length(funding_rows)
     )
 
@@ -5247,6 +5326,11 @@ bt_search_native <- function(ticker,
   total_fees <- pick_stat("fees")
   total_slippage <- pick_stat("slippage")
   total_funding <- pick_stat("funding")
+  funding_received <- pick_stat("funding_received")
+  funding_paid <- pick_stat("funding_paid")
+  funding_abs <- pick_stat("funding_abs")
+  funding_events <- pick_stat("funding_events")
+  funding_bps_notional <- pick_stat("funding_bps_notional", NA_real_)
   total_cost <- pick_stat("total_cost", total_fees + total_slippage)
   net_profit <- pick_stat("net_profit")
   gross_before_costs <- net_profit + total_cost - total_funding
@@ -5279,6 +5363,11 @@ bt_search_native <- function(ticker,
     "Fees",
     "Slippage",
     "Funding",
+    "Funding Received",
+    "Funding Paid",
+    "Funding Abs",
+    "Funding Events",
+    "Funding bps Notional",
     "Gross P/L",
     "Net P/L",
     "Impact Basis",
@@ -5292,6 +5381,11 @@ bt_search_native <- function(ticker,
     .bt_native_format_money(total_fees),
     .bt_native_format_money(total_slippage),
     .bt_native_format_money(total_funding),
+    .bt_native_format_money(funding_received),
+    .bt_native_format_money(funding_paid),
+    .bt_native_format_money(funding_abs),
+    .bt_native_format_plain_num(funding_events, digits = 0),
+    .bt_native_format_plain_num(funding_bps_notional, digits = 2),
     .bt_native_format_money(gross_before_costs),
     .bt_native_format_money(net_profit),
     impact_basis,
@@ -5416,8 +5510,45 @@ bt_search_native <- function(ticker,
   slippage <- trade_sum("slippage")
   total_cost <- if ("total_cost" %in% names(trades)) trade_sum("total_cost") else fees + slippage
   funding <- 0
+  funding_received <- 0
+  funding_paid <- 0
+  funding_abs <- 0
+  funding_count <- 0
+  funding_notional <- 0
+  funding_bps_notional <- NA_real_
   if (!is.null(funding_events) && is.data.frame(funding_events) && "funding_cash" %in% names(funding_events)) {
-    funding <- sum(suppressWarnings(as.numeric(funding_events$funding_cash)), na.rm = TRUE)
+    funding_cash <- suppressWarnings(as.numeric(funding_events$funding_cash))
+    funding_cash[!is.finite(funding_cash)] <- 0
+    funding <- sum(funding_cash, na.rm = TRUE)
+    funding_received <- if ("funding_received" %in% names(funding_events)) {
+      vals <- suppressWarnings(as.numeric(funding_events$funding_received))
+      vals[!is.finite(vals)] <- 0
+      sum(vals, na.rm = TRUE)
+    } else {
+      sum(pmax(funding_cash, 0), na.rm = TRUE)
+    }
+    funding_paid <- if ("funding_paid" %in% names(funding_events)) {
+      vals <- suppressWarnings(as.numeric(funding_events$funding_paid))
+      vals[!is.finite(vals)] <- 0
+      sum(vals, na.rm = TRUE)
+    } else {
+      sum(pmax(-funding_cash, 0), na.rm = TRUE)
+    }
+    funding_abs <- if ("abs_funding" %in% names(funding_events)) {
+      vals <- suppressWarnings(as.numeric(funding_events$abs_funding))
+      vals[!is.finite(vals)] <- 0
+      sum(vals, na.rm = TRUE)
+    } else {
+      sum(abs(funding_cash), na.rm = TRUE)
+    }
+    funding_count <- NROW(funding_events)
+    if ("notional" %in% names(funding_events)) {
+      funding_notional_vals <- abs(suppressWarnings(as.numeric(funding_events$notional)))
+      funding_notional <- sum(funding_notional_vals[is.finite(funding_notional_vals)], na.rm = TRUE)
+      if (is.finite(funding_notional) && funding_notional > 0) {
+        funding_bps_notional <- funding / funding_notional * 10000
+      }
+    }
   }
   resolved_slip_value <- .bt_native_first_num(
     execution$slip_value,
@@ -5452,6 +5583,12 @@ bt_search_native <- function(ticker,
     fees = fees,
     slippage = slippage,
     funding = funding,
+    funding_received = funding_received,
+    funding_paid = funding_paid,
+    funding_abs = funding_abs,
+    funding_events = funding_count,
+    funding_notional = funding_notional,
+    funding_bps_notional = funding_bps_notional,
     total_cost = total_cost,
     contracts_traded = contracts_traded,
     IsFutures = isTRUE(metadata$is_futures),

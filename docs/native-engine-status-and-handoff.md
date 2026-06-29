@@ -283,13 +283,21 @@ events reach the simulator. The engine uses that event mark for
 `-quantity * mark_price * multiplier * funding_rate`; the candle-price fallback
 exists only for manually supplied incomplete funding data. Funding is kept out
 of `trades$total_cost`; it is returned in `funding_events`, summarized in
-`stats$funding`, and included in the equity curve while the position is open.
+`stats$funding`, `stats$funding_paid`, `stats$funding_received`,
+`stats$funding_abs`, and `stats$funding_events`, and included in the equity
+curve while the position is open. The granular funding ledger includes the
+active `trade_id`, side, quantity, mark price, notional, rate, net cashflow,
+paid/received split, absolute funding, bps of notional, and post-event equity
+when available.
 
 Completed trades also produce `trade_audit`. This audit ledger contains
 order-level `entry`, `pyramid`, and `exit` rows with signal price,
 slippage-adjusted fill price, fees, slippage, total cost, and bars held.
 Perpetual-funding runs add a separate `event_type = "funding"` row per
-completed trade with funding paid/received and event count.
+completed trade with funding paid/received, absolute funding, and event count.
+The compact `trade_episodes` table also carries those funding aggregates so
+consumers can render one row per completed trade and open the granular
+`funding_events` ledger only when needed.
 
 `bt_hold()` is a native wrapper for first-close to last-close hold tests. It
 uses the same execution, fee, slippage, funding, and audit ledgers as the other
