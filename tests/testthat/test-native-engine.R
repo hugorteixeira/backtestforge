@@ -189,6 +189,50 @@ test_that("native Donchian breakout can resolve stricter execution timeframe", {
   expect_equal(entry$execution_source_ticker[1], "BT_HAND_5m")
 })
 
+test_that("native execution timeframe trims uncovered trailing signal bars", {
+  idx <- as.POSIXct("2024-01-01 00:00:00", tz = "UTC") + 0:5 * 3600
+  x <- xts::xts(
+    cbind(
+      Open = c(9, 9, 9, 9, 9, 9),
+      High = c(10, 10, 9.8, 10.5, 11, 12),
+      Low = c(8, 8, 8.2, 7.5, 7, 6),
+      Close = c(9, 9, 9, 8.8, 10, 11)
+    ),
+    order.by = idx
+  )
+  attr(x, "symbol") <- "BT_HAND_1h"
+  attr(x, "fut_tick_size") <- 1
+  attr(x, "fut_multiplier") <- 1
+
+  exec_idx <- seq(idx[1], idx[4] + 55 * 60, by = "5 min")
+  exec <- xts::xts(
+    cbind(
+      Open = rep(9, length(exec_idx)),
+      High = rep(10.5, length(exec_idx)),
+      Low = rep(7.5, length(exec_idx)),
+      Close = rep(9, length(exec_idx))
+    ),
+    order.by = exec_idx
+  )
+  attr(exec, "symbol") <- "BT_HAND_5m"
+  attr(exec, "fut_tick_size") <- 1
+  attr(exec, "fut_multiplier") <- 1
+
+  res <- bt_run_native(
+    ticker = "BT_HAND_1h",
+    data = x,
+    strategy = bt_strategy_spec("donchian", up = 2, down = 2, long = TRUE, short = TRUE),
+    ps_value = 50,
+    ps_type = "notional",
+    execution = bt_execution_spec("breakout", fee = "nofee", execution_timeframe = "5m", close_on_end = FALSE),
+    execution_data = exec,
+    report = FALSE
+  )
+
+  expect_equal(NROW(res$mktdata), 4L)
+  expect_equal(as.POSIXct(utils::tail(zoo::index(res$mktdata), 1), tz = "UTC"), idx[4])
+})
+
 test_that("native Donchian execution timeframe processes repeated intrabar breakouts", {
   idx <- as.POSIXct("2024-01-01 00:00:00", tz = "UTC") + 0:5 * 3600
   x <- xts::xts(

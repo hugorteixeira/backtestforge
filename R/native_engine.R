@@ -1013,6 +1013,27 @@ bt_run_native <- function(ticker,
     end_date = end_date,
     clean_di = clean_di
   )
+  metadata <- .bt_native_metadata(prepared$data, prepared$symbol)
+  execution <- .bt_native_resolve_execution(execution, metadata, prepared$symbol)
+  signal_timeframe <- .bt_native_data_timeframe(prepared$data, prepared$symbol)
+  execution_detail <- .bt_native_prepare_execution_detail(
+    signal_data = prepared$data,
+    symbol = prepared$symbol,
+    signal_timeframe = signal_timeframe,
+    execution = execution,
+    strategy = strategy,
+    start_date = start_date,
+    end_date = end_date,
+    clean_di = clean_di,
+    execution_data = execution_data
+  )
+  if (!is.null(execution_detail) && length(execution_detail$signal_rows)) {
+    prepared$data <- prepared$data[execution_detail$signal_rows, ]
+    if (!NROW(prepared$data)) {
+      stop("No strategy rows remain after applying execution timeframe coverage.", call. = FALSE)
+    }
+  }
+
   prices <- .bt_native_price_set(prepared$data, prepared$symbol)
   indicators <- .bt_native_indicators(prepared$data, prices, strategy)
   signals <- .bt_native_signals(prepared$data, prices, indicators, strategy)
@@ -1036,19 +1057,6 @@ bt_run_native <- function(ticker,
     max_leverage = max_leverage,
     integer_qty = integer_qty,
     metadata = metadata
-  )
-  execution <- .bt_native_resolve_execution(execution, metadata, prepared$symbol)
-  signal_timeframe <- .bt_native_data_timeframe(prepared$data, prepared$symbol)
-  execution_detail <- .bt_native_prepare_execution_detail(
-    signal_data = prepared$data,
-    symbol = prepared$symbol,
-    signal_timeframe = signal_timeframe,
-    execution = execution,
-    strategy = strategy,
-    start_date = start_date,
-    end_date = end_date,
-    clean_di = clean_di,
-    execution_data = execution_data
   )
 
   if (isTRUE(report)) {
@@ -1947,12 +1955,21 @@ bt_search_native <- function(ticker,
   if (!length(exec_idx) || all(is.na(exec_idx))) {
     stop(sprintf("Execution timeframe data for '%s' has no timestamps.", prepared$symbol), call. = FALSE)
   }
-  needed_start <- min(signal_idx, na.rm = TRUE)
-  needed_end <- .bt_native_signal_bar_end(signal_idx, length(signal_idx), signal_secs)
-  if (min(exec_idx, na.rm = TRUE) > needed_start || max(exec_idx, na.rm = TRUE) < max(signal_idx, na.rm = TRUE)) {
+  exec_start <- min(exec_idx, na.rm = TRUE)
+  exec_end <- max(exec_idx, na.rm = TRUE)
+  exec_bar_end <- exec_end + exec_secs
+  signal_end <- signal_idx
+  if (length(signal_idx) > 1L) {
+    signal_end[-length(signal_idx)] <- signal_idx[-1L]
+  }
+  signal_end[length(signal_idx)] <- .bt_native_signal_bar_end(signal_idx, length(signal_idx), signal_secs)
+  covered <- signal_idx >= exec_start & signal_end <= exec_bar_end
+  covered[is.na(covered)] <- FALSE
+  signal_rows <- which(covered)
+  if (!length(signal_rows)) {
     stop(
       sprintf(
-        "Execution timeframe '%s' for '%s' does not cover the strategy data window for '%s'.",
+        "Execution timeframe '%s' for '%s' does not overlap complete strategy bars for '%s'.",
         exec_tf,
         prepared$symbol,
         symbol
@@ -1969,6 +1986,10 @@ bt_search_native <- function(ticker,
     timeframe_seconds = exec_secs,
     signal_timeframe = signal_tf,
     signal_timeframe_seconds = signal_secs,
+    signal_rows = signal_rows,
+    signal_rows_dropped = length(signal_idx) - length(signal_rows),
+    signal_window_start = signal_idx[signal_rows[1L]],
+    signal_window_end = signal_end[utils::tail(signal_rows, 1L)],
     index = exec_idx
   )
 }
